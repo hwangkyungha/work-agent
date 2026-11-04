@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light"><title>work-agent</title>
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <a class="brand" id="brand-link" href="/" aria-label="work-agent 홈"><span class="brand-mark" aria-hidden="true">✓</span><span><span id="agent-name">work-agent</span><small>내 일의 기록과 계획</small></span></a>
+      <nav aria-label="업무 메뉴">
+        <button class="nav-item active" data-view="today"><span aria-hidden="true">◷</span>오늘</button>
+        <button class="nav-item" data-view="plan"><span aria-hidden="true">☷</span>할 일과 계획</button>
+        <button class="nav-item" data-view="worklog"><span aria-hidden="true">▤</span>워크로그</button>
+        <button class="nav-item" data-view="team"><span aria-hidden="true">♧</span>팀원과 1on1</button>
+      </nav>
+      <div class="rail-bottom"><p>기록은 남겨 두고,<br>오늘 할 일에 집중하세요.</p><button class="connection-button" id="connections">연결 상태 <span id="connection-dot" class="dot"></span></button><small>모든 날짜와 시간은 한국 기준입니다.</small></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><span id="date-label">업무를 불러오고 있습니다.</span><div class="top-actions"><label class="sr-only" for="selected-date">조회 날짜</label><input id="selected-date" type="date"><button id="refresh" class="button quiet">기록 새로 확인</button></div></header>
+      <main id="content" tabindex="-1"><div class="loading">업무 기록을 불러오고 있습니다.</div></main>
+      <section class="agent-panel" aria-labelledby="agent-heading">
+        <div class="agent-heading"><span class="agent-mark" aria-hidden="true">✦</span><h2 id="agent-heading">work-agent</h2><span>Slack 연결 전에도 이곳에서 요청할 수 있습니다.</span><button class="text-button" id="toggle-chat" aria-expanded="false">대화 열기</button></div>
+        <div id="chat-body" hidden><div id="messages" class="messages" aria-live="polite"></div><form id="chat-form"><label class="sr-only" for="chat-text">에이전트에게 요청하기</label><textarea id="chat-text" rows="2" placeholder="예: 내일 10시에 LCT CI report 기능 리뷰가 있어. 일정에 추가해 줘." required maxlength="12000"></textarea><button class="button primary" type="submit">요청 보내기</button></form><p class="hint">자연어 요청은 설정한 Codex 또는 Claude CLI를 사용합니다.</p></div>
+      </section>
+      <footer>내 업무 데이터에서 직접 조회합니다. 화면을 여는 데 AI 호출은 필요하지 않습니다.</footer>
+    </div>
+  </div>
+  <div id="notice" role="status" hidden></div>
+  <dialog id="modal"><div class="modal-header"><h2 id="modal-title"></h2><button class="icon-button" id="close-modal" aria-label="닫기">×</button></div><div id="modal-content"></div></dialog>
+</body>
+</html>

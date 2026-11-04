@@ -1,0 +1,26 @@
+# Maven과 실행 파일
+/target/
+/work-agent*.jar
+*.class
+
+# 개인 설정, 수집 기록과 데이터베이스
+/work/
+config.properties
+config.local.properties
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.log
+
+# 개발 도구와 운영체제 파일
+.idea/
+*.iml
+.DS_Store
+Thumbs.db

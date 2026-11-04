@@ -1,0 +1,13 @@
+{
+  "type": "object", "additionalProperties": false,
+  "properties": {
+    "reply": {"type": "string"},
+    "actions": {"type": "array", "maxItems": 10, "items": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string", "enum": ["task", "activity", "link_activity", "meeting", "plan", "daily_note", "allocate", "post_worklog", "member", "observation", "job", "report", "sync"]},
+        "payload": {"type": "string"}
+      }, "required": ["type", "payload"]
+    }}
+  }, "required": ["reply", "actions"]
+}
