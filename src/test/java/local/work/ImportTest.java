@@ -40,6 +40,15 @@ class ImportTest {
         Files.writeString(file,codex("user","CT-123과 CT-456 관련 분석", "2026-11-04T00:00:00Z")+codex("assistant","분석 결과입니다.","2026-11-04T00:01:00Z"));
         importer.read("codex",file,Instant.EPOCH);assertEquals("",Json.text(store.list("activity").get(0),"jiraKey"));
     }
+    @Test void claudeCustomTitleWithoutTimestampNamesTheSession() throws Exception {
+        Path file=temporary.resolve("named.jsonl");
+        Files.writeString(file,Json.write(Json.obj("type","custom-title","sessionId","named-session","customTitle","리뷰 준비"))+"\n"
+                +Json.write(Json.obj("type","user","sessionId","named-session","timestamp","2026-11-04T00:00:00Z","message",Json.obj("role","user","content","리뷰 준비를 도와줘.")))+"\n");
+        assertEquals(1,importer.read("claude",file,Instant.EPOCH));
+        var groups=new ActivitySummary(store).group(LocalDate.parse("2026-11-04"),LocalDate.parse("2026-11-04"));
+        assertEquals("리뷰 준비",Json.text(groups.getFirst(),"title"));
+        assertEquals(1,groups.getFirst().path("messageCount").asInt());
+    }
     @Test void userLinkedIssueSurvivesLaterImport() throws Exception {
         Path file=temporary.resolve("session.jsonl");Files.writeString(file,codex("assistant","CT-1 수정","2026-11-04T00:01:00Z"));
         importer.read("codex",file,Instant.EPOCH);var a=store.list("activity").get(0);a.put("jiraKey","CT-9").put("userLinked",true);store.put("activity",a);

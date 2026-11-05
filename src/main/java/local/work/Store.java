@@ -39,6 +39,14 @@ final class Store implements AutoCloseable {
             return row;
         } catch (SQLException e) { throw new IllegalStateException("기록을 저장하지 못했습니다.", e); }
     }
+    synchronized List<ObjectNode> between(String kind, String from, String to) {
+        List<ObjectNode> rows = new ArrayList<>();
+        try (PreparedStatement p = connection.prepareStatement("SELECT payload FROM records WHERE kind=? AND json_extract(payload,'$.date') BETWEEN ? AND ? ORDER BY rowid")) {
+            p.setString(1, kind); p.setString(2, from); p.setString(3, to);
+            try (ResultSet r = p.executeQuery()) { while (r.next()) rows.add((ObjectNode) Json.read(r.getString(1))); }
+            return rows;
+        } catch (SQLException e) { throw new IllegalStateException("기간별 기록을 읽지 못했습니다.", e); }
+    }
     synchronized void delete(String kind, String id) {
         try (PreparedStatement p = connection.prepareStatement("DELETE FROM records WHERE kind=? AND id=?")) {
             p.setString(1, kind); p.setString(2, id); p.executeUpdate();

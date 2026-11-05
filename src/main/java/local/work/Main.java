@@ -82,8 +82,9 @@ public final class Main {
                     switch (path) {
                         case "/api/state" -> json(exchange, 200, service.state(date));
                         case "/api/team" -> json(exchange, 200, service.team());
+                        case "/api/tasks/transitions" -> json(exchange, 200, service.transitions(query.getOrDefault("id", "")));
                         case "/api/messages" -> json(exchange, 200, store.list("message").stream().filter(n -> Json.text(n, "conversation").equals("web")).toList());
-                        case "/api/settings" -> json(exchange, 200, Json.obj("agentName", config.agentName(), "agentCallName", config.agentCallName(), "engine", config.get("AGENT_ENGINE", "codex"), "slackConfigured", slack.configured(), "slackConnected", slack.connected(), "slackError", slack.lastError(), "jiraConfigured", service.jira.configured(), "calendarConfigured", calendar.configured(), "briefingTime", config.get("BRIEFING_TIME", "09:00"), "fridayTime", config.get("FRIDAY_REVIEW_TIME", "16:30"), "timezone", "Asia/Seoul"));
+                        case "/api/settings" -> json(exchange, 200, Json.obj("agentName", config.agentName(), "agentCallName", config.agentCallName(), "engine", config.get("AGENT_ENGINE", "codex"), "slackConfigured", slack.configured(), "slackConnected", slack.connected(), "slackError", slack.lastError(), "jiraConfigured", service.jira.configured(), "calendarConfigured", calendar.configured(), "briefingTime", config.get("BRIEFING_TIME", "09:00"), "fridayTime", config.get("FRIDAY_REVIEW_TIME", "16:30"), "claudeSessionTime", config.get("CLAUDE_SESSION_TIME", ""), "claudeSession", store.get("scheduled", "claude-session:" + time.today()), "timezone", "Asia/Seoul"));
                         case "/api/evidence" -> {
                             ObjectNode activity = store.get("activity", query.getOrDefault("id", ""));
                             ObjectNode evidence = activity == null ? null : store.get("evidence", Json.text(activity, "evidenceId"));
@@ -114,11 +115,17 @@ public final class Main {
                     Object result = switch (path) {
                         case "/api/chat" -> agent.chat("web", body.path("requestId").asText(UUID.randomUUID().toString()), Json.required(body, "text"));
                         case "/api/tasks" -> service.task(body);
+                        case "/api/tasks/status" -> service.changeStatus(body);
+                        case "/api/tasks/hide" -> service.hideTask(body);
+                        case "/api/tasks/hide-many" -> service.hideTasks(body);
                         case "/api/activities" -> service.activity(body);
                         case "/api/plan" -> service.plan(body);
+                        case "/api/plan/item" -> service.planItem(body);
+                        case "/api/followups" -> agent.suggestFollowups(date);
+                        case "/api/followups/accept" -> service.acceptFollowup(body);
                         case "/api/meetings" -> service.meeting(body);
                         case "/api/daily" -> service.dailyNote(body);
-                        case "/api/worklogs" -> service.allocate(body);
+                        case "/api/worklogs" -> service.saveWorklog(body);
                         case "/api/worklogs/post" -> service.postWorklog(LocalDate.parse(Json.required(body, "date")));
                         case "/api/members" -> service.member(body);
                         case "/api/observations" -> service.observation(body);

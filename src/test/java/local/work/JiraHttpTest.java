@@ -19,12 +19,13 @@ class JiraHttpTest {
     JsonNode received;
     int status=201;
     String response="{\"id\":\"12345\"}";
+    java.util.function.Function<String,String> paginatedResponse;
     @BeforeEach void start() throws Exception {
         server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         server.createContext("/",exchange->{
             method=exchange.getRequestMethod();path=exchange.getRequestURI().getPath();query=exchange.getRequestURI().getQuery();authorization=exchange.getRequestHeaders().getFirst("Authorization");
             byte[] input=exchange.getRequestBody().readAllBytes();if(input.length>0)received=Json.read(new String(input,StandardCharsets.UTF_8));
-            byte[] output=response.getBytes(StandardCharsets.UTF_8);exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(status,output.length);exchange.getResponseBody().write(output);exchange.close();
+            byte[] output=(paginatedResponse==null?response:paginatedResponse.apply(query)).getBytes(StandardCharsets.UTF_8);exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(status,status==204?-1:output.length);if(status!=204)exchange.getResponseBody().write(output);exchange.close();
         });server.start();
     }
     @AfterEach void stop() {server.stop(0);}
@@ -85,5 +86,19 @@ class JiraHttpTest {
         assertEquals("/ex/jira/test-cloud-id/rest/api/3/myself",path);
         String expected="Basic "+Base64.getEncoder().encodeToString("user@example.com:gateway-test-token".getBytes(StandardCharsets.UTF_8));
         assertTrue(expected.equals(authorization),"선택한 모의 토큰을 사용해야 합니다.");
+    }
+    @Test void transitionUsesReturnedTransitionIdAndAcceptsNoContentResponse() throws Exception {
+        JiraClient client=client("cloud","user@example.com");status=200;
+        response="{\"transitions\":[{\"id\":\"31\",\"name\":\"검증 종료\",\"to\":{\"id\":\"done-1\",\"name\":\"검증 완료\"}}]}";
+        assertEquals("검증 완료",client.transitions("CTS-1").getFirst().path("to").path("name").asText());assertTrue(query.contains("expand=transitions.fields"));
+        status=204;response="";client.transition("CTS-1","31");
+        assertEquals("POST",method);assertEquals("31",received.path("transition").path("id").asText());assertEquals("/jira/rest/api/3/issue/CTS-1/transitions",path);
+    }
+    @Test void historiesAndCommentsReadEveryPageBeforeCounting() throws Exception {
+        status=200;
+        paginatedResponse=q->{String id=q.contains("startAt=0")?"first":"second";return Json.write(Json.obj("total",2,"values",List.of(Json.obj("id",id)),"comments",List.of(Json.obj("id",id))));};
+        JiraClient client=client("cloud","user@example.com");
+        assertEquals(List.of("first","second"),client.changelog("CTS-1").stream().map(n->Json.text(n,"id")).toList());
+        assertEquals(List.of("first","second"),client.comments("CTS-1").stream().map(n->Json.text(n,"id")).toList());
     }
 }

@@ -36,8 +36,8 @@ class WorkflowTest {
         }
         @Override String findMarker(String key, String marker) { return recovered; }
     }
-    ObjectNode shares(double a, double b) {
-        return Json.obj("date", "2026-11-04", "shares", List.of(Json.obj("jiraKey", "CT-1", "percent", a), Json.obj("jiraKey", "CT-2", "percent", b)));
+    ObjectNode entries(String a, String b) {
+        return Json.obj("date", "2026-11-04", "items", List.of(Json.obj("jiraKey", "CT-1", "duration", a), Json.obj("jiraKey", "CT-2", "duration", b)));
     }
     @Test void koreaDayDoesNotFollowUtcOrHostTimeZone() {
         assertEquals(LocalDate.of(2026,11,4), time.today());
@@ -83,33 +83,34 @@ class WorkflowTest {
         service.dailyNote(Json.obj("text","검증 환경 접근이 필요합니다."));
         assertTrue(reports.daily(time.today()).contains("추가 공유\n검증 환경 접근이 필요합니다."));
     }
-    @Test void worklogConvertsUserRatiosToEightHours() {
-        ObjectNode draft=service.allocate(shares(60,40));
-        assertEquals(17280,draft.path("items").get(0).path("seconds").asInt());
-        assertEquals(11520,draft.path("items").get(1).path("seconds").asInt());
+    @Test void worklogSavesEnteredHoursWithoutFillingEightHours() {
+        ObjectNode draft=service.saveWorklog(entries("3h","2h"));
+        assertEquals(10800,draft.path("items").get(0).path("seconds").asInt());
+        assertEquals(7200,draft.path("items").get(1).path("seconds").asInt());
         assertEquals(0,jira.calls);
     }
-    @Test void fractionalRatiosPreserveExactDayTotal() {
-        JsonNode input=Json.read("{\"shares\":[{\"jiraKey\":\"CT-1\",\"percent\":33.3333},{\"jiraKey\":\"CT-2\",\"percent\":33.3333},{\"jiraKey\":\"CT-3\",\"percent\":33.3334}]}");
-        JsonNode items=service.allocate(input).path("items");
-        int seconds=0;for(JsonNode item:items)seconds+=item.path("seconds").asInt();assertEquals(28800,seconds);
+    @Test void decimalAndMixedHoursAreEquivalent() {
+        assertEquals(9000,WorkDuration.seconds("2.5h"));
+        assertEquals(9000,WorkDuration.seconds("2h 30m"));
+        assertEquals(1,WorkDuration.seconds("1s"));
     }
-    @Test void halfDayCanUseFourHours() {
-        ObjectNode input=shares(50,50);input.put("totalMinutes",240);
-        assertEquals(7200,service.allocate(input).path("items").get(0).path("seconds").asInt());
+    @Test void worklogCanUseLessOrMoreThanEightHours() {
+        assertEquals(3600,service.saveWorklog(entries("30m","30m")).path("totalSeconds").asLong());
+        assertEquals(36000,service.saveWorklog(entries("6h","4h")).path("totalSeconds").asLong());
     }
-    @Test void ratiosMustAddTo100AndIssuesCannotRepeat() {
-        assertThrows(IllegalArgumentException.class,()->service.allocate(shares(20,30)));
-        assertThrows(IllegalArgumentException.class,()->service.allocate(Json.obj("shares",List.of(Json.obj("jiraKey","CT-1","percent",50),Json.obj("jiraKey","CT-1","percent",50)))));
+    @Test void invalidDurationsAndDuplicateIssuesAreRejected() {
+        assertThrows(IllegalArgumentException.class,()->service.saveWorklog(entries("-1h","2h")));
+        assertThrows(IllegalArgumentException.class,()->service.saveWorklog(Json.obj("items",List.of(Json.obj("jiraKey","CT-1","duration","1h"),Json.obj("jiraKey","CT-1","duration","2h")))));
+        for(String value:List.of("", "0h", "3", "2 hours", "NaNh", "-2h", "1.00001h")) assertThrows(IllegalArgumentException.class,()->WorkDuration.seconds(value));
         assertNull(store.get("worklog","2026-11-04"));
     }
     @Test void postingSameDayTwiceDoesNotSendDuplicateWorklogs() throws Exception {
-        service.allocate(shares(60,40));service.postWorklog(time.today());service.postWorklog(time.today());
+        service.saveWorklog(entries("3h","2h"));service.postWorklog(time.today());service.postWorklog(time.today());
         assertEquals(2,jira.calls);assertEquals("posted",store.get("worklog","2026-11-04").path("items").get(0).path("state").asText());
-        assertThrows(IllegalArgumentException.class,()->service.allocate(shares(50,50)));
+        assertThrows(IllegalArgumentException.class,()->service.saveWorklog(entries("2h","2h")));
     }
     @Test void uncertainNetworkResultDoesNotBlindlyRetry() throws Exception {
-        service.allocate(shares(60,40));jira.timeout=true;
+        service.saveWorklog(entries("3h","2h"));jira.timeout=true;
         assertThrows(java.net.SocketTimeoutException.class,()->service.postWorklog(time.today()));
         assertEquals("unknown",store.get("worklog","2026-11-04").path("items").get(0).path("state").asText());
         jira.timeout=false;
@@ -118,9 +119,25 @@ class WorkflowTest {
         assertEquals("existing-id",store.get("worklog","2026-11-04").path("items").get(0).path("jiraId").asText());
     }
     @Test void definiteRejectionCanBeRetried() throws Exception {
-        service.allocate(shares(60,40));jira.reject=true;
+        service.saveWorklog(entries("3h","2h"));jira.reject=true;
         assertThrows(JiraClient.Rejected.class,()->service.postWorklog(time.today()));jira.reject=false;
         service.postWorklog(time.today());assertEquals(3,jira.calls);
+    }
+    @Test void anotherIssueCanBeAddedAfterPostingWithoutRepostingExistingTime() throws Exception {
+        service.saveWorklog(entries("3h","2h"));service.postWorklog(time.today());
+        ObjectNode saved=store.get("worklog",time.today().toString());
+        var items=Json.MAPPER.createArrayNode();
+        for(JsonNode row:saved.path("items"))items.add(Json.obj("jiraKey",Json.text(row,"jiraKey"),"duration",row.path("seconds").asInt()+"s","marker",Json.text(row,"marker"),"comment",Json.text(row,"comment")));
+        items.add(Json.obj("jiraKey","MEET-1","duration","30m"));
+        service.saveWorklog(Json.obj("items",items));service.postWorklog(time.today());assertEquals(3,jira.calls);
+        assertEquals(19800,store.get("worklog",time.today().toString()).path("totalSeconds").asInt());
+    }
+    @Test void emptyUnpostedDraftCanBeRemovedAndOldPercentDraftKeepsItsSeconds() {
+        store.put("worklog",Json.obj("id",time.today().toString(),"date",time.today().toString(),"totalMinutes",480,"items",List.of(Json.obj("jiraKey","CT-1","percent",33.3333,"seconds",9599,"comment","분석","marker","legacy","state","draft","jiraId",""))));
+        service.saveWorklog(Json.obj("items",List.of(Json.obj("jiraKey","CT-1","duration","2h 39m 59s","comment","분석","marker","legacy"))));
+        assertEquals(9599,store.get("worklog",time.today().toString()).path("items").get(0).path("seconds").asInt());
+        assertFalse(store.get("worklog",time.today().toString()).has("totalMinutes"));
+        service.saveWorklog(Json.obj("items",List.of()));assertNull(store.get("worklog",time.today().toString()));
     }
     @Test void personalObservationsNeverAppearInDailyOrBriefing() {
         ObjectNode member=service.member(Json.obj("name","팀원","jiraUser","person","role","개발"));
@@ -145,11 +162,11 @@ class WorkflowTest {
     }
     @Test void quickReadDoesNotCallModel() throws Exception {
         Agent agent=new Agent(service,reports,p->{throw new AssertionError("모델 호출 불필요");},k->Json.object(),"work-agent","work-agent");
-        assertTrue(agent.chat("web","brief","브리핑").path("text").asText().contains("아침 브리핑"));
+        assertTrue(agent.chat("web","brief","브리핑").path("text").asText().contains("데일리 브리핑"));
     }
     @Test void personalCallNameCanPrecedeQuickReadWithoutModelCall() throws Exception {
         Agent agent=new Agent(service,reports,p->{throw new AssertionError("모델 호출 불필요");},k->Json.object(),"호박","호박아");
-        assertTrue(agent.chat("web","called-brief","호박아, 브리핑").path("text").asText().contains("아침 브리핑"));
+        assertTrue(agent.chat("web","called-brief","호박아, 브리핑").path("text").asText().contains("데일리 브리핑"));
         assertTrue(agent.chat("web","called-daily","호박아 데일리").path("text").asText().contains("어제 한 일"));
     }
     @Test void anotherUserCanChooseTheirOwnNameAndAddress() throws Exception {

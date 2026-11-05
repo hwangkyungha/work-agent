@@ -16,6 +16,7 @@ class JiraClient {
         IOExceptionBase(String message) { super(message); }
     }
     private final Config config;
+    private volatile String siteUrl = "";
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
     JiraClient(Config config) { this.config = config; }
     private String token() {
@@ -42,7 +43,78 @@ class JiraClient {
             if (status >= 400 && status < 500 && status != 408) throw new Rejected(message);
             throw new IOExceptionBase(message);
         }
-        return Json.read(response.body());
+        return response.body().isBlank() ? Json.object() : Json.read(response.body());
+    }
+    String issueUrl(String key) {
+        String base = config.get("JIRA_SITE_URL", siteUrl);
+        if (base.isBlank() && !config.get("JIRA_URL", "").contains("api.atlassian.com")) base = config.get("JIRA_URL", "");
+        if (base.isBlank()) return "";
+        URI uri = URI.create(base);
+        if (!Set.of("http", "https").contains(uri.getScheme())) throw new IllegalArgumentException("Jira 사이트 주소를 확인하세요.");
+        return base.replaceAll("/+$", "") + "/browse/" + WorkService.issue(key);
+    }
+    void loadSiteUrl() throws Exception {
+        if (siteUrl.isBlank() && !config.has("JIRA_SITE_URL") && config.get("JIRA_URL", "").contains("api.atlassian.com")) siteUrl = Json.required(request("GET", "/serverInfo", null), "baseUrl");
+    }
+    String statusCategory(JsonNode status) {
+        return switch (Json.text(status.path("statusCategory"), "key")) { case "done" -> "done"; case "indeterminate" -> "in-progress"; default -> "todo"; };
+    }
+    ObjectNode fetchIssue(String key) throws Exception {
+        loadSiteUrl();
+        return summarize(request("GET", "/issue/" + WorkService.issue(key) + "?fields=summary,status,assignee,created,updated,duedate,project,fixVersions,issuetype", null));
+    }
+    List<JsonNode> transitions(String key) throws Exception {
+        List<JsonNode> result = new ArrayList<>();
+        request("GET", "/issue/" + WorkService.issue(key) + "/transitions?expand=transitions.fields", null).path("transitions").forEach(result::add);
+        return result;
+    }
+    void transition(String key, String id) throws Exception {
+        request("POST", "/issue/" + WorkService.issue(key) + "/transitions", Json.obj("transition", Json.obj("id", id)));
+    }
+    List<JsonNode> changelog(String key) throws Exception { return pages("/issue/" + WorkService.issue(key) + "/changelog", "values"); }
+    List<JsonNode> comments(String key) throws Exception { return pages("/issue/" + WorkService.issue(key) + "/comment", "comments"); }
+    private List<JsonNode> pages(String path, String field) throws Exception {
+        List<JsonNode> rows = new ArrayList<>(); int offset = 0;
+        while (true) {
+            JsonNode response = request("GET", path + "?startAt=" + offset + "&maxResults=100", null);
+            JsonNode page = response.path(field); page.forEach(rows::add); offset += page.size();
+            if (page.isEmpty() || response.path("isLast").asBoolean() || offset >= response.path("total").asInt(offset)) return rows;
+        }
+    }
+    String resolveUser(String user) throws Exception {
+        if (!cloud()) return user;
+        if (user.contains(":") || user.matches("[a-fA-F0-9-]{20,}")) return Json.required(request("GET", "/user?accountId=" + encode(user), null), "accountId");
+        JsonNode matches = request("GET", "/user/search?query=" + encode(user), null);
+        List<JsonNode> exact = new ArrayList<>();
+        for (JsonNode match : matches) if (user.equalsIgnoreCase(Json.text(match, "emailAddress")) || user.equals(Json.text(match, "accountId")) || user.equals(Json.text(match, "displayName"))) exact.add(match);
+        if (exact.size() == 1) return Json.required(exact.getFirst(), "accountId");
+        if (matches.size() == 1 && user.contains("@")) return Json.required(matches.get(0), "accountId");
+        throw new IllegalArgumentException("Jira 사용자를 한 명으로 확인하지 못했습니다. 팀원의 Jira accountId 또는 계정 이메일을 확인하세요.");
+    }
+    static Instant instant(String timestamp) {
+        try { return KoreaTime.parse(timestamp); }
+        catch (RuntimeException e) { return OffsetDateTime.parse(timestamp, java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ")).toInstant(); }
+    }
+    static String documentText(JsonNode node) {
+        if (node.isTextual()) return node.asText();
+        if (Json.text(node, "type").equals("text")) return Json.text(node, "text");
+        if (Json.text(node, "type").equals("hardBreak")) return "\n";
+        StringBuilder text = new StringBuilder();
+        JsonNode children = node.isArray() ? node : node.path("content");
+        for (JsonNode child : children) text.append(documentText(child));
+        if (Set.of("paragraph", "heading", "listItem").contains(Json.text(node, "type"))) text.append('\n');
+        return text.toString();
+    }
+    ObjectNode updateTask(WorkService service, ObjectNode task, ObjectNode issue) {
+        synchronized (service) {
+        ObjectNode latest = service.store.get("task", Json.text(task, "id"));
+        if (latest != null) task = latest;
+        ObjectNode row = task.deepCopy();
+        for (String field : List.of("title", "status", "due", "product", "jiraStatus", "jiraStatusId", "issueUrl", "issueType")) row.set(field, issue.get(field));
+        if (!Json.text(issue, "createdAt").isBlank()) row.set("createdAt", issue.get("createdAt"));
+        if (issue.hasNonNull("jiraChangedAt")) row.set("jiraChangedAt", issue.get("jiraChangedAt"));
+        return service.saveTask(row);
+        }
     }
     String addWorklog(LocalDate date, JsonNode item) throws Exception {
         String comment = Json.text(item, "comment") + "\n[" + Json.text(item, "marker") + "]";
@@ -67,12 +139,15 @@ class JiraClient {
         return "";
     }
     List<JsonNode> search(String jql) throws Exception {
+        return search(jql, "summary,status,assignee,created,updated,duedate,project,fixVersions,parent,issuetype");
+    }
+    List<JsonNode> search(String jql, String fields) throws Exception {
         List<JsonNode> rows = new ArrayList<>();
         int offset = 0;
         String token = "";
         while (true) {
-            String path = cloud() ? "/search/jql?jql=" + encode(jql) + "&maxResults=100&fields=summary,status,assignee,updated,duedate,project,fixVersions,parent" + (token.isBlank() ? "" : "&nextPageToken=" + encode(token))
-                    : "/search?jql=" + encode(jql) + "&startAt=" + offset + "&maxResults=100&fields=summary,status,assignee,updated,duedate,project,fixVersions,parent";
+            String path = cloud() ? "/search/jql?jql=" + encode(jql) + "&maxResults=100&fields=" + encode(fields) + (token.isBlank() ? "" : "&nextPageToken=" + encode(token))
+                    : "/search?jql=" + encode(jql) + "&startAt=" + offset + "&maxResults=100&fields=" + encode(fields);
             JsonNode result = request("GET", path, null);
             JsonNode page = result.path("issues");
             for (JsonNode issue : page) rows.add(issue);
@@ -84,29 +159,38 @@ class JiraClient {
         }
     }
     void syncIssues(WorkService service) throws Exception {
+        loadSiteUrl();
         List<JsonNode> issues = search(config.get("JIRA_JQL", "assignee = currentUser() AND (resolution = Unresolved OR updated >= -14d) ORDER BY updated DESC"));
         List<ObjectNode> snapshots = new ArrayList<>();
-        for (JsonNode issue : issues) snapshots.add(summarize(issue));
-        service.store.transaction(() -> {
+        for (JsonNode issue : issues) {
+            ObjectNode row = summarize(issue);
+            ObjectNode existing = service.store.get("task", "jira:" + Json.text(row, "id"));
+            if (Json.text(row, "status").equals("done") && (existing == null || Json.text(existing, "completedAt").isBlank()) && !Json.text(row, "updatedAt").isBlank() && !parseJiraDate(Json.text(row, "updatedAt")).isBefore(service.time.today().minusDays(1))) {
+                Instant latest = null;
+                for (JsonNode change : changelog(Json.text(row, "id"))) for (JsonNode item : change.path("items")) {
+                    if ((Json.text(item, "field").equals("status") || Json.text(item, "fieldId").equals("status")) && Json.text(item, "to").equals(Json.text(row, "jiraStatusId"))) {
+                        Instant at = instant(Json.required(change, "created")); if (latest == null || at.isAfter(latest)) latest = at;
+                    }
+                }
+                if (latest != null) row.put("jiraChangedAt", latest.toString());
+            }
+            snapshots.add(row);
+        }
+        synchronized (service) { service.store.transaction(() -> {
             for (ObjectNode row : snapshots) {
                 service.store.put("issue", row);
                 String key = Json.text(row, "id");
-                ObjectNode existing = service.store.get("task", "jira:" + key);
-                if (existing == null && service.store.list("task").stream().noneMatch(n -> key.equals(Json.text(n, "jiraKey")))) {
-                    service.store.put("task", Json.obj("id", "jira:" + key, "title", Json.text(row, "title"), "jiraKey", key,
-                            "product", Json.text(row, "product"), "status", Json.text(row, "status"), "due", Json.text(row, "due"), "important", false, "urgent", false));
-                } else if (existing != null) {
-                    for (String field : List.of("title", "status", "due", "product")) existing.set(field, row.get(field));
-                    service.store.put("task", existing);
-                }
+                ObjectNode existing = service.store.list("task").stream().filter(n -> key.equals(Json.text(n, "jiraKey"))).findFirst().orElse(null);
+                if (existing == null) existing = Json.obj("id", "jira:" + key, "jiraKey", key, "important", false, "urgent", false, "hidden", false);
+                updateTask(service, existing, row);
             }
             service.store.put("sync", Json.obj("id", "jira", "at", service.time.instant().toString(), "count", snapshots.size(), "ok", true));
-        });
+        }); }
     }
     void syncTeam(WorkService service) throws Exception {
         LocalDate end = service.time.today(), start = service.time.monday(end);
         for (ObjectNode member : service.store.list("member")) {
-            String user = Json.required(member, "jiraUser");
+            String user = resolveUser(Json.required(member, "jiraUser"));
             String quoted = "\"" + user.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
             List<JsonNode> issues = search("(assignee = " + quoted + " OR worklogAuthor = " + quoted + ") AND (resolution = Unresolved OR updated >= -14d) ORDER BY updated DESC");
             List<ObjectNode> work = new ArrayList<>();
@@ -130,11 +214,10 @@ class JiraClient {
         }
         service.store.put("sync", Json.obj("id", "team", "at", service.time.instant().toString(), "ok", true));
     }
-    private ObjectNode summarize(JsonNode issue) {
+    ObjectNode summarize(JsonNode issue) {
         JsonNode f = issue.path("fields");
-        String category = f.path("status").path("statusCategory").path("key").asText();
-        String status = switch (category) { case "done" -> "done"; case "indeterminate" -> "doing"; default -> "open"; };
-        return Json.obj("id", Json.required(issue, "key"), "title", Json.text(f, "summary"), "status", status, "jiraStatus", Json.text(f.path("status"), "name"),
+        return Json.obj("id", Json.required(issue, "key"), "title", Json.text(f, "summary"), "status", statusCategory(f.path("status")), "jiraStatus", Json.text(f.path("status"), "name"), "jiraStatusId", Json.text(f.path("status"), "id"),
+                "issueUrl", issueUrl(Json.required(issue, "key")), "issueType", Json.text(f.path("issuetype"), "name"), "createdAt", Json.text(f, "created"),
                 "product", Json.text(f.path("project"), "name"), "due", Json.text(f, "duedate"), "updatedAt", Json.text(f, "updated"),
                 "assignee", Json.text(f.path("assignee"), "displayName"), "versions", f.path("fixVersions"));
     }

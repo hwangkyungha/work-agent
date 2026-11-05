@@ -73,6 +73,9 @@ final class TranscriptImporter {
                 }
                 if (row.hasNonNull("cwd")) cwd = Json.text(row, "cwd");
                 if (row.hasNonNull("sessionId")) session = Json.text(row, "sessionId");
+                if (Json.text(row, "type").equals("custom-title") && !Json.text(row, "customTitle").isBlank()) {
+                    service.store.put("session", Json.obj("id", source + ":" + session, "name", Json.text(row, "customTitle"))); continue;
+                }
                 if (cwd.replace('\\', '/').endsWith("/work-agent/work/agent")) continue;
                 String timestamp = Json.text(row, "timestamp");
                 if (timestamp.isBlank()) continue;
