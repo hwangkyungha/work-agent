@@ -6,11 +6,11 @@ if (-not [string]::IsNullOrWhiteSpace($taskUserJiraToken)) {
     $env:JIRA_API_TOKEN = $taskUserJiraToken
 }
 $taskJava = Get-Command java -ErrorAction Stop
-$taskJar = Join-Path $PSScriptRoot 'work-agent-0.3.1.jar'
+$taskJar = Join-Path $PSScriptRoot 'work-agent-0.3.2.jar'
 if (-not (Test-Path -LiteralPath $taskJar)) {
     & mvn -q package
     if ($LASTEXITCODE -ne 0) { throw '빌드에 실패했습니다.' }
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target/work-agent-0.3.1.jar') -Destination $taskJar
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target/work-agent-0.3.2.jar') -Destination $taskJar
 }
 if ($Background) {
     $taskPort = 8765

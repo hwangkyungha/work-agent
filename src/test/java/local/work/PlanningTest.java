@@ -16,20 +16,22 @@ class PlanningTest {
     WorkService at(String now) throws Exception {return new WorkService(store,new KoreaTime(Clock.fixed(Instant.parse(now),ZoneOffset.UTC)),new JiraClient(new Config(temporary.resolve("none"),Map.of())));}
     String add(String title){return Json.text(service.task(Json.obj("title",title)),"id");}
     List<String> ids(){return service.planned(service.time.today()).stream().map(t->Json.text(t,"id")).toList();}
-    @Test void nextWorkingDayCarriesOnlyUnfinishedVisibleTasksAndNewOngoingWork() throws Exception {
+    @Test void newDayStartsEmptyAndLeavesThePreviousPlanUnchanged() throws Exception {
         String carry=add("이어 할 일"),done=add("끝낸 일"),hidden=add("숨긴 일");
         service.plan(Json.obj("taskIds",List.of(carry,done,hidden),"sort","manual"));
         service.changeStatus(Json.obj("id",done,"status","done"));service.hideTask(Json.obj("id",hidden));
-        String ongoing=Json.text(service.task(Json.obj("title","계획 밖 진행 업무","status","in-progress")),"id");
-        service=at("2026-11-09T00:00:00Z");assertEquals(Set.of(carry,ongoing),new HashSet<>(ids()));
+        service.task(Json.obj("title","계획 밖 진행 업무","status","in-progress"));
+        service=at("2026-11-09T00:00:00Z");assertTrue(ids().isEmpty());
         assertEquals("manual",Json.text(service.currentPlan(service.time.today()),"sort"));
+        assertNull(store.get("plan","2026-11-09"));
         assertEquals(3,store.get("plan","2026-11-06").path("taskIds").size());
     }
-    @Test void removingAutomaticTaskPersistsAndNewUrgentWorkStillAppears() {
-        String first=Json.text(service.task(Json.obj("title","진행 중","status","in-progress")),"id");assertEquals(List.of(first),ids());
+    @Test void ongoingAndUrgentWorkAreAddedOnlyWhenSelected() {
+        String first=Json.text(service.task(Json.obj("title","진행 중","status","in-progress")),"id");assertTrue(ids().isEmpty());
+        service.planItem(Json.obj("id",first));assertEquals(List.of(first),ids());
         service.planItem(Json.obj("id",first,"included",false));assertTrue(ids().isEmpty());assertTrue(ids().isEmpty());
-        String second=Json.text(service.task(Json.obj("title","급한 요청","urgent",true)),"id");assertEquals(List.of(second),ids());
-        service.planItem(Json.obj("id",first));assertEquals(Set.of(first,second),new HashSet<>(ids()));
+        String second=Json.text(service.task(Json.obj("title","급한 요청","urgent",true)),"id");assertTrue(ids().isEmpty());
+        service.planItem(Json.obj("id",first));assertEquals(List.of(first),ids());assertFalse(ids().contains(second));
     }
     @Test void sortAndDragOrderAreSavedAndStaleEditsCannotOverwriteNewerPlan() {
         String normal=add("일반"),urgent=Json.text(service.task(Json.obj("title","긴급","urgent",true)),"id"),due=Json.text(service.task(Json.obj("title","마감","due","2026-11-10")),"id");

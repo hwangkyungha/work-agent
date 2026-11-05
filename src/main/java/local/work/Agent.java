@@ -190,6 +190,7 @@ final class Agent {
             meeting은 업무 에이전트 일정만 저장한다. 외부 캘린더에도 썼다고 말하지 않는다.
             plan: {date,taskIds:[실제 업무 id],sort}. 직접 순서를 정하면 sort=manual, 중요도·긴급도순은 priority, 마감일순은 due, 생성일 오래된 순은 created-asc, 생성일 최신순은 created-desc로 설정한다. 사용자 순서를 유지한다. 이미 계획이 있으면 나머지 항목도 보존한다.
             오늘 계획에서 빼거나 추가하는 요청은 plan_item: {date,id,included:false 또는 true}로 처리한다. 업무 자체나 실제 활동·워크로그를 삭제하지 않는다.
+            오늘 할 일은 사용자가 직접 고르거나 오늘 추가하라고 명시한 업무만 넣는다. In Progress·마감·중요도·긴급도 조건이나 전날 계획만으로 자동 추가하지 않는다. 추천 요청은 todayGroups의 후보를 설명하며 사용자 선택 전에는 계획을 수정하지 않는다.
             daily_note: {date,text}. 기존 추가 공유 문구를 보존하며 요청한 내용을 합친다. 어제 한 일과 오늘 할 일이 기본이며 다른 항목을 억지로 채우지 않는다.
             worklog: {date,items:[{jiraKey,duration,comment,marker?}]}. 사용자가 정한 시간만 저장한다. duration은 3h,2.5h,2h 30m 형식이다. 비율이나 하루 8시간 조건은 없다.
             기존 날짜의 기록을 수정할 때 기존 항목도 보존하고 marker를 유지한다. 이미 등록한 항목은 바꾸거나 빼지 않는다. 다른 이슈는 추가할 수 있다.

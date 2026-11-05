@@ -74,8 +74,9 @@ class TaskAndEvidenceTest {
     }
     @Test void allTodayCandidatesAreAccessibleAndDailyBriefingOmitsMeetingsAndProjectTotals() {
         for(int i=0;i<9;i++)service.task(Json.obj("title","업무 "+i));
-        assertEquals(9,service.todayGroups(service.time.today()).stream().mapToInt(g->g.path("tasks").size()).sum());
+        assertEquals(0,service.todayGroups(service.time.today()).stream().mapToInt(g->g.path("tasks").size()).sum());
         service.plan(Json.obj("taskIds",service.tasks().stream().map(n->Json.text(n,"id")).toList()));
+        assertEquals(9,service.planned(service.time.today()).size());
         String report=new Reports(service).briefing(service.time.today());assertTrue(report.contains("업무 8"));assertFalse(report.contains("오늘 회의"));assertFalse(report.contains("프로젝트 현황"));assertTrue(report.contains("데일리 브리핑"));
     }
     @Test void evidenceGroupsTwoToolsByIssueAndCountsMessagesExactlyOnce() {

@@ -34,9 +34,8 @@ final class Reports {
         appendTasks(text, risks, "현재 기록에서 임박한 마감이 없습니다.");
         text.append("\n오늘 계획");
         List<ObjectNode> plan = service.planned(date);
-        boolean saved = service.store.get("plan", date.toString()) != null;
-        text.append(saved ? "\n" : " 제안 (아직 확정하지 않았습니다)\n");
-        appendTasks(text, saved ? plan : service.tasks().stream().filter(n -> !"done".equals(Json.text(n, "status"))).toList(), "등록된 할 일이 없습니다.");
+        text.append('\n');
+        appendTasks(text, plan, "오늘 할 일을 직접 선택해 주세요.");
         for (ObjectNode sync : service.store.list("sync")) text.append("\n").append(Json.text(sync, "id")).append(" 마지막 확인: ").append(KoreaTime.parse(Json.text(sync, "at")).atZone(KoreaTime.ZONE).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))).append(sync.path("ok").asBoolean() ? "" : " (연결 오류)");
         return text.toString();
     }
