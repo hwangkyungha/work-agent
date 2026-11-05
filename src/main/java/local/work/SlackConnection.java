@@ -13,6 +13,7 @@ final class SlackConnection implements AutoCloseable {
     private final Config config;
     private final Store store;
     private final Agent agent;
+    private final SlackTokens tokens;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
     private final ScheduledExecutorService maintenance = Executors.newSingleThreadScheduledExecutor();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -21,13 +22,23 @@ final class SlackConnection implements AutoCloseable {
     private volatile boolean connected;
     private volatile boolean connecting;
     private volatile String lastError = "";
-    SlackConnection(Config config, Store store, Agent agent) { this.config = config; this.store = store; this.agent = agent; }
+    SlackConnection(Config config, Store store, Agent agent) {
+        this.config = config; this.store = store; this.agent = agent;
+        tokens = new SlackTokens(config, store, body -> {
+            String form = body.properties().stream().map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "=" + URLEncoder.encode(e.getValue().asText(), StandardCharsets.UTF_8)).collect(java.util.stream.Collectors.joining("&"));
+            HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create("https://slack.com/api/oauth.v2.access")).timeout(Duration.ofSeconds(30)).header("Content-Type", "application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString(form)).build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            JsonNode result = Json.read(response.body());
+            if (response.statusCode() != 200 || !result.path("ok").asBoolean()) throw new IllegalStateException("Slack 토큰 갱신에 실패했습니다.");
+            return result;
+        });
+    }
     boolean configured() { return config.has("SLACK_APP_TOKEN") && config.has("SLACK_BOT_TOKEN") && config.has("SLACK_USER_ID"); }
     boolean connected() { return connected; }
     String lastError() { return lastError; }
     void start() {
         if (!configured()) return;
         maintenance.scheduleWithFixedDelay(() -> {
+            try { tokens.access(Instant.now()); } catch (Exception e) { lastError = "Slack 토큰 갱신 설정과 연결을 확인하세요."; return; }
             if (!connected && !connecting && !closed) {
                 try { connect(); } catch (Exception e) { connected = false; lastError = "Slack 연결 실패. 토큰과 Socket Mode 설정을 확인하세요."; }
             }
@@ -37,7 +48,7 @@ final class SlackConnection implements AutoCloseable {
     private void connect() throws Exception {
         connecting = true;
         try {
-            JsonNode response = api("apps.connections.open", config.get("SLACK_APP_TOKEN", ""), Json.object());
+            JsonNode response = api("apps.connections.open", tokens.access(Instant.now()), Json.object());
             socket = http.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(20)).buildAsync(URI.create(Json.required(response, "url")), new WebSocket.Listener() {
                 private final StringBuilder buffer = new StringBuilder();
                 @Override public void onOpen(WebSocket ws) { connected = true; lastError = ""; ws.request(1); }

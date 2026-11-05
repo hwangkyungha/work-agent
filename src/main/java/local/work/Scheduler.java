@@ -1,23 +1,31 @@
 package local.work;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.*;
 import java.util.concurrent.*;
 
 final class Scheduler implements AutoCloseable {
+    @FunctionalInterface interface SessionStart { void run() throws Exception; }
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private final WorkService service;
     private final Reports reports;
     private final SlackConnection slack;
     private final Config config;
     private final Agent.Synchronizer synchronizer;
+    private final SessionStart sessionStart;
     Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer) {
+        this(service, reports, slack, config, synchronizer, () -> new CliModel(config).startClaudeSession());
+    }
+    Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer, SessionStart sessionStart) {
         this.service = service; this.reports = reports; this.slack = slack; this.config = config; this.synchronizer = synchronizer;
+        this.sessionStart = sessionStart;
     }
     void start() {
         executor.scheduleWithFixedDelay(() -> { try { tick(); } catch (Exception e) { System.err.println("예약 작업을 완료하지 못했습니다: " + SlackConnection.friendly(e)); } }, 5, 30, TimeUnit.SECONDS);
     }
     void tick() throws Exception {
         ZonedDateTime now = service.time.now();
+        startSessionIfDue(now);
         boolean weekday = now.getDayOfWeek().getValue() <= 5;
         if (config.get("AUTO_SYNC", "true").equals("true")) {
             var last = service.store.get("sync", "automatic");
@@ -37,6 +45,22 @@ final class Scheduler implements AutoCloseable {
                 service.store.put("scheduled", Json.obj("id", key, "at", now.toInstant().toString()));
             }
         }
+    }
+    private void startSessionIfDue(ZonedDateTime now) throws Exception {
+        String hour = config.get("CLAUDE_SESSION_TIME", "");
+        if (hour.isBlank()) return;
+        LocalTime target = LocalTime.parse(hour);
+        String id = "claude-session:" + now.toLocalDate();
+        if (now.toLocalTime().isBefore(target) || Duration.between(target, now.toLocalTime()).toMinutes() >= 60 || service.store.get("scheduled", id) != null) return;
+        ObjectNode row = Json.obj("id", id, "at", now.toInstant().toString(), "status", "running");
+        service.store.put("scheduled", row);
+        String message;
+        try { sessionStart.run(); row.put("status", "complete"); message = "Claude 예약 요청을 완료했습니다. (한국 시간 " + hour + ")"; }
+        catch (Exception e) { row.put("status", "failed"); message = "Claude 예약 요청에 실패했습니다. 로그인 상태와 사용 한도를 확인하세요."; }
+        service.store.put("scheduled", row);
+        try { slack.notifyOwner(message); row.put("notified", true); }
+        catch (Exception e) { row.put("notified", false); }
+        service.store.put("scheduled", row);
     }
     private void sendOnce(String key, String hour, ZonedDateTime now, java.util.function.Supplier<String> text) throws Exception {
         if (hour.isBlank() || now.toLocalTime().isBefore(LocalTime.parse(hour)) || service.store.get("scheduled", key) != null) return;
