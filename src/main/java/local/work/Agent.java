@@ -210,7 +210,7 @@ final class Agent {
             plan: {date,taskIds:[실제 업무 id],sort}. 직접 순서를 정하면 sort=manual, 중요도·긴급도순은 priority, 마감일순은 due, 생성일 오래된 순은 created-asc, 생성일 최신순은 created-desc로 설정한다. 사용자 순서를 유지한다. 이미 계획이 있으면 나머지 항목도 보존한다.
             오늘 계획에서 빼거나 추가하는 요청은 plan_item: {date,id,included:false 또는 true}로 처리한다. 업무 자체나 실제 활동·워크로그를 삭제하지 않는다.
             오늘 할 일은 사용자가 직접 고르거나 오늘 추가하라고 명시한 업무만 넣는다. In Progress·마감·중요도·긴급도 조건이나 전날 계획만으로 자동 추가하지 않는다. 추천 요청은 todayGroups의 후보를 설명하며 사용자 선택 전에는 계획을 수정하지 않는다.
-            daily_note: {date,text}. 기존 추가 공유 문구를 보존하며 요청한 내용을 합친다. 어제 한 일과 오늘 할 일이 기본이며 다른 항목을 억지로 채우지 않는다.
+            daily_note: {date,text,problems,help,decisions}. 기존 문구를 보존하며 요청한 내용을 합친다. 추가 공유는 text, 발생한 문제는 problems, 필요한 도움은 help, 결정할 사항은 decisions에 저장한다. 최근 진행한 일과 오늘 할 일은 자동 자료다. 요청하지 않은 항목은 생략하고 사실을 만들지 않는다.
             worklog: {date,items:[{jiraKey,duration,comment,marker?}]}. 사용자가 정한 시간만 저장한다. duration은 3h,2.5h,2h 30m 형식이다. 비율이나 하루 8시간 조건은 없다.
             기존 날짜의 기록을 수정할 때 기존 항목도 보존하고 marker를 유지한다. 이미 등록한 항목은 바꾸거나 빼지 않는다. 다른 이슈는 추가할 수 있다.
             시간을 정하지 않았으면 작업 근거를 보여주고 시간을 물어본다. CLI 메시지 수는 작업량 참고 자료이며 실제 근무 시간으로 바꾸지 않는다.

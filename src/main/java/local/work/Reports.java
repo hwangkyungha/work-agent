@@ -10,34 +10,38 @@ final class Reports {
     private final WorkService service;
     Reports(WorkService service) { this.service = service; }
     String daily(LocalDate date) {
-        StringBuilder text = new StringBuilder(date + " 데일리\n\n어제 한 일\n");
-        appendActivities(text, service.activities(date.minusDays(1), date.minusDays(1)));
+        return dailyText(date, "데일리");
+    }
+    private String dailyText(LocalDate date, String title) {
+        LocalDate previous = previousWorkDate(date);
+        StringBuilder text = new StringBuilder(date + " " + title + " (한국 시간)\n\n진행한 일 (" + previous + " " + previous.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.KOREAN) + ")\n");
+        appendPreviousWork(text, previous);
         text.append("\n오늘 할 일\n");
-        appendTasks(text, service.planned(date), "오늘 계획을 먼저 정해 주세요.");
+        List<ObjectNode> plan = service.planned(date);
+        if (plan.isEmpty()) text.append("- 오늘 할 일을 직접 선택해 주세요.\n");
+        for (ObjectNode task : plan) text.append("- ").append(Json.text(task, "title")).append(Json.text(task, "jiraKey").isBlank() ? "" : " (" + Json.text(task, "jiraKey") + ")").append('\n');
         ObjectNode note = service.store.get("daily", date.toString());
-        if (note != null && !Json.text(note, "text").isBlank()) text.append("\n추가 공유\n").append(Json.text(note, "text")).append('\n');
+        if (note != null) {
+            for (var section : List.of(Map.entry("problems", "발생한 문제"), Map.entry("help", "필요한 도움"), Map.entry("decisions", "결정이 필요한 사항"), Map.entry("text", "추가 공유"))) {
+                String content = Json.text(note, section.getKey());
+                if (!content.isBlank()) text.append('\n').append(section.getValue()).append('\n').append(content).append('\n');
+            }
+        }
         return text.toString();
     }
     String briefing(LocalDate date) {
-        StringBuilder text = new StringBuilder(date + " 데일리 브리핑 (한국 시간)\n");
-        List<ObjectNode> jobs = service.store.list("job").stream().filter(j -> !j.path("reviewed").asBoolean()).toList();
-        text.append("\n검토할 작업 결과\n");
-        if (jobs.isEmpty()) text.append("- 새로 접수된 작업 결과가 없습니다.\n");
-        for (ObjectNode job : jobs) {
-            text.append("- ").append(Json.text(job, "title")).append(": ").append(Json.text(job, "result")).append('\n');
-            if (!Json.text(job, "verification").isBlank()) text.append("  검증 결과: ").append(Json.text(job, "verification")).append('\n');
-            if (!Json.text(job, "artifact").isBlank()) text.append("  결과물: ").append(Json.text(job, "artifact")).append('\n');
-        }
-        text.append("\n진행 상황과 마감\n");
-        List<ObjectNode> risks = service.tasks().stream().filter(n -> !"done".equals(Json.text(n, "status")))
-                .filter(n -> !Json.text(n, "due").isBlank() && LocalDate.parse(Json.text(n, "due")).isBefore(date.plusDays(2))).toList();
-        appendTasks(text, risks, "현재 기록에서 임박한 마감이 없습니다.");
-        text.append("\n오늘 계획");
-        List<ObjectNode> plan = service.planned(date);
-        text.append('\n');
-        appendTasks(text, plan, "오늘 할 일을 직접 선택해 주세요.");
-        for (ObjectNode sync : service.store.list("sync")) text.append("\n").append(Json.text(sync, "id")).append(" 마지막 확인: ").append(KoreaTime.parse(Json.text(sync, "at")).atZone(KoreaTime.ZONE).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))).append(sync.path("ok").asBoolean() ? "" : " (연결 오류)");
-        return text.toString();
+        return dailyText(date, "데일리 브리핑");
+    }
+    LocalDate previousWorkDate(LocalDate date) {
+        LocalDate end = date.minusDays(1);
+        while (end.getDayOfWeek().getValue() > 5) end = end.minusDays(1);
+        LocalDate last = end;
+        List<LocalDate> days = new ArrayList<>();
+        Set<String> automated = new ActivitySummary(service.store).automatedSessions();
+        service.store.list("activity").stream().filter(a -> !automated.contains(ActivitySummary.session(a))).forEach(a -> days.add(LocalDate.parse(Json.required(a, "date"))));
+        service.store.list("plan").stream().filter(p -> !p.path("taskIds").isEmpty()).forEach(p -> days.add(LocalDate.parse(Json.required(p, "date"))));
+        return days.stream()
+                .filter(day -> !day.isAfter(last) && day.getDayOfWeek().getValue() <= 5).max(Comparator.naturalOrder()).orElse(last);
     }
     String worklog(LocalDate from, LocalDate to) {
         StringBuilder text = new StringBuilder(from + " ~ " + to + " 워크로그\n작업 시간은 3h, 2.5h, 2h 30m 형식으로 입력합니다.\n");
@@ -75,18 +79,32 @@ final class Reports {
     }
     static String hours(long seconds) { return java.math.BigDecimal.valueOf(seconds).divide(java.math.BigDecimal.valueOf(3600), 2, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(); }
     static String stateLabel(String state) { return switch (state) { case "posted" -> "등록 완료"; case "posting", "unknown" -> "결과 확인 필요"; case "failed" -> "등록 실패"; default -> "초안"; }; }
-    private static void appendTasks(StringBuilder text, List<ObjectNode> tasks, String empty) {
-        if (tasks.isEmpty()) text.append("- ").append(empty).append('\n');
-        for (ObjectNode task : tasks) text.append("- ").append(Json.text(task, "title")).append(Json.text(task, "jiraKey").isBlank() ? "" : " (" + Json.text(task, "jiraKey") + ")").append(Json.text(task, "due").isBlank() ? "" : " / 마감 " + Json.text(task, "due")).append('\n');
-    }
-    private static void appendActivities(StringBuilder text, List<ObjectNode> activities) {
-        if (activities.isEmpty()) text.append("- 등록된 활동이 없습니다.\n");
+    private void appendPreviousWork(StringBuilder text, LocalDate date) {
         LinkedHashSet<String> lines = new LinkedHashSet<>();
-        for (ObjectNode activity : activities) {
-            String source = Json.text(activity, "source");
-            String prefix = switch (source) { case "claude" -> "Claude 기록: "; case "codex" -> "Codex 기록: "; default -> ""; };
-            lines.add("- " + prefix + Json.text(activity, "title") + (Json.text(activity, "jiraKey").isBlank() ? "" : " (" + Json.text(activity, "jiraKey") + ")"));
+        Set<String> plannedKeys = new HashSet<>();
+        for (ObjectNode task : service.planned(date)) {
+            String key = Json.text(task, "jiraKey");
+            plannedKeys.add(key);
+            lines.add(workTitle(key, Json.text(task, "title")));
         }
-        lines.forEach(line -> text.append(line).append('\n'));
+        for (ObjectNode group : new ActivitySummary(service.store).briefingGroups(date, date)) {
+            String key = Json.text(group, "jiraKey");
+            ObjectNode issue = service.store.get("issue", key);
+            if (key.isBlank() || issue == null || plannedKeys.contains(key) || group.path("sessionCount").asInt() == 0 || group.path("assistantMessages").asInt() == 0) continue;
+            String description = Json.text(issue, "title");
+            if (description.isBlank() || description.equals(key)) {
+                description = "";
+                for (JsonNode session : group.path("sessions")) {
+                    ObjectNode saved = service.store.get("session", Json.text(session, "id"));
+                    if (saved != null && !Json.text(saved, "name").isBlank()) { description = Json.text(saved, "name"); break; }
+                }
+            }
+            lines.add(workTitle(key, description));
+        }
+        if (lines.isEmpty()) text.append("- 계획한 업무나 Jira 이슈와 연결된 작업 세션이 없습니다.\n");
+        lines.forEach(line -> text.append("- ").append(line).append('\n'));
+    }
+    private static String workTitle(String key, String title) {
+        return key.isBlank() || title.startsWith(key) ? title : key + (title.isBlank() ? "" : " " + title);
     }
 }

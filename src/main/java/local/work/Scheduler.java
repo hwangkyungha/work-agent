@@ -6,6 +6,7 @@ import java.util.concurrent.*;
 
 final class Scheduler implements AutoCloseable {
     @FunctionalInterface interface SessionStart { void run() throws Exception; }
+    @FunctionalInterface interface Notifier { void send(String text) throws Exception; }
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private final WorkService service;
     private final Reports reports;
@@ -13,12 +14,17 @@ final class Scheduler implements AutoCloseable {
     private final Config config;
     private final Agent.Synchronizer synchronizer;
     private final SessionStart sessionStart;
+    private final Notifier notifier;
     Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer) {
         this(service, reports, slack, config, synchronizer, () -> new CliModel(config).startClaudeSession());
     }
     Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer, SessionStart sessionStart) {
+        this(service, reports, slack, config, synchronizer, sessionStart, slack::notifyOwner);
+    }
+    Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer, SessionStart sessionStart, Notifier notifier) {
         this.service = service; this.reports = reports; this.slack = slack; this.config = config; this.synchronizer = synchronizer;
         this.sessionStart = sessionStart;
+        this.notifier = notifier;
     }
     void start() {
         executor.scheduleWithFixedDelay(() -> { try { tick(); } catch (Exception e) { System.err.println("예약 작업을 완료하지 못했습니다: " + SlackConnection.friendly(e)); } }, 5, 30, TimeUnit.SECONDS);
@@ -35,7 +41,7 @@ final class Scheduler implements AutoCloseable {
             }
         }
         if (!weekday) return;
-        if (slack.configured()) sendOnce("morning:" + now.toLocalDate(), config.get("BRIEFING_TIME", "09:00"), now, () -> reports.briefing(now.toLocalDate()));
+        if (slack.configured() && !LeaveCalendar.onLeave(service, config, now.toLocalDate())) sendOnce("morning:" + now.toLocalDate(), config.get("BRIEFING_TIME", "09:00"), now, () -> reports.briefing(now.toLocalDate()));
         if (now.getDayOfWeek() == DayOfWeek.FRIDAY) {
             if (slack.configured()) sendOnce("friday:" + now.toLocalDate(), config.get("FRIDAY_REVIEW_TIME", "16:30"), now,
                     () -> reports.worklog(service.time.monday(now.toLocalDate()), now.toLocalDate()));
@@ -66,7 +72,7 @@ final class Scheduler implements AutoCloseable {
         if (hour.isBlank() || now.toLocalTime().isBefore(LocalTime.parse(hour)) || service.store.get("scheduled", key) != null) return;
         // Do not deliver an old morning notification when the app is first started late in the day.
         if (Duration.between(LocalTime.parse(hour), now.toLocalTime()).toMinutes() >= 60) return;
-        slack.notifyOwner(text.get());
+        notifier.send(text.get());
         service.store.put("scheduled", Json.obj("id", key, "at", now.toInstant().toString()));
     }
     @Override public void close() { executor.shutdownNow(); }

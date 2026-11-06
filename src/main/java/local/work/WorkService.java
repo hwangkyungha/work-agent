@@ -213,7 +213,9 @@ final class WorkService {
     }
     ObjectNode dailyNote(JsonNode input) {
         String date = day(input);
-        ObjectNode row = Json.obj("id", date, "date", date, "text", Json.text(input, "text"));
+        ObjectNode old = store.get("daily", date);
+        ObjectNode row = old == null ? Json.obj("id", date, "date", date) : old.deepCopy();
+        for (String field : List.of("text", "problems", "help", "decisions")) if (input.has(field)) row.put(field, Json.text(input, field));
         stamp(row);
         return store.put("daily", row);
     }
@@ -301,7 +303,7 @@ final class WorkService {
                 "activities", activities(monday.minusDays(7), monday.plusDays(6)), "meetings", meetings(date),
                 "activityGroups", new ActivitySummary(store).group(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> Json.text(n, "date").equals(date.toString()) && !n.hasNonNull("acceptedTaskId")).toList(),
                 "worklogs", store.list("worklog").stream().filter(n -> Json.text(n, "date").compareTo(monday.toString()) >= 0 && Json.text(n, "date").compareTo(monday.plusDays(6).toString()) <= 0).toList(),
-                "dailyNote", daily == null ? "" : Json.text(daily, "text"), "jobs", store.list("job"),
+                "dailyNote", daily == null ? "" : Json.text(daily, "text"), "dailyDetails", daily == null ? Json.object() : daily, "jobs", store.list("job"),
                 "jiraIssues", store.list("issue"), "sync", store.list("sync"));
     }
     synchronized ObjectNode saveWorklog(JsonNode input) {

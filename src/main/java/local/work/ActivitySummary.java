@@ -9,8 +9,24 @@ final class ActivitySummary {
     private final Store store;
     ActivitySummary(Store store) { this.store = store; }
     List<ObjectNode> group(LocalDate from, LocalDate to) {
-        List<ObjectNode> activities = store.between("activity", from.toString(), to.toString());
-        List<ObjectNode> evidence = store.between("evidence", from.toString(), to.toString());
+        return group(from, to, false);
+    }
+    List<ObjectNode> briefingGroups(LocalDate from, LocalDate to) {
+        return group(from, to, true);
+    }
+    Set<String> automatedSessions() {
+        Set<String> ids = new HashSet<>();
+        for (ObjectNode row : store.list("evidence")) {
+            String path = Json.text(row, "cwd").replace('\\', '/');
+            if (path.matches("(?i).*/(?:\\.ct-verify|llm_judge)(?:/.*)?") || Json.text(row, "text").startsWith("당신은 한 실행 결과에서 자신에게 배정된 정성 기준만 판정하는 LLM Judge")) ids.add(session(row));
+        }
+        return ids;
+    }
+    static String session(JsonNode row) { return Json.text(row, "source") + ":" + Json.text(row, "session"); }
+    private List<ObjectNode> group(LocalDate from, LocalDate to, boolean briefing) {
+        Set<String> excluded = briefing ? automatedSessions() : Set.of();
+        List<ObjectNode> activities = store.between("activity", from.toString(), to.toString()).stream().filter(row -> !excluded.contains(session(row))).toList();
+        List<ObjectNode> evidence = store.between("evidence", from.toString(), to.toString()).stream().filter(row -> !excluded.contains(session(row))).toList();
         Map<String, String> names = new HashMap<>(), issues = new HashMap<>(), assigned = new HashMap<>();
         for (ObjectNode session : store.list("session")) names.put(Json.text(session, "id"), Json.text(session, "name"));
         for (ObjectNode row : evidence) if (Json.text(row, "role").equals("user")) names.putIfAbsent(session(row), shortText(Json.text(row, "text")));
@@ -56,7 +72,6 @@ final class ActivitySummary {
                 "title", key.isBlank() ? names.getOrDefault(session(row), Json.text(row, "title").isBlank() ? "이름 없는 세션" : shortText(Json.text(row, "title"))) : issues.getOrDefault(key, key),
                 "summary", "", "messageCount", 0, "userMessages", 0, "assistantMessages", 0, "activityCount", 0);
     }
-    private static String session(JsonNode row) { return Json.text(row, "source") + ":" + Json.text(row, "session"); }
     private static String shortText(String text) {
         String line = Arrays.stream(text.split("\\R")).map(s -> s.replaceAll("^[#*\\s-]+", "").trim()).filter(s -> !s.isBlank()).findFirst().orElse("");
         return line.length() > 120 ? line.substring(0, 120) + "…" : line;
