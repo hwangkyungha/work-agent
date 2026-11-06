@@ -303,8 +303,44 @@ final class WorkService {
                 "activities", activities(monday.minusDays(7), monday.plusDays(6)), "meetings", meetings(date),
                 "activityGroups", new ActivitySummary(store).group(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> Json.text(n, "date").equals(date.toString()) && !n.hasNonNull("acceptedTaskId")).toList(),
                 "worklogs", store.list("worklog").stream().filter(n -> Json.text(n, "date").compareTo(monday.toString()) >= 0 && Json.text(n, "date").compareTo(monday.plusDays(6).toString()) <= 0).toList(),
+                "registeredWorklogs", registeredWorklogs(monday, monday.plusDays(6)), "worklogFavorites", store.list("worklogFavorite"), "recentWorklogIssues", recentWorklogIssues(),
                 "dailyNote", daily == null ? "" : Json.text(daily, "text"), "dailyDetails", daily == null ? Json.object() : daily, "jobs", store.list("job"),
                 "jiraIssues", store.list("issue"), "sync", store.list("sync"));
+    }
+    synchronized ObjectNode worklogFavorite(JsonNode input) throws Exception {
+        String key = issue(Json.required(input, "jiraKey"));
+        if (!input.path("favorite").asBoolean(true)) { store.delete("worklogFavorite", key); return Json.obj("jiraKey", key, "favorite", false); }
+        ObjectNode issue = store.get("issue", key);
+        if (issue == null) { issue = jira.fetchIssue(key); store.put("issue", issue); }
+        return store.put("worklogFavorite", Json.obj("id", key, "jiraKey", key, "title", Json.text(issue, "title"), "issueUrl", jira.issueUrl(key)));
+    }
+    List<ObjectNode> registeredWorklogs(LocalDate from, LocalDate to) {
+        Map<String, ObjectNode> rows = new LinkedHashMap<>();
+        List<ObjectNode> days = store.between("worklog", from.toString(), to.toString());
+        Set<String> localIds = new HashSet<>();
+        for (ObjectNode day : days) for (JsonNode item : day.path("items")) if (Json.text(item, "state").equals("posted")) {
+            String jiraId = Json.text(item, "jiraId"), key = Json.text(item, "jiraKey");
+            localIds.add(jiraId);
+            ObjectNode sync = store.get("sync", "worklogs:" + time.monday(LocalDate.parse(Json.text(day, "date"))));
+            String registeredAt = item.path("registeredAt").asText(Json.text(day, "updatedAt"));
+            if (sync != null && !Json.text(sync, "lastSuccessAt").isBlank() && (item.path("snapshotSeen").asBoolean() || (!registeredAt.isBlank() && !KoreaTime.parse(registeredAt).isAfter(KoreaTime.parse(Json.text(sync, "lastSuccessAt")))))) continue;
+            ObjectNode issue = store.get("issue", key);
+            rows.put(jiraId, Json.obj("jiraId", jiraId, "jiraKey", key, "date", Json.text(day, "date"), "seconds", item.path("seconds").asLong(), "comment", Json.text(item, "comment"),
+                    "title", issue == null ? "" : Json.text(issue, "title"), "issueUrl", jira.issueUrl(key), "source", "work-agent", "confirmed", false));
+        }
+        for (ObjectNode remote : store.between("jiraWorklog", from.toString(), to.toString())) {
+            String id = Json.text(remote, "jiraId");
+            ObjectNode row = remote.deepCopy(); row.put("source", localIds.contains(id) ? "work-agent" : "jira").put("confirmed", true); rows.put(id, row);
+        }
+        return rows.values().stream().sorted(Comparator.comparing((ObjectNode row) -> Json.text(row, "date")).thenComparing(row -> Json.text(row, "jiraKey"))).toList();
+    }
+    List<ObjectNode> recentWorklogIssues() {
+        Map<String, ObjectNode> issues = new HashMap<>();
+        for (ObjectNode row : registeredWorklogs(time.today().minusDays(90), time.today())) {
+            String key = Json.text(row, "jiraKey"); ObjectNode old = issues.get(key);
+            if (old == null || Json.text(row, "date").compareTo(Json.text(old, "lastDate")) > 0) issues.put(key, Json.obj("jiraKey", key, "title", Json.text(row, "title"), "issueUrl", Json.text(row, "issueUrl"), "lastDate", Json.text(row, "date")));
+        }
+        return issues.values().stream().sorted(Comparator.comparing((ObjectNode row) -> Json.text(row, "lastDate")).reversed().thenComparing(row -> Json.text(row, "jiraKey"))).limit(20).toList();
     }
     synchronized ObjectNode saveWorklog(JsonNode input) {
         String date = day(input);
@@ -318,20 +354,21 @@ final class WorkService {
         long total = 0;
         for (JsonNode entry : entries) {
             String key = issue(Json.required(entry, "jiraKey"));
-            if (!keys.add(key)) throw new IllegalArgumentException("같은 이슈는 한 번만 입력하세요.");
-            int seconds = WorkDuration.seconds(Json.required(entry, "duration"));
+            String duration = Json.text(entry, "duration");
+            int seconds = duration.isBlank() ? 0 : WorkDuration.seconds(duration);
             String marker = Json.text(entry, "marker");
             JsonNode prior = previous.stream().filter(n -> (!marker.isBlank() && marker.equals(Json.text(n, "marker"))) || (marker.isBlank() && key.equals(Json.text(n, "jiraKey")))).findFirst().orElse(null);
+            if ((prior == null || !Set.of("posted", "posting", "unknown").contains(Json.text(prior, "state"))) && !keys.add(key)) throw new IllegalArgumentException("작성 중인 같은 이슈는 한 번만 입력하세요.");
             String comment = entry.path("comment").asText(prior == null ? "업무 기록" : Json.text(prior, "comment"));
             ObjectNode row;
             if (prior != null && Set.of("posted", "posting", "unknown").contains(Json.text(prior, "state"))) {
                 if (!key.equals(Json.text(prior, "jiraKey")) || seconds != prior.path("seconds").asInt() || !comment.equals(Json.text(prior, "comment"))) throw new IllegalArgumentException("이미 Jira에 등록했거나 결과 확인 중인 기록은 변경할 수 없습니다.");
                 row = ((ObjectNode) prior).deepCopy();
             } else {
-                row = Json.obj("jiraKey", key, "seconds", seconds, "comment", comment, "marker", prior == null ? "work-agent:" + UUID.randomUUID() : Json.text(prior, "marker"), "state", "draft", "jiraId", "");
+                row = Json.obj("jiraKey", key, "seconds", seconds, "comment", comment, "marker", prior == null ? (marker.isBlank() ? "work-agent:" + UUID.randomUUID() : marker) : Json.text(prior, "marker"), "state", "draft", "jiraId", "");
             }
             row.remove("percent");
-            retained.add(Json.text(row, "marker"));
+            if (!retained.add(Json.text(row, "marker"))) throw new IllegalArgumentException("같은 워크로그 기록을 두 번 저장할 수 없습니다.");
             total += seconds; items.add(row);
         }
         for (JsonNode prior : previous) if (Set.of("posted", "posting", "unknown").contains(Json.text(prior, "state")) && !retained.contains(Json.text(prior, "marker"))) throw new IllegalArgumentException("이미 등록했거나 결과 확인 중인 기록을 삭제할 수 없습니다.");
@@ -344,6 +381,7 @@ final class WorkService {
         if (!jira.configured()) throw new IllegalArgumentException("Jira 연결 정보를 config.properties에 설정하세요.");
         ObjectNode row = store.get("worklog", date.toString());
         if (row == null) throw new IllegalArgumentException("먼저 이 날짜의 작업 시간을 저장하세요.");
+        for (JsonNode item : row.path("items")) if (!Json.text(item, "state").equals("posted") && item.path("seconds").asInt() <= 0) throw new IllegalArgumentException(Json.text(item, "jiraKey") + "의 시간을 입력하세요. 시간 없는 목록은 초안으로만 저장할 수 있습니다.");
         for (JsonNode n : row.path("items")) {
             ObjectNode item = (ObjectNode) n;
             String state = Json.text(item, "state");
@@ -351,12 +389,12 @@ final class WorkService {
             if (Set.of("posting", "unknown").contains(state)) {
                 String found = jira.findMarker(Json.text(item, "jiraKey"), Json.text(item, "marker"));
                 if (found.isBlank()) throw new IllegalStateException("Jira 등록 결과가 불확실합니다. 중복 등록을 막기 위해 멈췄습니다. 해당 날짜의 Jira 워크로그를 확인하세요.");
-                item.put("jiraId", found).put("state", "posted"); store.put("worklog", row); continue;
+                item.put("jiraId", found).put("state", "posted").put("registeredAt", time.instant().toString()); store.put("worklog", row); continue;
             }
             item.put("state", "posting"); store.put("worklog", row);
             try {
                 String id = jira.addWorklog(date, item);
-                item.put("jiraId", id).put("state", "posted").remove("error");
+                item.put("jiraId", id).put("state", "posted").put("registeredAt", time.instant().toString()).remove("error");
                 store.put("worklog", row);
             } catch (JiraClient.Rejected e) {
                 item.put("state", "failed").put("error", e.getMessage()); store.put("worklog", row); throw e;

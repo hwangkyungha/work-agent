@@ -49,10 +49,12 @@ final class Reports {
         for (LocalDate day = from; !day.isAfter(to); day = day.plusDays(1)) {
             text.append("\n").append(day).append(' ').append(day.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.KOREAN)).append('\n');
             ObjectNode draft = service.store.get("worklog", day.toString());
-            if (draft != null) for (JsonNode item : draft.path("items")) text.append("- ").append(Json.text(item, "jiraKey")).append(" / ").append(hours(item.path("seconds").asLong())).append("h / ").append(stateLabel(Json.text(item, "state"))).append('\n');
+            if (draft != null) for (JsonNode item : draft.path("items")) if (!Json.text(item, "state").equals("posted")) text.append("- ").append(Json.text(item, "jiraKey")).append(" / ").append(item.path("seconds").asLong() == 0 ? "시간 미정" : hours(item.path("seconds").asLong()) + "h").append(" / ").append(stateLabel(Json.text(item, "state"))).append('\n');
+            List<ObjectNode> registered = service.registeredWorklogs(day, day);
+            for (ObjectNode item : registered) text.append("- ").append(Json.text(item, "jiraKey")).append(" / ").append(hours(item.path("seconds").asLong())).append("h / 등록 완료\n");
             for (ObjectNode group : groups) if (day.toString().equals(Json.text(group, "date"))) text.append("- 작업 근거: ").append(Json.text(group, "jiraKey")).append(' ').append(Json.text(group, "title")).append(" / 메시지 ").append(group.path("messageCount").asInt()).append("개 / 세션 ").append(group.path("sessionCount").asInt()).append("개\n");
             String dayText = day.toString();
-            if (draft == null && groups.stream().noneMatch(g -> Json.text(g, "date").equals(dayText))) text.append("- 수집된 활동이 없습니다. 다른 이슈도 직접 입력할 수 있습니다.\n");
+            if (draft == null && registered.isEmpty() && groups.stream().noneMatch(g -> Json.text(g, "date").equals(dayText))) text.append("- 수집된 활동이 없습니다. 다른 이슈도 직접 입력할 수 있습니다.\n");
         }
         text.append("\n예: ").append(from).append(" CT-123에 3h, CT-456에 2h 30m로 워크로그 초안 저장해 줘\n");
         return text.toString();

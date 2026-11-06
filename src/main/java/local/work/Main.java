@@ -47,6 +47,7 @@ public final class Main {
         Store store = new Store(config.data().resolve("work-agent.db"));
         WorkService service = new WorkService(store, time, new JiraClient(config));
         Reports reports = new Reports(service);
+        WorklogSync worklogSync = new WorklogSync(service);
         TranscriptImporter importer = new TranscriptImporter(service, config);
         CalendarSync calendar = new CalendarSync(config, service);
         Agent.Synchronizer sync = kind -> {
@@ -148,6 +149,8 @@ public final class Main {
                         case "/api/daily" -> service.dailyNote(body);
                         case "/api/worklogs" -> service.saveWorklog(body);
                         case "/api/worklogs/post" -> service.postWorklog(LocalDate.parse(Json.required(body, "date")));
+                        case "/api/worklogs/sync" -> worklogSync.sync(LocalDate.parse(Json.required(body, "date")));
+                        case "/api/worklogs/favorite" -> service.worklogFavorite(body);
                         case "/api/members" -> service.member(body);
                         case "/api/observations" -> service.observation(body);
                         case "/api/jobs" -> service.job(body);

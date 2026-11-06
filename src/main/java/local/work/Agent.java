@@ -213,7 +213,7 @@ final class Agent {
             daily_note: {date,text,problems,help,decisions}. 기존 문구를 보존하며 요청한 내용을 합친다. 추가 공유는 text, 발생한 문제는 problems, 필요한 도움은 help, 결정할 사항은 decisions에 저장한다. 최근 진행한 일과 오늘 할 일은 자동 자료다. 요청하지 않은 항목은 생략하고 사실을 만들지 않는다.
             worklog: {date,items:[{jiraKey,duration,comment,marker?}]}. 사용자가 정한 시간만 저장한다. duration은 3h,2.5h,2h 30m 형식이다. 비율이나 하루 8시간 조건은 없다.
             기존 날짜의 기록을 수정할 때 기존 항목도 보존하고 marker를 유지한다. 이미 등록한 항목은 바꾸거나 빼지 않는다. 다른 이슈는 추가할 수 있다.
-            시간을 정하지 않았으면 작업 근거를 보여주고 시간을 물어본다. CLI 메시지 수는 작업량 참고 자료이며 실제 근무 시간으로 바꾸지 않는다.
+            시간 없이 이슈 목록만 저장하라는 요청이면 duration=""으로 초안을 저장한다. 시간 배분 요청에 시간이 없으면 작업 근거를 보여주고 시간을 물어본다. CLI 메시지 수는 작업량 참고 자료이며 실제 근무 시간으로 바꾸지 않는다.
             post_worklog: {date}. 사용자가 Jira에 실제 등록하라고 분명히 요청한 경우에만 쓴다. 초안 조회·저장을 등록으로 해석하지 않는다.
             member: {name,jiraUser}. jiraUser는 Cloud의 accountId 또는 이메일, Data Center의 사용자명이다. 담당 역할 필드는 사용하지 않는다. 모르면 먼저 질문한다.
             observation: {memberId,date,type,text,followUp}. type은 관찰,칭찬,피드백,후속 조치. 사실과 해석을 구분한다.

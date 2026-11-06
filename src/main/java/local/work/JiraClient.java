@@ -125,10 +125,14 @@ class JiraClient {
         return Json.required(result, "id");
     }
     List<JsonNode> worklogs(String issue) throws Exception {
+        return worklogs(issue, null, null);
+    }
+    List<JsonNode> worklogs(String issue, LocalDate from, LocalDate to) throws Exception {
         List<JsonNode> rows = new ArrayList<>();
         int offset = 0;
         while (true) {
-            JsonNode result = request("GET", "/issue/" + WorkService.issue(issue) + "/worklog?startAt=" + offset + "&maxResults=100", null);
+            String range = from == null ? "" : "&startedAfter=" + (from.atStartOfDay(KoreaTime.ZONE).toInstant().toEpochMilli() - 1) + "&startedBefore=" + to.plusDays(1).atStartOfDay(KoreaTime.ZONE).toInstant().toEpochMilli();
+            JsonNode result = request("GET", "/issue/" + WorkService.issue(issue) + "/worklog?startAt=" + offset + "&maxResults=100" + range, null);
             JsonNode page = result.path("worklogs");
             for (JsonNode row : page) rows.add(row);
             offset += page.size();
