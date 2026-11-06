@@ -19,7 +19,7 @@ final class Agent {
         this(service, reports, model, synchronizer, name, callName, null);
     }
     Agent(WorkService service, Reports reports, Model model, Synchronizer synchronizer, String name, String callName, GroupwareBooking booking) {
-        this.service = service; this.reports = reports; this.model = model; this.synchronizer = synchronizer;
+        this.service = service; this.reports = reports; this.model = prompt -> model.complete(WritingStyle.prompt(prompt)); this.synchronizer = synchronizer;
         this.name = name; this.callName = callName;
         this.booking = booking;
     }

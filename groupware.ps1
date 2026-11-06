@@ -7,7 +7,7 @@ foreach ($taskName in @('GROUPWARE_CONFIG')) {
         [Environment]::SetEnvironmentVariable($taskName, $taskValue, 'Process')
     }
 }
-$taskJar = Join-Path $PSScriptRoot 'work-agent-0.3.10.jar'
+$taskJar = Join-Path $PSScriptRoot 'work-agent-0.3.11.jar'
 if (-not (Test-Path -LiteralPath $taskJar)) { throw './build.ps1로 먼저 빌드하세요.' }
 $taskCommand = if ($Action.StartsWith('calendar-')) { '--' + $Action } else { '--groupware-' + $Action }
 & java '-Dfile.encoding=UTF-8' -jar $taskJar $taskCommand
