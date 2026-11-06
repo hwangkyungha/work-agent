@@ -101,4 +101,13 @@ class JiraHttpTest {
         assertEquals(List.of("first","second"),client.changelog("CTS-1").stream().map(n->Json.text(n,"id")).toList());
         assertEquals(List.of("first","second"),client.comments("CTS-1").stream().map(n->Json.text(n,"id")).toList());
     }
+    @Test void worklogRangeUsesKoreaMidnightAndReadsEveryPage() throws Exception {
+        status=200;List<String> queries=new ArrayList<>();
+        paginatedResponse=q->{queries.add(q);return Json.write(Json.obj("total",2,"worklogs",List.of(Json.obj("id",q.contains("startAt=0")?"one":"two"))));};
+        assertEquals(2,client("cloud","user@example.com").worklogs("WOR-1",LocalDate.of(2026,11,2),LocalDate.of(2026,11,8)).size());
+        assertEquals(2,queries.size());assertTrue(queries.get(1).contains("startAt=1"));
+        long start=LocalDate.of(2026,11,2).atStartOfDay(KoreaTime.ZONE).toInstant().toEpochMilli()-1;
+        long end=LocalDate.of(2026,11,9).atStartOfDay(KoreaTime.ZONE).toInstant().toEpochMilli();
+        for(String q:queries){assertTrue(q.contains("startedAfter="+start));assertTrue(q.contains("startedBefore="+end));}
+    }
 }

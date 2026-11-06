@@ -78,7 +78,7 @@ class WorkflowTest {
         ObjectNode task = service.task(Json.obj("title","수정 결과 검토"));
         service.plan(Json.obj("taskIds",List.of(Json.text(task,"id"))));
         String plain=reports.daily(time.today());
-        assertTrue(plain.contains("어제 한 일"));assertTrue(plain.contains("원인을 분석했습니다."));assertTrue(plain.contains("수정 결과 검토"));
+        assertTrue(plain.contains("진행한 일"));assertFalse(plain.contains("원인을 분석했습니다."));assertTrue(plain.contains("수정 결과 검토"));
         assertFalse(plain.contains("도움 요청"));assertFalse(plain.contains("의사결정"));assertFalse(plain.contains("추가 공유"));
         service.dailyNote(Json.obj("text","검증 환경 접근이 필요합니다."));
         assertTrue(reports.daily(time.today()).contains("추가 공유\n검증 환경 접근이 필요합니다."));
@@ -93,6 +93,13 @@ class WorkflowTest {
         assertEquals(9000,WorkDuration.seconds("2.5h"));
         assertEquals(9000,WorkDuration.seconds("2h 30m"));
         assertEquals(1,WorkDuration.seconds("1s"));
+    }
+    @Test void issueListCanBeSavedWithoutTimeButCannotBePostedUntilCompleted() throws Exception {
+        ObjectNode draft = service.saveWorklog(entries("1h", ""));
+        assertEquals(0, draft.path("items").get(1).path("seconds").asInt());
+        assertEquals(3600, draft.path("totalSeconds").asInt());
+        assertThrows(IllegalArgumentException.class, () -> service.postWorklog(time.today())); assertEquals(0, jira.calls);
+        service.saveWorklog(entries("1h", "2h")); service.postWorklog(time.today()); assertEquals(2, jira.calls);
     }
     @Test void worklogCanUseLessOrMoreThanEightHours() {
         assertEquals(3600,service.saveWorklog(entries("30m","30m")).path("totalSeconds").asLong());
@@ -147,8 +154,8 @@ class WorkflowTest {
     }
     @Test void receivedJobIsPendingReviewUntilExplicitlyMarked() {
         ObjectNode job=service.job(Json.obj("title","밤 작업","result","수정 결과","verification","테스트 3개 통과"));
-        assertTrue(reports.briefing(time.today()).contains("밤 작업"));job.put("reviewed",true);service.job(job);
-        assertFalse(reports.briefing(time.today()).contains("밤 작업"));
+        assertFalse(reports.briefing(time.today()).contains("밤 작업"));assertFalse(job.path("reviewed").asBoolean());job.put("reviewed",true);service.job(job);
+        assertTrue(store.get("job",Json.text(job,"id")).path("reviewed").asBoolean());
     }
     @Test void naturalLanguageActionsUseValidatedServiceAndAreIdempotent() throws Exception {
         AtomicInteger calls=new AtomicInteger();
@@ -167,7 +174,7 @@ class WorkflowTest {
     @Test void personalCallNameCanPrecedeQuickReadWithoutModelCall() throws Exception {
         Agent agent=new Agent(service,reports,p->{throw new AssertionError("모델 호출 불필요");},k->Json.object(),"호박","호박아");
         assertTrue(agent.chat("web","called-brief","호박아, 브리핑").path("text").asText().contains("데일리 브리핑"));
-        assertTrue(agent.chat("web","called-daily","호박아 데일리").path("text").asText().contains("어제 한 일"));
+        assertTrue(agent.chat("web","called-daily","호박아 데일리").path("text").asText().contains("진행한 일"));
     }
     @Test void anotherUserCanChooseTheirOwnNameAndAddress() throws Exception {
         Agent agent=new Agent(service,reports,p->{throw new AssertionError("모델 호출 불필요");},k->Json.object(),"보리","보리야");

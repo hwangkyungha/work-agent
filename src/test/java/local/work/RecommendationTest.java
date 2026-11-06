@@ -53,7 +53,7 @@ class RecommendationTest {
     }
     @Test void briefingDoesNotTurnCandidatesIntoTodaysPlanAndQuickRegistrationRemainsExplicit() {
         task("CTS-50","in-progress",day.toString(),true,true);session("CTS-50",1);
-        String report=new Reports(service).briefing(day);String plan=report.substring(report.indexOf("\n오늘 계획"));
+        String report=new Reports(service).briefing(day);String plan=report.substring(report.indexOf("\n오늘 할 일"));
         assertTrue(plan.contains("직접 선택"));assertFalse(plan.contains("CTS-50"));assertNull(store.get("plan",day.toString()));
         ObjectNode added=service.task(Json.obj("title","직접 등록한 오늘 업무","today",true));
         assertEquals(List.of(Json.text(added,"id")),service.planned(day).stream().map(t->Json.text(t,"id")).toList());
