@@ -105,7 +105,33 @@ CALENDAR_ICS_URL=https://calendar.google.com/calendar/ical/캘린더주소/basic
 
 `CALENDAR_ICS_URL`에 구독용 ICS 주소를, 또는 `CALENDAR_ICS_FILE`에 내보낸 ICS 파일 경로를 넣으세요. 반복 일정, 제외 날짜, 개별 일정 변경과 취소를 반영합니다. 조회 범위는 오늘 기준 이전 14일부터 이후 60일까지입니다.
 
-현재는 읽기 전용 ICS 연결입니다. Slack이나 화면에서 새로 등록한 회의는 업무 에이전트의 로컬 일정에 저장하며, Google Calendar에는 쓰지 않습니다. Google Calendar에서 회의를 생성하거나 수정하는 기능은 계정 연결과 쓰기 권한을 사용하는 API 연동을 추가해야 합니다.
+일정 조회는 읽기 전용 ICS 연결입니다. 일반 회의 등록은 업무 에이전트의 로컬 일정에 저장합니다. 아래 회의실 예약 기능은 Google OAuth를 연결하면 예약한 회의를 Google Calendar에도 등록합니다.
+
+### 회의실 예약
+
+Windows에서 Java 21과 work-agent로 다우오피스 회의실을 조회·예약·취소합니다. 처음 한 번 브라우저를 설치하고 그룹웨어에 로그인하세요.
+
+```powershell
+./build.ps1
+./groupware.ps1 setup
+./groupware.ps1 login
+./groupware.ps1 status
+```
+
+Slack 또는 업무 수첩의 대화창에 `호박아, 다음 주 월요일 오후 2시부터 3시까지 6명이 CI 리포트를 검토할 회의실을 예약해 줘`처럼 요청하세요. 조회만 하려면 `예약 가능한 회의실을 알려 줘`라고 요청하세요. 날짜·시작과 종료 시각이 빠졌으면 추가로 묻습니다. 인원 수는 수용 인원에 맞는 회의실을 고를 때만 사용합니다. `11-4 회의실을 예약해 줘`처럼 회의실을 지정하면 인원 수를 묻지 않습니다. 그룹웨어의 참석인원 명단에는 항상 `-`를 입력합니다. 시간은 모두 한국 시간이며 30분 단위입니다. 예약 가능한 요일은 그룹웨어의 회의실별 설정을 조회해 판단합니다. 빈 시간이 있어도 예약 불가 요일이면 이유를 안내하고 예약하지 않습니다. 회의실을 지정하지 않으면 설정된 우선순위로 선택하고, 우선순위 밖의 회의실만 남으면 선택을 요청합니다.
+
+그룹웨어 설정은 `%LOCALAPPDATA%/Suresoft/groupware/settings.json`입니다. `baseUrl`, `rooms`, `preferredRooms`에서 그룹웨어 주소·회의실 수용 인원·우선순위를 조정합니다. 암호화 세션 `session.enc`와 중복 예약 방지 기록 `bookings.jsonl`도 같은 폴더에 저장합니다. 기본 위치를 바꾸려면 `GROUPWARE_CONFIG`에 설정 파일 경로를 지정하세요. 이 폴더에는 개인 로그인 정보가 있으므로 Git이나 부서 공유 데이터에 넣지 않습니다.
+
+Google Calendar에도 등록하려면 Google Calendar API를 활성화하고, 데스크톱 앱 유형으로 만든 OAuth JSON을 공통 설정 폴더의 `google-client.json`에 저장하세요. `settings.json`의 `googleCalendarId`에는 등록할 캘린더 ID를 넣습니다. 기본값은 `primary`입니다.
+
+```powershell
+./groupware.ps1 calendar-login
+./groupware.ps1 calendar-status
+```
+
+로그인한 계정에는 해당 캘린더의 일정 쓰기 권한이 필요합니다. OAuth 앱이 외부 사용자 대상 테스트 상태라면 로그인할 계정을 Google 인증 플랫폼의 대상(Audience) → 테스트 사용자에 먼저 추가하세요. Calendar 일정 조회·수정 권한을 승인하면 갱신 토큰은 `google-token.enc`에 Windows 사용자별로 암호화해 저장합니다. Google의 테스트 상태 앱은 갱신 토큰의 유효기간이 제한될 수 있으므로, 계속 사용할 때는 Google의 게시 상태와 조직 사용 정책을 확인하세요.
+
+예약 번호를 다시 조회해 확인한 뒤에만 예약 완료로 안내합니다. 예약은 성공하고 캘린더 등록만 실패했다면 예약을 유지하고 원인을 알려줍니다. 같은 예약을 다시 요청하면 회의실을 추가 예약하지 않고 캘린더 등록을 다시 시도합니다. 예약 제출 뒤 결과를 확인하지 못한 경우에는 추가 예약을 막고 그룹웨어 내역을 확인하도록 안내합니다. 세션이 만료되면 `./groupware.ps1 login`으로 다시 로그인하세요. 비밀번호와 보안문자는 저장하지 않습니다.
 
 ### 자연어 처리
 

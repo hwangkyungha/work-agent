@@ -17,15 +17,33 @@ public final class Main {
         System.setProperty("net.fortuna.ical4j.timezone.update.enabled", "false");
         Path configFile = Path.of("config.properties");
         Integer portOverride = null;
+        String groupwareCommand = "";
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--config" -> configFile = Path.of(args[++i]);
                 case "--port" -> portOverride = Integer.parseInt(args[++i]);
+                case "--groupware-setup", "--groupware-login", "--groupware-status", "--calendar-login", "--calendar-status" -> groupwareCommand = args[i];
                 default -> throw new IllegalArgumentException("지원하지 않는 인수: " + args[i]);
             }
         }
         Config config = new Config(configFile);
         KoreaTime time = new KoreaTime(Clock.systemUTC());
+        if (!groupwareCommand.isBlank()) {
+            System.setOut(new java.io.PrintStream(System.out, true, StandardCharsets.UTF_8));
+            System.setErr(new java.io.PrintStream(System.err, true, StandardCharsets.UTF_8));
+            GroupwareSettings settings = new GroupwareSettings(config);
+            switch (groupwareCommand) {
+                case "--groupware-setup" -> com.microsoft.playwright.CLI.main(new String[]{"install", "chromium"});
+                case "--groupware-login" -> GroupwareBrowser.login(settings);
+                case "--calendar-login" -> GoogleBookingCalendar.login(settings);
+                case "--calendar-status" -> System.out.println(Json.write(new GoogleBookingCalendar(settings).status()));
+                case "--groupware-status" -> {
+                    try (var browser = new GroupwareBrowser(settings)) { System.out.println(Json.write(Json.obj("connected", true, "settings", settings.file.toString(), "rooms", settings.rooms().size()))); }
+                }
+            }
+            return;
+        }
+        GroupwareBooking booking = new GroupwareBooking(config, time);
         Store store = new Store(config.data().resolve("work-agent.db"));
         WorkService service = new WorkService(store, time, new JiraClient(config));
         Reports reports = new Reports(service);
@@ -50,7 +68,7 @@ public final class Main {
             }
             return result;
         };
-        Agent agent = new Agent(service, reports, new CliModel(config), sync, config.agentName(), config.agentCallName());
+        Agent agent = new Agent(service, reports, new CliModel(config), sync, config.agentName(), config.agentCallName(), booking);
         SlackConnection slack = new SlackConnection(config, store, agent);
         Scheduler scheduler = new Scheduler(service, reports, slack, config, sync);
         int port = portOverride == null ? config.number("PORT", 8765) : portOverride;
@@ -113,6 +131,7 @@ public final class Main {
                     if (bytes.length > 262144) throw new IllegalArgumentException("요청 내용이 너무 큽니다.");
                     JsonNode body = Json.read(new String(bytes, StandardCharsets.UTF_8));
                     Object result = switch (path) {
+                        case "/api/rooms" -> booking.execute(Json.required(body, "requestId"), body);
                         case "/api/chat" -> agent.chat("web", body.path("requestId").asText(UUID.randomUUID().toString()), Json.required(body, "text"));
                         case "/api/tasks" -> service.task(body);
                         case "/api/tasks/status" -> service.changeStatus(body);

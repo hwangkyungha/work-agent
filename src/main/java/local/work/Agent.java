@@ -14,9 +14,14 @@ final class Agent {
     private final Synchronizer synchronizer;
     private final String name;
     private final String callName;
+    private final GroupwareBooking booking;
     Agent(WorkService service, Reports reports, Model model, Synchronizer synchronizer, String name, String callName) {
+        this(service, reports, model, synchronizer, name, callName, null);
+    }
+    Agent(WorkService service, Reports reports, Model model, Synchronizer synchronizer, String name, String callName, GroupwareBooking booking) {
         this.service = service; this.reports = reports; this.model = model; this.synchronizer = synchronizer;
         this.name = name; this.callName = callName;
+        this.booking = booking;
     }
     synchronized ObjectNode chat(String conversation, String requestId, String text) throws Exception {
         if (text.isBlank() || text.length() > 12000) throw new IllegalArgumentException("요청은 1자부터 12,000자까지 입력하세요.");
@@ -81,6 +86,10 @@ final class Agent {
         String message;
         LocalDate date = Json.text(p, "date").isBlank() ? service.time.today() : LocalDate.parse(Json.text(p, "date"));
         switch (type) {
+            case "room_booking" -> {
+                if (booking == null) throw new IllegalStateException("회의실 예약 기능이 연결되지 않았습니다.");
+                result = booking.execute(id, p); message = Json.required(result, "message");
+            }
             case "task" -> { result = service.task(p); message = "업무를 저장했습니다: " + Json.text(result, "title"); }
             case "task_status" -> { result = service.changeStatus(p); message = "업무 상태를 변경했습니다: " + result.path("jiraStatus").asText(Json.text(result, "status")); }
             case "hide_task" -> { result = service.hideTask(p); message = result.path("hidden").asBoolean() ? "내 목록에서 숨겼습니다. Jira 상태는 바꾸지 않았습니다." : "내 목록에 다시 표시했습니다."; }
@@ -188,6 +197,11 @@ final class Agent {
             link_activity: {id,jiraKey}. 여러 도구의 기록이 같은 이슈면 같은 jiraKey에 연결한다.
             meeting: {title,start,end,product,jiraKey}. 종료 시각을 모르면 end="". 회의 시각을 개발 마감으로 바꾸지 않는다.
             meeting은 업무 에이전트 일정만 저장한다. 외부 캘린더에도 썼다고 말하지 않는다.
+            room_booking: {operation,date,start,end,attendees,purpose,room}. 회의실 조회·예약·취소는 meeting 대신 이 작업을 사용한다. operation은 check,book,cancel이다.
+            date는 한국 날짜 YYYY-MM-DD, start/end는 한국 시각 HH:mm이며 30분 단위이다. 날짜, 시작·종료 시각이 빠졌으면 먼저 물어보고 actions=[]로 둔다.
+            attendees는 수용 인원에 맞는 회의실을 고르는 데만 사용하는 양의 정수다. 회의실을 지정하지 않았고 인원이 없으면 먼저 물어본다. 회의실을 지정했으면 인원을 묻지 않고, 언급하지 않은 attendees 필드는 생략한다. 참석인원 명단은 요청하거나 생성하지 않으며 그룹웨어 입력란에는 프로그램이 항상 -를 넣는다.
+            예약·취소할 때는 회의 목적 purpose도 필요하다. room은 회의실 이름(예: 11-4)이며, 사용자가 지정한 경우에만 넣는다. 조회는 check, 실제 예약을 요청했을 때만 book, 취소를 분명히 요청했을 때만 cancel을 쓴다.
+            예약과 구글 캘린더 등록 성공 여부는 프로그램이 확인한다. 미리 완료했다고 말하지 않는다. 다음 단계가 사용자의 선택을 요구하면 추가 예약을 실행하지 않는다.
             plan: {date,taskIds:[실제 업무 id],sort}. 직접 순서를 정하면 sort=manual, 중요도·긴급도순은 priority, 마감일순은 due, 생성일 오래된 순은 created-asc, 생성일 최신순은 created-desc로 설정한다. 사용자 순서를 유지한다. 이미 계획이 있으면 나머지 항목도 보존한다.
             오늘 계획에서 빼거나 추가하는 요청은 plan_item: {date,id,included:false 또는 true}로 처리한다. 업무 자체나 실제 활동·워크로그를 삭제하지 않는다.
             오늘 할 일은 사용자가 직접 고르거나 오늘 추가하라고 명시한 업무만 넣는다. In Progress·마감·중요도·긴급도 조건이나 전날 계획만으로 자동 추가하지 않는다. 추천 요청은 todayGroups의 후보를 설명하며 사용자 선택 전에는 계획을 수정하지 않는다.
