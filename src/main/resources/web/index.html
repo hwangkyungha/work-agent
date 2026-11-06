@@ -8,23 +8,23 @@
 <body>
   <div class="shell">
     <aside class="rail">
-      <a class="brand" id="brand-link" href="/" aria-label="work-agent 홈"><span class="brand-mark" aria-hidden="true">✓</span><span><span id="agent-name">work-agent</span><small>내 일의 기록과 계획</small></span></a>
+      <a class="brand" id="brand-link" href="/" aria-label="work-agent 홈"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 3H5v18h14V3h-3M9 2h6v4H9zM8 11h8M8 15h5"/></svg></span><span><span id="agent-name">work-agent</span><small>개인 업무 수첩</small></span></a>
       <nav aria-label="업무 메뉴">
-        <button class="nav-item active" data-view="today"><span aria-hidden="true">◷</span>오늘</button>
-        <button class="nav-item" data-view="plan"><span aria-hidden="true">☷</span>전체 할 일</button>
-        <button class="nav-item" data-view="worklog"><span aria-hidden="true">▤</span>워크로그</button>
-        <button class="nav-item" data-view="team"><span aria-hidden="true">♧</span>팀원과 1on1</button>
+        <button class="nav-item active" data-view="today"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18m-12 5 2 2 4-4"/></svg>오늘</button>
+        <button class="nav-item" data-view="plan"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 6 1 1 2-2m3 1h12M3 12h3m3 0h12M3 18h3m3 0h12"/></svg>전체 할 일</button>
+        <button class="nav-item" data-view="worklog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>워크로그</button>
+        <button class="nav-item" data-view="team"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M17 5a3 3 0 0 1 0 6m1 4a5 5 0 0 1 3 5"/></svg>팀원과 1on1</button>
       </nav>
-      <div class="rail-bottom"><p>기록은 남겨 두고,<br>오늘 할 일에 집중하세요.</p><button class="connection-button" id="connections">연결 상태 <span id="connection-dot" class="dot"></span></button><small>모든 날짜와 시간은 한국 기준입니다.</small></div>
+      <div class="rail-bottom"><button class="connection-button" id="connections">연결 상태 <span id="connection-dot" class="dot"></span></button><small>한국 시간 · Asia/Seoul</small></div>
     </aside>
     <div class="workspace">
       <header class="topbar"><span id="date-label">업무를 불러오고 있습니다.</span><div class="top-actions"><label class="sr-only" for="selected-date">조회 날짜</label><input id="selected-date" type="date"><button id="refresh" class="button quiet">기록 새로 확인</button></div></header>
       <main id="content" tabindex="-1"><div class="loading">업무 기록을 불러오고 있습니다.</div></main>
       <section class="agent-panel" aria-labelledby="agent-heading">
-        <div class="agent-heading"><span class="agent-mark" aria-hidden="true">✦</span><h2 id="agent-heading">work-agent</h2><span>Slack 연결 전에도 이곳에서 요청할 수 있습니다.</span><button class="text-button" id="toggle-chat" aria-expanded="false">대화 열기</button></div>
+        <div class="agent-heading"><svg class="agent-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11a8 8 0 0 1-8 8H7l-4 3V7a4 4 0 0 1 4-4h6a8 8 0 0 1 8 8Z"/><path d="M7 9h10m-10 4h6"/></svg><h2 id="agent-heading">work-agent</h2><span>할 일, 회의실 예약, 워크로그를 요청하세요</span><button class="text-button" id="toggle-chat" aria-expanded="false">대화 열기</button></div>
         <div id="chat-body" hidden><div id="messages" class="messages" aria-live="polite"></div><form id="chat-form"><label class="sr-only" for="chat-text">에이전트에게 요청하기</label><textarea id="chat-text" rows="2" placeholder="예: 내일 10시에 LCT CI report 기능 리뷰가 있어. 일정에 추가해 줘." required maxlength="12000"></textarea><button class="button primary" type="submit">요청 보내기</button></form><p class="hint">자연어 요청은 설정한 Codex 또는 Claude CLI를 사용합니다.</p></div>
       </section>
-      <footer>내 업무 데이터에서 직접 조회합니다. 화면을 여는 데 AI 호출은 필요하지 않습니다.</footer>
+      <footer>work-agent</footer>
     </div>
   </div>
   <div id="notice" role="status" hidden></div>
