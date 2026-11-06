@@ -61,7 +61,7 @@ class JiraClient {
     }
     ObjectNode fetchIssue(String key) throws Exception {
         loadSiteUrl();
-        return summarize(request("GET", "/issue/" + WorkService.issue(key) + "?fields=summary,status,assignee,created,updated,duedate,project,fixVersions,issuetype", null));
+        return summarize(request("GET", "/issue/" + WorkService.issue(key) + "?fields=summary,status,assignee,created,updated,duedate,project,fixVersions,issuetype,parent,issuelinks", null));
     }
     List<JsonNode> transitions(String key) throws Exception {
         List<JsonNode> result = new ArrayList<>();
@@ -110,7 +110,8 @@ class JiraClient {
         ObjectNode latest = service.store.get("task", Json.text(task, "id"));
         if (latest != null) task = latest;
         ObjectNode row = task.deepCopy();
-        for (String field : List.of("title", "status", "due", "product", "jiraStatus", "jiraStatusId", "issueUrl", "issueType")) row.set(field, issue.get(field));
+        for (String field : List.of("title", "status", "due", "product", "jiraStatus", "jiraStatusId", "issueUrl", "issueType", "jiraParent", "jiraPredecessors")) row.set(field, issue.get(field));
+        service.store.put("issue", issue);
         if (!Json.text(issue, "createdAt").isBlank()) row.set("createdAt", issue.get("createdAt"));
         if (issue.hasNonNull("jiraChangedAt")) row.set("jiraChangedAt", issue.get("jiraChangedAt"));
         return service.saveTask(row);
@@ -139,7 +140,7 @@ class JiraClient {
         return "";
     }
     List<JsonNode> search(String jql) throws Exception {
-        return search(jql, "summary,status,assignee,created,updated,duedate,project,fixVersions,parent,issuetype");
+        return search(jql, "summary,status,assignee,created,updated,duedate,project,fixVersions,parent,issuetype,issuelinks");
     }
     List<JsonNode> search(String jql, String fields) throws Exception {
         List<JsonNode> rows = new ArrayList<>();
@@ -216,10 +217,21 @@ class JiraClient {
     }
     ObjectNode summarize(JsonNode issue) {
         JsonNode f = issue.path("fields");
+        List<ObjectNode> predecessors = new ArrayList<>();
+        for (JsonNode link : f.path("issuelinks")) {
+            boolean inward = link.hasNonNull("inwardIssue");
+            String relation = Json.text(link.path("type"), inward ? "inward" : "outward").toLowerCase(Locale.ROOT);
+            if (relation.equals("is blocked by") || relation.equals("depends on") || relation.equals("선행 작업") || relation.contains("차단됨")) {
+                JsonNode previous = link.path(inward ? "inwardIssue" : "outwardIssue");
+                if (Json.text(previous, "key").isBlank()) continue;
+                predecessors.add(Json.obj("key", Json.text(previous, "key"), "title", Json.text(previous.path("fields"), "summary"), "status", statusCategory(previous.path("fields").path("status"))));
+            }
+        }
         return Json.obj("id", Json.required(issue, "key"), "title", Json.text(f, "summary"), "status", statusCategory(f.path("status")), "jiraStatus", Json.text(f.path("status"), "name"), "jiraStatusId", Json.text(f.path("status"), "id"),
                 "issueUrl", issueUrl(Json.required(issue, "key")), "issueType", Json.text(f.path("issuetype"), "name"), "createdAt", Json.text(f, "created"),
                 "product", Json.text(f.path("project"), "name"), "due", Json.text(f, "duedate"), "updatedAt", Json.text(f, "updated"),
-                "assignee", Json.text(f.path("assignee"), "displayName"), "versions", f.path("fixVersions"));
+                "assignee", Json.text(f.path("assignee"), "displayName"), "versions", f.path("fixVersions"),
+                "jiraParent", Json.obj("key", Json.text(f.path("parent"), "key"), "title", Json.text(f.path("parent").path("fields"), "summary")), "jiraPredecessors", predecessors);
     }
     static LocalDate parseJiraDate(String date) {
         try { return KoreaTime.parse(date).atZone(KoreaTime.ZONE).toLocalDate(); }

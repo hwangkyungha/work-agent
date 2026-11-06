@@ -137,6 +137,8 @@ public final class Main {
                         case "/api/tasks/status" -> service.changeStatus(body);
                         case "/api/tasks/hide" -> service.hideTask(body);
                         case "/api/tasks/hide-many" -> service.hideTasks(body);
+                        case "/api/tasks/remove" -> service.removeTasks(body);
+                        case "/api/tasks/group" -> service.groupTasks(body);
                         case "/api/activities" -> service.activity(body);
                         case "/api/plan" -> service.plan(body);
                         case "/api/plan/item" -> service.planItem(body);

@@ -93,6 +93,8 @@ final class Agent {
             case "task" -> { result = service.task(p); message = "업무를 저장했습니다: " + Json.text(result, "title"); }
             case "task_status" -> { result = service.changeStatus(p); message = "업무 상태를 변경했습니다: " + result.path("jiraStatus").asText(Json.text(result, "status")); }
             case "hide_task" -> { result = service.hideTask(p); message = result.path("hidden").asBoolean() ? "내 목록에서 숨겼습니다. Jira 상태는 바꾸지 않았습니다." : "내 목록에 다시 표시했습니다."; }
+            case "remove_task" -> { result = service.removeTasks(Json.obj("taskIds", List.of(Json.required(p, "id")))); message = result.path("deleted").asInt() > 0 ? "직접 등록한 할 일을 삭제했습니다. 활동 기록과 워크로그는 남습니다." : "Jira 업무를 내 목록에서 숨겼습니다. Jira 상태는 바꾸지 않았습니다."; }
+            case "group_tasks" -> { result = service.groupTasks(p); message = "선택한 업무의 묶음을 변경했습니다."; }
             case "activity" -> { result = service.activity(p); message = "활동을 저장했습니다: " + Json.text(result, "title"); }
             case "link_activity" -> {
                 result = service.store.get("activity", Json.required(p, "id"));
@@ -192,6 +194,9 @@ final class Agent {
             로컬 status는 todo,in-progress,done. 중요도·긴급도가 언급되지 않으면 임시로 판단한다. 마감이 없으면 due="".
             task_status: {id,status}. 기존 업무의 상태 변경에 사용한다. Jira 연결 업무는 실제 Jira에서 가능한 전환으로 실행한다. 정확한 Jira 상태 이름 또는 todo,in-progress,done을 쓴다. 선택이 여러 개면 사용자가 고르게 한다.
             hide_task: {id,hidden:true}. 관심 없는 업무를 내 목록에서만 숨긴다. 완료 처리나 Jira 삭제로 해석하지 않는다. 다시 표시하려면 hidden:false.
+            remove_task: {id}. 사용자가 특정 할 일을 삭제하라고 요청하면 사용한다. Jira가 연결된 할 일은 내 목록에서 숨기고, 직접 등록한 할 일은 삭제한다. 활동·워크로그와 실제 Jira 이슈는 삭제하지 않는다. 대상이 모호하면 먼저 물어본다.
+            task로 workGroup(업무 묶음 이름), predecessorIds(선행 작업의 실제 task id 목록)를 저장할 수 있다. 이 값은 work-agent 안에서만 사용하며 Jira 관계를 바꾸지 않는다. 순서가 언급되지 않으면 의존관계를 임의로 만들지 않는다. 빈 workGroup은 묶음 해제, 빈 predecessorIds는 선행 작업 해제다.
+            group_tasks: {taskIds,workGroup}. 여러 업무를 같은 묶음으로 옮기거나 workGroup=""으로 묶음을 해제한다. 사용자가 지정한 업무만 변경한다.
             우선순위는 긴급+중요, 긴급, 중요, 없음 순서다. hidden 업무는 계획과 브리핑에서 제외한다.
             activity: {title,date,jiraKey,product}. 실제 수행한 활동만 기록한다. 향후 할 일과 혼동하지 않는다.
             link_activity: {id,jiraKey}. 여러 도구의 기록이 같은 이슈면 같은 jiraKey에 연결한다.
