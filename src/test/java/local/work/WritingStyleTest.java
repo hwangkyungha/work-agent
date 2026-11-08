@@ -73,4 +73,13 @@ class WritingStyleTest {
             assertThrows(IllegalArgumentException.class, () -> agent.chat("web", "bad-action", "문장만 다듬어줘.")); assertTrue(store.list("task").isEmpty());
         }
     }
+    @Test void writingRequestCannotBeCombinedWithAMutation() throws Exception {
+        Config config = new Config(temporary.resolve("none"), Map.of());
+        try (Store store = new Store(temporary.resolve("mixed-writing.db"))) {
+            WorkService service = new WorkService(store, new KoreaTime(Clock.systemUTC()), new JiraClient(config));
+            Agent agent = new Agent(service, new Reports(service), prompt -> Json.obj("reply", "", "actions", List.of(Json.obj("type", "task", "payload", "{\"title\":\"임의 업무\"}"), Json.obj("type", "write_text", "payload", "{\"format\":\"message\"}"))), kind -> Json.object(), "호박", "호박아");
+            assertThrows(IllegalArgumentException.class, () -> agent.chat("web", "mixed", "메시지 초안만 써줘."));
+            assertTrue(store.list("task").isEmpty()); assertTrue(store.list("action").isEmpty());
+        }
+    }
 }
