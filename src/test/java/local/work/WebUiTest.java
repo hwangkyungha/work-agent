@@ -24,6 +24,7 @@ class WebUiTest {
     List<JsonNode> updates = new ArrayList<>(), groupUpdates = new ArrayList<>(), statusUpdates = new ArrayList<>(), planUpdates = new ArrayList<>();
     List<JsonNode> savedWorklogs = new ArrayList<>(); boolean worklogSaveFails;
     List<JsonNode> favoriteUpdates = new ArrayList<>(); int worklogSyncCalls; boolean worklogSyncFails;
+    List<ObjectNode> reviewJobs = new ArrayList<>(); List<JsonNode> reviewRequests = new ArrayList<>(); int reviewRefreshes, pendingSaves;
     static final String ORIGIN = "http://127.0.0.1:18765";
     ObjectNode task(String id, String key, String title) { return Json.obj("id", id, "jiraKey", key, "title", title, "status", "todo", "important", false, "urgent", false, "product", "개발", "due", "", "hidden", false, "createdAt", "2026-11-06T00:00:00Z"); }
     @BeforeEach void open() {
@@ -43,6 +44,14 @@ class WebUiTest {
                 }
                 case "/api/state" -> content = Json.write(state);
                 case "/api/settings" -> content = Json.write(Json.obj("agentName", "호박", "agentCallName", "호박아", "slackConnected", true, "jiraConfigured", true, "engine", "codex"));
+                case "/api/reviews" -> content = Json.write(Json.obj("configured", true, "automatic", true, "jobs", reviewJobs, "warnings", List.of(), "workspaces", List.of("team"), "repositoryCount", 48));
+                case "/api/reviews/refresh" -> reviewRefreshes++;
+                case "/api/reviews/request" -> reviewRequests.add(Json.read(route.request().postData()));
+                case "/api/reviews/edit" -> {
+                    JsonNode payload = Json.read(route.request().postData());
+                    ((ObjectNode) reviewJobs.getFirst().path("findings").get(0)).put("comment", Json.required(payload, "text"));
+                }
+                case "/api/reviews/save" -> { pendingSaves++; reviewJobs.getFirst().put("status", "saved"); }
                 case "/api/tasks/group" -> {
                     JsonNode payload = Json.read(route.request().postData()); groupUpdates.add(payload);
                     for (JsonNode task : state.path("tasks")) for (JsonNode id : payload.path("taskIds")) if (id.asText().equals(Json.text(task, "id"))) ((ObjectNode) task).set("workGroup", payload.get("workGroup"));
@@ -307,5 +316,21 @@ class WebUiTest {
         page.setViewportSize(390, 844);
         assertTrue((Boolean) page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"));
         page.screenshot(new Page.ScreenshotOptions().setPath(directory.resolve("work-agent-worklog-mobile.png")).setFullPage(true).setAnimations(ScreenshotAnimations.DISABLED));
+    }
+    @Test void reviewDraftsAreEditableEscapedAndSavedOnlyByExplicitButton() throws Exception {
+        reviewJobs.add(Json.obj("id", "review", "kind", "review", "status", "ready", "title", "CI 실행 PR", "url", "https://bitbucket.org/team/repo/pull-requests/105", "sourceCommit", "abcdef123456", "summary", "검토 완료", "findings", List.of(Json.obj("id", "finding", "path", "file.go", "line", 12, "title", "실패 원인 누락", "comment", "<script>window.injected=true</script>", "evidence", List.of(Json.obj("path", "file.go", "line", 12, "side", "new", "quote", "return nil"))))));
+        page.locator("[data-view='reviews']").click(); page.locator("[data-edit-review]").waitFor();
+        assertNull(page.evaluate("window.injected")); assertEquals(0, pendingSaves);
+        page.locator("[data-edit-review]").click(); page.locator("#review-text").fill("실패 원인이 표시되지 않습니다. 원인을 출력해 주세요.");
+        page.locator("#review-edit [type='submit']").click(); page.waitForCondition(() -> !page.locator("#modal").isVisible());
+        assertEquals("실패 원인이 표시되지 않습니다. 원인을 출력해 주세요.", page.locator(".review-comment").textContent());
+        page.locator("[data-save-review]").click(); page.waitForCondition(() -> pendingSaves == 1 && page.locator(".review-card").textContent().contains("비공개 초안 저장됨"));
+        assertTrue(page.locator(".review-card").textContent().contains("비공개 초안 저장됨"));
+        page.locator("#refresh-reviews").click(); page.waitForCondition(() -> reviewRefreshes == 1 && !page.locator("#refresh-reviews").isDisabled());
+        page.locator("#pr-url").fill("https://bitbucket.org/another/project/pull-requests/21"); page.locator("#review-request [type='submit']").click();
+        page.waitForCondition(() -> reviewRequests.size() == 1); assertTrue(Json.text(reviewRequests.getFirst(), "url").contains("another/project"));
+        String output = System.getProperty("work.ui.review.screenshots", "");
+        if (!output.isBlank()) { Path directory = Path.of(output); Files.createDirectories(directory); page.screenshot(new Page.ScreenshotOptions().setPath(directory.resolve("work-agent-pr-reviews.png")).setFullPage(true)); }
+        page.setViewportSize(390, 844); assertTrue((Boolean) page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"));
     }
 }

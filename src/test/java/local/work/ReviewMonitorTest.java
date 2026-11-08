@@ -1,0 +1,70 @@
+package local.work;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.util.*;
+import static org.junit.jupiter.api.Assertions.*;
+
+class ReviewMonitorTest {
+    @TempDir Path temporary;
+    Store store; PullRequestReview reviews; ReviewMonitor monitor;
+    @AfterEach void close() throws Exception {
+        if (monitor != null) monitor.close(); if (reviews != null) reviews.close();
+        if (store != null) store.close();
+    }
+    @Test void scansMultipleWorkspacesAndRepositoriesWithoutRepositoryAllowlist() throws Exception {
+        Config config = new Config(temporary.resolve("none"), Map.of()); store = new Store(temporary.resolve("test.db"));
+        List<String> requests = new ArrayList<>();
+        PullRequestReviewTest.FakeApi api = new PullRequestReviewTest.FakeApi(config) {
+            @Override List<JsonNode> pages(String path) {
+                requests.add(path);
+                if (path.startsWith("/user/workspaces?")) return List.of(Json.obj("workspace", Json.obj("slug", "alpha")), Json.obj("workspace", Json.obj("slug", "beta")));
+                if (path.contains("/permissions/repositories")) { String workspace = path.contains("/alpha/") ? "alpha" : "beta"; return List.of(Json.obj("repository", Json.obj("full_name", workspace + "/one")), Json.obj("repository", Json.obj("full_name", workspace + "/two"))); }
+                if (path.contains("/pullrequests?")) { assertTrue(path.contains("fields=%2Bvalues.reviewers")); assertTrue(path.contains("pagelen=50")); return List.of(pullRequest(new PullRequest("any", "any", path.contains("/two/") ? 2 : 1))); }
+                return super.pages(path);
+            }
+            @Override JsonNode pullRequest(PullRequest pr) { ObjectNode metadata = (ObjectNode) super.pullRequest(pr); metadata.set("author", Json.obj("uuid", pr.number() == 2 ? "owner" : "other")); return metadata; }
+            @Override List<JsonNode> comments(PullRequest pr) { return pr.number() == 2 ? List.of(comment(7, 0, "other", "01", false)) : List.of(); }
+        };
+        WorkService service = new WorkService(store, new KoreaTime(Clock.systemUTC()), new JiraClient(config));
+        reviews = new PullRequestReview(service, api, prompt -> Json.obj("findings", List.of(), "reply", "", "summary", "", "limitations", List.of()));
+        monitor = new ReviewMonitor(service, api, reviews, config, text -> fail("no notification during scan"));
+        ObjectNode status = monitor.scan(); assertEquals(4, status.path("repositoryCount").asInt()); assertEquals(4, status.path("items").size());
+        assertEquals(2, status.path("items").findValuesAsText("kind").stream().filter(kind -> kind.equals("review")).count());
+        assertEquals(2, status.path("items").findValuesAsText("kind").stream().filter(kind -> kind.equals("reply")).count());
+        assertTrue(requests.stream().anyMatch(path -> path.contains("/beta/two/")));
+        waitForJobs();
+    }
+    @Test void missingWorkspaceScopeUsesExplicitFallbackWithVisibleWarning() throws Exception {
+        Config config = new Config(temporary.resolve("none"), Map.of("BITBUCKET_WORKSPACES", "example")); store = new Store(temporary.resolve("test.db"));
+        PullRequestReviewTest.FakeApi api = new PullRequestReviewTest.FakeApi(config) {
+            @Override List<JsonNode> pages(String path) { return List.of(); }
+        };
+        BitbucketClient denied = new BitbucketClient(config) {
+            @Override JsonNode get(String path) { return Json.obj("uuid", "owner"); }
+            @Override List<JsonNode> pages(String path) throws Exception { if (path.startsWith("/user/workspaces?")) throw new Rejected(403); assertTrue(path.contains("/example/")); return List.of(); }
+        };
+        WorkService service = new WorkService(store, new KoreaTime(Clock.systemUTC()), new JiraClient(config)); reviews = new PullRequestReview(service, api, prompt -> Json.object());
+        monitor = new ReviewMonitor(service, denied, reviews, config, text -> {}); ObjectNode status = monitor.scan();
+        assertEquals("example", status.path("workspaces").get(0).asText()); assertTrue(status.path("warnings").get(0).asText().contains("read:workspace:bitbucket"));
+    }
+    static ObjectNode comment(int id, int parent, String owner, String time, boolean pending) {
+        ObjectNode value = Json.obj("id", id, "created_on", time, "user", Json.obj("uuid", owner), "pending", pending); if (parent > 0) value.set("parent", Json.obj("id", parent)); return value;
+    }
+    @Test void answersLatestIncomingOnlyAndSkipsAnsweredPendingAndDeletedThreads() {
+        ObjectNode deleted = comment(7, 0, "other", "07", false); deleted.put("deleted", true);
+        List<JsonNode> comments = List.of(comment(1, 0, "other", "01", false), comment(2, 1, "owner", "02", false), comment(3, 0, "other", "03", false), comment(4, 3, "other", "04", false), comment(5, 0, "other", "05", false), comment(6, 5, "owner", "06", true), deleted);
+        assertEquals(List.of(4L), ReviewMonitor.unanswered(comments, "owner").stream().map(comment -> comment.path("id").asLong()).toList());
+        ((ObjectNode) comments.get(2)).set("resolution", Json.obj("type", "comment_resolution"));
+        assertTrue(ReviewMonitor.unanswered(comments, "owner").isEmpty());
+    }
+    private void waitForJobs() throws Exception {
+        long end = System.nanoTime() + 5_000_000_000L;
+        while (store.list("prReview").stream().anyMatch(row -> Set.of("queued", "running").contains(Json.text(row, "status"))) && System.nanoTime() < end) Thread.sleep(10);
+        assertFalse(store.list("prReview").stream().anyMatch(row -> Set.of("queued", "running").contains(Json.text(row, "status"))));
+    }
+}
