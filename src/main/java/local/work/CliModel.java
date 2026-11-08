@@ -65,7 +65,7 @@ final class CliModel implements Agent.Model {
                 process.descendants().forEach(ProcessHandle::destroyForcibly); process.destroyForcibly();
                 throw new IllegalStateException("자연어 처리 시간이 초과됐습니다. 잠시 후 다시 요청하세요.");
             }
-            if (process.exitValue() != 0 || Files.size(output) == 0) throw new IllegalStateException("AI CLI 실행에 실패했습니다. " + engine + " 로그인 상태와 AGENT_EXECUTABLE 설정을 확인하세요.");
+            if (process.exitValue() != 0 || Files.size(output) == 0) throw failure(engine, process.exitValue(), Files.readString(stderr, StandardCharsets.UTF_8));
             JsonNode result = Json.read(Files.readString(output));
             if (engine.equals("claude")) {
                 if (result.path("is_error").asBoolean()) throw new IllegalStateException("Claude 요청에 실패했습니다. CLI 로그인 상태를 확인하세요.");
@@ -77,5 +77,15 @@ final class CliModel implements Agent.Model {
             if (process != null && process.isAlive()) { process.descendants().forEach(ProcessHandle::destroyForcibly); process.destroyForcibly(); }
             Files.deleteIfExists(output); Files.deleteIfExists(stderr);
         }
+    }
+    static IllegalStateException failure(String engine, int exit, String diagnostic) {
+        String text = diagnostic.lines().map(line -> line.toLowerCase(Locale.ROOT)).filter(line -> line.startsWith("error") || line.startsWith("fatal") || line.contains(" error ") || line.contains("\"type\":\"error\"")).reduce("", (left, right) -> left + "\n" + right);
+        String reason;
+        if (text.contains("context_length_exceeded") || text.contains("context window") || text.contains("input is too long") || text.contains("request too large")) reason = "입력 크기가 모델이 처리할 수 있는 범위를 넘었습니다. 검토 범위를 나누어 다시 요청하세요.";
+        else if (text.contains("usage limit") || text.contains("rate limit") || text.contains("too many requests") || text.contains("quota") || text.contains("429")) reason = "사용량 또는 요청 횟수 제한에 도달했습니다. CLI에서 사용량을 확인한 뒤 다시 요청하세요.";
+        else if (text.contains("unauthorized") || text.contains("authentication") || text.contains("401") || text.contains("not logged in")) reason = "로그인 정보를 확인하지 못했습니다. CLI에 다시 로그인한 뒤 요청하세요.";
+        else if (text.contains("connection") || text.contains("stream disconnected") || text.contains("timed out") || text.contains("502") || text.contains("503")) reason = "서비스 연결이 중단됐습니다. 잠시 후 다시 요청하세요.";
+        else reason = "응답을 받지 못했습니다. 잠시 후 다시 요청하고, 반복되면 CLI 실행 설정을 확인하세요.";
+        return new IllegalStateException(engine + " 실행 실패(종료 코드 " + exit + "): " + reason);
     }
 }

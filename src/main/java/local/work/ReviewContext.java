@@ -93,19 +93,37 @@ final class ReviewContext {
         String content = files.get(Json.text(evidence, "side") + ":" + Json.text(evidence, "path"));
         int line = evidence.path("line").asInt(); String quote = Json.text(evidence, "quote");
         if (content == null || line < 1 || quote.isBlank()) return false;
-        String[] lines = content.split("\n", -1);
-        return line <= lines.length && lines[line - 1].strip().equals(quote.strip());
+        String[] lines = content.split("\n", -1), quoted = quote.replace("\r\n", "\n").split("\n", -1);
+        if (line + quoted.length - 1 > lines.length) return false;
+        for (int offset = 0; offset < quoted.length; offset++) if (!lines[line - 1 + offset].strip().equals(quoted[offset].strip())) return false;
+        return true;
     }
     List<List<ObjectNode>> batches() {
-        List<List<ObjectNode>> batches = new ArrayList<>(); List<ObjectNode> batch = new ArrayList<>(); int size = 0;
+        List<List<ObjectNode>> batches = new ArrayList<>(); List<ObjectNode> batch = new ArrayList<>(); int size = 2;
         Map<String, List<ObjectNode>> paths = new LinkedHashMap<>();
-        for (ObjectNode doc : documents) paths.computeIfAbsent(Json.text(doc, "path"), key -> new ArrayList<>()).add(doc);
+        for (ObjectNode doc : documents) paths.computeIfAbsent(Json.text(doc, "path"), key -> new ArrayList<>()).addAll(chunks(doc));
         for (List<ObjectNode> pair : paths.values()) {
-            int length = pair.stream().mapToInt(doc -> Json.text(doc, "content").length()).sum();
-            if (size > 0 && size + length > 160_000) { batches.add(batch); batch = new ArrayList<>(); size = 0; }
-            batch.addAll(pair); size += length;
+            int length = Json.write(pair).length();
+            if (!batch.isEmpty() && size + length > 65_000) { batches.add(batch); batch = new ArrayList<>(); size = 2; }
+            for (ObjectNode doc : pair) {
+                int documentSize = Json.write(doc).length() + 1;
+                if (!batch.isEmpty() && size + documentSize > 65_000) { batches.add(batch); batch = new ArrayList<>(); size = 2; }
+                batch.add(doc); size += documentSize;
+            }
         }
         if (!batch.isEmpty()) batches.add(batch);
         return batches;
+    }
+    List<ObjectNode> chunks(ObjectNode document) {
+        if (Json.write(document).length() <= 28_000) return List.of(document);
+        List<ObjectNode> chunks = new ArrayList<>(); StringBuilder text = new StringBuilder(); int size = 0;
+        for (String line : Json.text(document, "content").split("\n", -1)) {
+            int length = Json.write(line + "\n").length();
+            if (length > 27_000) { limitations.add(Json.text(document, "path") + ": 매우 긴 한 줄을 검토에서 제외했습니다."); continue; }
+            if (size + length > 27_000 && !text.isEmpty()) { chunks.add(document.deepCopy().put("content", text.toString())); text.setLength(0); size = 0; }
+            text.append(line).append('\n'); size += length;
+        }
+        if (!text.isEmpty()) chunks.add(document.deepCopy().put("content", text.toString()));
+        return chunks;
     }
 }
