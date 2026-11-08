@@ -322,7 +322,7 @@ class WebUiTest {
         page.locator("[data-view='reviews']").click(); page.locator("[data-edit-review]").waitFor();
         assertNull(page.evaluate("window.injected")); assertEquals(0, pendingSaves);
         page.locator("[data-edit-review]").click(); page.locator("#review-text").fill("실패 원인이 표시되지 않습니다. 원인을 출력해 주세요.");
-        page.locator("#review-edit [type='submit']").click(); page.waitForCondition(() -> !page.locator("#modal").isVisible());
+        page.locator("#review-edit [type='submit']").click(); page.waitForCondition(() -> !page.locator("#modal").isVisible() && page.locator(".review-comment").textContent().equals("실패 원인이 표시되지 않습니다. 원인을 출력해 주세요."));
         assertEquals("실패 원인이 표시되지 않습니다. 원인을 출력해 주세요.", page.locator(".review-comment").textContent());
         page.locator("[data-save-review]").click(); page.waitForCondition(() -> pendingSaves == 1 && page.locator(".review-card").textContent().contains("비공개 초안 저장됨"));
         assertTrue(page.locator(".review-card").textContent().contains("비공개 초안 저장됨"));
