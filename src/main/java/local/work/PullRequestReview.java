@@ -67,8 +67,8 @@ final class PullRequestReview implements AutoCloseable {
             for (String limitation : context.limitations) if (!limitations.contains(limitation)) limitations.add(limitation);
             String prompt = sharedContext(context, comments) + "\n답변 대상 댓글(JSON):\n" + Json.write(incoming) + "\n현재 코드(JSON):\n" + Json.write(replyDocuments(context, incoming))
                     + "\n댓글 질문에 현재 코드로 확인한 사실만 답하세요. 수정·테스트를 실행하지 않았으므로 실행했다고 말하지 마세요. 답할 근거가 부족하면 reply를 빈 문자열로 두고 limitations에 부족한 정보를 쓰세요. replyConfidence=high이고 실제 코드 인용이 있어야 초안으로 저장됩니다. findings는 빈 배열로 출력하세요.";
-            JsonNode candidate = model.complete(WritingStyle.prompt(prompt));
-            JsonNode result = Json.text(candidate, "reply").isBlank() ? candidate : model.complete(WritingStyle.prompt(prompt + "\n검증할 답변(JSON):\n" + Json.write(candidate)
+            JsonNode candidate = model.complete(WritingStyle.message(prompt));
+            JsonNode result = Json.text(candidate, "reply").isBlank() ? candidate : model.complete(WritingStyle.message(prompt + "\n검증할 답변(JSON):\n" + Json.write(candidate)
                     + "\n답변을 반박하는 검증자 역할입니다. 질문의 조건과 코드가 실제로 일치하는지 확인하세요. 추측·실행하지 않은 수정이나 테스트 결과·의미를 바꾼 인용이 있으면 reply를 비우세요. 실제로 확인한 답변만 reply에 남기고 replyEvidence에 정확한 줄 전체를 인용하세요."));
             boolean valid = !Json.text(result, "reply").isBlank() && Json.text(result, "replyConfidence").equals("high") && !result.path("replyEvidence").isEmpty();
             for (JsonNode evidence : result.path("replyEvidence")) valid &= context.validEvidence(evidence);
@@ -88,8 +88,8 @@ final class PullRequestReview implements AutoCloseable {
             }
             for (List<ObjectNode> batch : batches) {
                 String input = shared + "\n이번 검토 파일(JSON):\n" + Json.write(batch) + "\n변경 줄(JSON):\n" + Json.write(changedLines(context, batch));
-                JsonNode candidates = model.complete(WritingStyle.prompt(input + "\n변경으로 생긴 실제 결함만 찾으세요. 기존 문제·취향·일반적 권장은 제외하세요. 발생 조건·영향·수정 방향과 정확한 코드 인용을 findings에 쓰세요. confidence=high와 severity=high 또는 medium만 다음 검증으로 넘깁니다. 인용은 제시된 파일의 실제 줄 번호와 그 줄 전체를 그대로 사용하세요. findings가 없어도 정상입니다. reply는 빈 문자열로 출력하세요."));
-                JsonNode verified = candidates.path("findings").isEmpty() ? candidates : model.complete(WritingStyle.prompt(input + "\n검증할 후보(JSON):\n" + Json.write(candidates.path("findings"))
+                JsonNode candidates = model.complete(WritingStyle.message(input + "\n변경으로 생긴 실제 결함만 찾으세요. 기존 문제·취향·일반적 권장은 제외하세요. 발생 조건·영향·수정 방향과 정확한 코드 인용을 findings에 쓰세요. confidence=high와 severity=high 또는 medium만 다음 검증으로 넘깁니다. 인용은 제시된 파일의 실제 줄 번호와 그 줄 전체를 그대로 사용하세요. findings가 없어도 정상입니다. reply는 빈 문자열로 출력하세요."));
+                JsonNode verified = candidates.path("findings").isEmpty() ? candidates : model.complete(WritingStyle.message(input + "\n검증할 후보(JSON):\n" + Json.write(candidates.path("findings"))
                         + "\n후보를 반박하는 검증자 역할입니다. 호출하는 코드, 기존 코드의 보장, 예외 처리와 테스트를 확인하고 후보가 틀린 이유를 먼저 찾으세요. 여전히 실제 입력에서 발생함을 입증할 수 있는 후보만 findings에 남기세요. 제공 자료 밖의 코드를 추측하거나 새로운 지적을 만들지 마세요. 수정 요청 문장은 짧고 자연스럽게 쓰세요."));
                 for (JsonNode finding : verified.path("findings")) {
                     boolean candidate = false;

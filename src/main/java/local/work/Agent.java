@@ -63,6 +63,7 @@ final class Agent {
                 String type = Json.required(action, "type");
                 ObjectNode payload = (ObjectNode) Json.read(Json.required(action, "payload"));
                 if (type.equals("team_query") && Json.text(payload, "question").isBlank()) payload.put("question", text);
+                if (type.equals("write_text")) payload.put("request", text);
                 if (type.equals("plan") && payload.path("taskIds").isArray()) {
                     ArrayNode ids = (ArrayNode) payload.get("taskIds");
                     for (int j = 0; j < ids.size(); j++) if (ids.get(j).asText().equals("$lastTask")) {
@@ -92,6 +93,33 @@ final class Agent {
         String message;
         LocalDate date = Json.text(p, "date").isBlank() ? service.time.today() : LocalDate.parse(Json.text(p, "date"));
         switch (type) {
+            case "write_text" -> {
+                String format = Json.required(p, "format"), kind = p.path("kind").asText("brief"), source = p.path("source").asText("none");
+                if (!Set.of("message", "document").contains(format)) throw new IllegalArgumentException("글의 형식을 확인하세요.");
+                String evidence = switch (source) {
+                    case "none" -> "사용자가 제공한 자료만 사용합니다.";
+                    case "daily" -> reports.daily(date);
+                    case "weekly" -> Json.write(Json.obj("from", service.time.monday(date).toString(), "to", date.toString(), "registeredWorklogs", service.registeredWorklogs(service.time.monday(date), date), "activities", new ActivitySummary(service.store).group(service.time.monday(date), date)));
+                    case "oneonone" -> reports.oneOnOne(Json.required(p, "memberId"));
+                    default -> throw new IllegalArgumentException("글에 사용할 자료를 확인하세요.");
+                };
+                String rules = format.equals("message") ? (kind.equals("pr") ? WritingStyle.reviewRules() : WritingStyle.messageRules()) : WritingStyle.documentRules(kind);
+                String request = "제공한 스킬과 참조는 이미 읽을 수 있도록 본문에 포함했습니다. 도구 호출·외부 게시 없이 글의 초안을 reply에 쓰고 actions=[]로 출력하세요. 파일 저장은 수행하지 않습니다.\n독자: " + Json.text(p, "audience") + "\n사용자 요청:\n" + Json.required(p, "request") + "\n참고 자료:\n" + evidence;
+                message = writingReply(model.complete(rules + "\n" + request));
+                if (format.equals("document") && Set.of("plan", "decision").contains(kind)) {
+                    boolean clear = false; String remaining = "";
+                    for (int round = 0; round < 3; round++) {
+                        JsonNode review = model.complete("배경 없는 독자로서 아래 문서만 읽고 요청하는 판단, 현재 문제, 사실·제안의 구분, 선택 근거와 비용·위험, 모호한 문장을 확인하세요. 해당 문서에 필요한 항목만 평가하세요. reply에는 JSON {\"clear\":true 또는 false,\"feedback\":\"불명확한 문장과 이유\"}를 문자열로 쓰고 actions=[]로 출력하세요.\n독자: " + Json.text(p, "audience") + "\n문서:\n" + message);
+                        JsonNode check = Json.read(writingReply(review));
+                        if (!check.path("clear").isBoolean()) throw new IllegalArgumentException("독자 검토 결과를 확인하지 못했습니다.");
+                        if (check.path("clear").asBoolean()) { clear = true; break; }
+                        remaining = Json.required(check, "feedback");
+                        if (round < 2) message = writingReply(model.complete(rules + "\n" + request + "\n수정할 초안:\n" + message + "\n독자 피드백:\n" + Json.required(check, "feedback")));
+                    }
+                    if (!clear) message += "\n\n독자 검토에서 남은 확인 사항: " + remaining;
+                }
+                result = Json.obj("format", format, "text", message);
+            }
             case "pr_review", "pr_reply" -> {
                 if (reviews == null) throw new IllegalStateException("PR 리뷰 기능이 연결되지 않았습니다.");
                 if (type.equals("pr_reply") && p.path("commentId").asLong() <= 0) throw new IllegalArgumentException("답변할 댓글 번호를 알려 주세요.");
@@ -149,6 +177,10 @@ final class Agent {
             default -> throw new IllegalArgumentException("지원하지 않는 작업입니다: " + type);
         }
         return Json.obj("id", id, "result", result, "message", message);
+    }
+    private static String writingReply(JsonNode result) {
+        if (!result.path("actions").isArray() || !result.path("actions").isEmpty()) throw new IllegalArgumentException("글쓰기 응답에 실행 요청이 포함되어 처리하지 않았습니다.");
+        return Json.required(result, "reply");
     }
     private String withoutAddress(String text) {
         for (String address : List.of(callName, name)) {
@@ -240,6 +272,8 @@ final class Agent {
             job: {title,jiraKey,result,artifact,verification,reviewed,date}. 실행 결과 수신 또는 사용자의 검토 결과를 기록한다. 작업을 실행했다고 만들지 않는다.
             report: {kind,date,from,to,memberId}. kind는 briefing,daily,worklog,oneonone. 기간을 물으면 worklog의 from/to를 설정한다.
             sync: {kind}. kind는 cli,jira,team,calendar,all.
+            write_text: {format,kind,source,audience,date,memberId}. 문장 수정·메시지 초안·공유 문서 작성은 이 작업 하나만 사용하고 reply는 비운다. 원문은 프로그램이 그대로 전달한다.
+            format은 message 또는 document. message의 kind는 일반 메시지이면 message, PR 댓글이면 pr이다. document의 kind는 brief,meeting,plan,research,decision이며 짧은 공유는 brief이다. source는 제공한 원문만 쓰면 none, 데일리 자료는 daily, 주간 활동과 등록 시간은 weekly, 특정 팀원 면담 자료는 oneonone이다. 면담 자료는 사용자가 명시적으로 요청한 경우에만 실제 memberId와 함께 사용한다. 자료 조회만 요청하면 기존 report를 사용한다. 글쓰기 요청을 이슈·워크로그 등록이나 외부 게시로 바꾸지 않는다.
             pr_review: {url}. Bitbucket Cloud PR 전체 주소가 있을 때 리뷰를 요청한다. 코드 검토는 비동기로 진행하며 결과를 지어내지 않는다.
             pr_reply: {url,commentId}. 내 PR에 다른 사람이 남긴 특정 댓글의 답변 초안을 요청한다. 댓글 번호가 없으면 묻는다.
             review_inbox: {}. 저장소를 제한하지 않고 나에게 요청된 PR 리뷰와 내 PR의 답변할 댓글을 새로 확인한다.
