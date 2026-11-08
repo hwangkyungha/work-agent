@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.time.Clock;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PullRequestReviewTest {
@@ -77,6 +78,7 @@ class PullRequestReviewTest {
         String id = Json.required(row, "id"); assertThrows(IOException.class, () -> reviews.savePending(id));
         assertEquals("delivery-unknown", Json.text(store.get("prReview", id), "status"));
         assertEquals("saved", Json.text(reviews.savePending(id), "status")); assertEquals(1, api.writes);
+        assertFalse(store.get("prReview", id).has("error"));
     }
     @Test void missingPendingConfirmationStopsRemainingComments() throws Exception {
         reviews = new PullRequestReview(service, api, prompt -> result(List.of(finding())));
@@ -100,5 +102,51 @@ class PullRequestReviewTest {
         assertEquals("stale", Json.text(reviews.savePending(Json.required(row, "id")), "status")); assertEquals(0, api.writes);
         api.author = "other";
         ObjectNode invalid = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/2", 7, false)); assertEquals("failed", Json.text(invalid, "status"));
+    }
+    @Test void editedQuestionCannotReceiveThePreviousAnswersDraft() throws Exception {
+        api.author = "owner";
+        ObjectNode incoming = Json.obj("id", 7, "created_on", "01", "updated_on", "01", "user", Json.obj("uuid", "other"), "content", Json.obj("raw", "첫 질문")); api.comments.add(incoming);
+        reviews = new PullRequestReview(service, api, prompt -> { ObjectNode response = result(List.of()); response.put("reply", "현재 코드는 null을 반환합니다.").put("replyConfidence", "high"); response.set("replyEvidence", Json.MAPPER.valueToTree(List.of(evidence()))); return response; });
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 7, false)); String id = Json.required(row, "id");
+        incoming.set("content", Json.obj("raw", "수정된 질문")); incoming.put("updated_on", "02");
+        assertEquals("stale", Json.text(reviews.savePending(id), "status")); assertEquals(0, api.writes);
+        ObjectNode next = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 7, false)); assertNotEquals(id, Json.text(next, "id"));
+    }
+    @Test void editingAndSendingCannotRestoreAnOldLocalDeliveryState() throws Exception {
+        reviews = new PullRequestReview(service, api, prompt -> result(List.of(finding())));
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 0, false)); String id = Json.required(row, "id");
+        CountDownLatch editing = new CountDownLatch(1), release = new CountDownLatch(1), sending = new CountDownLatch(1);
+        ObjectNode input = new ObjectNode(Json.MAPPER.getNodeFactory()) {
+            @Override public JsonNode path(String field) {
+                if (field.equals("text")) { editing.countDown(); try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("edit timed out"); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); } }
+                return super.path(field);
+            }
+        };
+        input.put("id", id).put("findingId", Json.text(row.path("findings").get(0), "id")).put("text", "수정한 댓글");
+        try (ExecutorService threads = Executors.newFixedThreadPool(2)) {
+            Future<ObjectNode> edited = threads.submit(() -> reviews.edit(input)); assertTrue(editing.await(5, TimeUnit.SECONDS));
+            Future<ObjectNode> saved = threads.submit(() -> { sending.countDown(); return reviews.savePending(id); }); assertTrue(sending.await(5, TimeUnit.SECONDS));
+            try { saved.get(300, TimeUnit.MILLISECONDS); } catch (TimeoutException expected) { /* Sending waits for the active editor. */ }
+            finally { release.countDown(); }
+            edited.get(5, TimeUnit.SECONDS); saved.get(5, TimeUnit.SECONDS);
+        } finally { release.countDown(); }
+        ObjectNode stored = store.get("prReview", id); assertEquals("saved", Json.text(stored, "status")); assertEquals("pending", Json.text(stored.path("findings").get(0), "delivery"));
+        assertTrue(Json.text(api.comments.getFirst().path("content"), "raw").contains("수정한 댓글")); assertEquals(1, api.writes);
+    }
+    @Test void completionNotificationPreservesConcurrentDeliveryAndItsOwnFlag() throws Exception {
+        reviews = new PullRequestReview(service, api, prompt -> result(List.of(finding())));
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 0, false)); String id = Json.required(row, "id"); AtomicInteger messages = new AtomicInteger();
+        try (ReviewMonitor monitor = new ReviewMonitor(service, api, reviews, new Config(temporary.resolve("none"), Map.of()), text -> { messages.incrementAndGet(); reviews.savePending(id); })) {
+            monitor.notifyCompleted(); ObjectNode stored = store.get("prReview", id);
+            assertEquals("saved", Json.text(stored, "status")); assertEquals("pending", Json.text(stored.path("findings").get(0), "delivery")); assertTrue(stored.path("notified").asBoolean());
+            reviews.savePending(id); monitor.notifyCompleted(); assertEquals(1, messages.get());
+        }
+    }
+    @Test void restartLeavesAnInterruptedSendUncertainWithoutPostingAgain() throws Exception {
+        reviews = new PullRequestReview(service, api, prompt -> result(List.of(finding())));
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 0, false)); String id = Json.required(row, "id");
+        row.put("status", "saving"); ((ObjectNode) row.path("findings").get(0)).put("delivery", "posting"); store.put("prReview", row);
+        reviews.resume(); assertEquals("delivery-unknown", Json.text(store.get("prReview", id), "status"));
+        assertThrows(IllegalStateException.class, () -> reviews.savePending(id)); assertEquals(0, api.writes);
     }
 }
