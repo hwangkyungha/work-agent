@@ -149,4 +149,31 @@ class PullRequestReviewTest {
         reviews.resume(); assertEquals("delivery-unknown", Json.text(store.get("prReview", id), "status"));
         assertThrows(IllegalStateException.class, () -> reviews.savePending(id)); assertEquals(0, api.writes);
     }
+    @Test void largeSpecificationsAreReviewedInBoundedBatchesWithoutLosingSourceLines() throws Exception {
+        FakeApi large = new FakeApi(new Config(temporary.resolve("none"), Map.of())) {
+            @Override String source(String repository, String commit, String path) throws Exception {
+                if (path.endsWith(".md")) return ("자료를 읽고 코드와 비교합니다.\n".repeat(5000)) + path + "-END";
+                return super.source(repository, commit, path);
+            }
+        };
+        List<String> prompts = new ArrayList<>(); reviews = new PullRequestReview(service, large, prompt -> { prompts.add(prompt); return result(List.of()); });
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 0, false));
+        assertEquals("ready", Json.text(row, "status"), Json.text(row, "error"));
+        assertTrue(prompts.stream().allMatch(prompt -> prompt.length() <= 140_000));
+        for (String name : List.of("AGENTS.md", "CLAUDE.md", "README.md")) assertTrue(prompts.stream().anyMatch(prompt -> prompt.contains(name + "-END")));
+        assertTrue(prompts.stream().anyMatch(prompt -> prompt.contains("1: return null;")));
+        assertTrue(prompts.stream().anyMatch(prompt -> prompt.contains("1: return input;")));
+    }
+    @Test void consecutiveMultilineEvidenceMustMatchEveryActualSourceLine() throws Exception {
+        FakeApi multiline = new FakeApi(new Config(temporary.resolve("none"), Map.of())) {
+            @Override String source(String repository, String commit, String path) throws Exception {
+                if (path.equals("foo.java")) return "return null;\nnext();\n";
+                return super.source(repository, commit, path);
+            }
+        };
+        ReviewContext context = new ReviewContext(multiline, BitbucketClient.PullRequest.parse("https://bitbucket.org/team/repo/pull-requests/1"));
+        ObjectNode quote = evidence().put("quote", "return null;\nnext();"); assertTrue(context.validEvidence(quote));
+        quote.put("quote", "return null;\ninvented();"); assertFalse(context.validEvidence(quote));
+        quote.put("quote", "return null;\nnext();\nafterEnd();"); assertFalse(context.validEvidence(quote));
+    }
 }
