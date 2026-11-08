@@ -5,7 +5,7 @@
     "actions": {"type": "array", "maxItems": 10, "items": {
       "type": "object", "additionalProperties": false,
       "properties": {
-        "type": {"type": "string", "enum": ["task", "task_status", "hide_task", "remove_task", "group_tasks", "activity", "link_activity", "meeting", "room_booking", "plan", "plan_item", "daily_note", "worklog", "post_worklog", "member", "observation", "team_query", "job", "report", "sync"]},
+        "type": {"type": "string", "enum": ["task", "task_status", "hide_task", "remove_task", "group_tasks", "activity", "link_activity", "meeting", "room_booking", "plan", "plan_item", "daily_note", "worklog", "post_worklog", "member", "observation", "team_query", "job", "report", "sync", "pr_review", "pr_reply", "review_inbox"]},
         "payload": {"type": "string"}
       }, "required": ["type", "payload"]
     }}

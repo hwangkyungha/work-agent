@@ -7,6 +7,7 @@ const selectedTasks=new Set(),expandedCandidates=new Set(['recent','due','priori
 const collapsedWorkGroups=new Set();let groupToday=true;
 const worklogEdits=new Map();let worklogFieldId=0;
 let syncingWorklogs=false;const attemptedWorklogWeeks=new Set();
+let reviewState, reviewPoll;
 const sourceName = source => ({claude:'Claude',codex:'Codex',manual:'직접',calendar:'캘린더'}[source] || source);
 const statusName = status => ({'todo':'todo','in-progress':'in-progress','done':'done'}[status] || status);
 const logStatus = status => ({draft:'초안',posted:'Jira 등록 완료',posting:'등록 결과 확인 필요',unknown:'등록 결과 확인 필요',failed:'등록 실패'}[status] || '미작성');
@@ -95,6 +96,30 @@ async function load() {
 function render() {
   document.querySelectorAll('[data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-current',b.dataset.view===view?'page':'false');});
   if(view==='today')renderToday(); if(view==='plan')renderPlan(); if(view==='worklog')renderWorklog(); if(view==='team')renderTeam();
+  if(view==='reviews')renderReviews();else clearTimeout(reviewPoll);
+}
+const reviewStatus={queued:'대기 중',running:'검토 중',ready:'검토 완료',saved:'비공개 초안 저장됨',failed:'실패',stale:'새 커밋 확인 필요','delivery-unknown':'댓글 저장 결과 확인 필요'};
+function prLink(url,label='Bitbucket에서 보기'){
+  try{const target=new URL(url);if(target.protocol==='https:'&&target.hostname==='bitbucket.org')return `<a href="${esc(target.href)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;}catch{}
+  return '';
+}
+async function renderReviews(){
+  clearTimeout(reviewPoll);
+  $('#content').innerHTML=heading('PR 리뷰','나에게 온 리뷰 요청과 내 PR의 댓글을 모든 저장소에서 확인합니다.','<button class="button" id="refresh-reviews">리뷰 요청 새로 확인</button>')+`<section class="sheet"><div class="sheet-body"><form id="review-request" class="review-request"><label for="pr-url">PR 주소</label><input id="pr-url" name="url" type="url" placeholder="https://bitbucket.org/workspace/repository/pull-requests/123" required><button class="button primary" type="submit">리뷰 요청</button></form><p class="hint">댓글은 비공개 초안으로 저장합니다. Bitbucket에서 확인한 뒤 리뷰를 제출하세요.</p></div></section><div id="review-status"></div><div id="review-list"></div>`;
+  await updateReviews();
+}
+async function updateReviews(){
+  clearTimeout(reviewPoll);
+  try{
+    reviewState=await api('/api/reviews');if(view!=='reviews')return;
+    $('#review-status').innerHTML=`<p class="hint">${reviewState.scanning?'저장소 확인 중…':reviewState.at?`${esc((reviewState.workspaces||[]).join(', '))} · 저장소 ${Number(reviewState.repositoryCount||0)}개 확인 · ${esc(clock(reviewState.at))}`:reviewState.configured?'아직 자동 조회 전입니다.':'Bitbucket 이메일과 토큰을 설정해 주세요.'} · 자동 확인 ${reviewState.automatic?'켜짐 (10분 간격)':'꺼짐'}</p>${[...(reviewState.warnings||[]),reviewState.error].filter(Boolean).map(text=>`<p class="hint error">${esc(text)}</p>`).join('')}`;
+    const jobs=reviewState.jobs||[];
+    $('#review-list').innerHTML=jobs.length?jobs.map(job=>{
+      const items=job.kind==='reply'?(job.reply?[{id:'reply',comment:job.reply,evidence:job.replyEvidence||[]}]:[]):job.findings||[];
+      return `<section class="sheet review-card"><div class="sheet-header"><div><small>${job.kind==='reply'?'내 PR 댓글 답변':'요청받은 PR 리뷰'} · ${esc(reviewStatus[job.status]||job.status)}</small><h2>${esc(job.title)}</h2></div>${prLink(job.url)}</div><div class="sheet-body"><p class="hint">커밋 ${esc(job.sourceCommit?.slice(0,12))}${job.totalBatches?` · ${Number(job.checkedBatches||0)}/${Number(job.totalBatches)}개 묶음 확인`:''}</p>${job.summary?`<p class="review-summary">${esc(job.summary)}</p>`:''}${job.error?`<p class="hint error">${esc(job.error)}</p>`:''}${items.map(item=>`<article class="review-finding">${item.path?`<h3>${esc(item.path)}:${Number(item.line)} · ${esc(item.title)}</h3>`:'<h3>답변 초안</h3>'}<p class="review-comment">${esc(item.comment)}</p>${job.status==='ready'?`<button class="text-button" data-edit-review="${esc(job.id)}" data-finding-id="${esc(item.id)}">초안 편집</button>`:''}${item.evidence?.length?`<details><summary>코드 근거 ${item.evidence.length}개</summary>${item.evidence.map(e=>`<p class="hint">${esc(e.path)}:${Number(e.line)} · ${e.side==='old'?'변경 전':'현재 코드'}</p><pre>${esc(e.quote)}</pre>`).join('')}</details>`:''}</article>`).join('')}${!items.length&&job.status==='ready'?'<p class="hint">확실한 결함이나 답변 근거가 없어 댓글을 작성하지 않았습니다.</p>':''}${job.limitations?.length?`<details><summary>검토 범위와 한계</summary><ul>${job.limitations.map(text=>`<li>${esc(text)}</li>`).join('')}</ul></details>`:''}${job.status==='ready'&&items.length?`<div class="form-actions"><button class="button primary" data-save-review="${esc(job.id)}">Bitbucket 비공개 초안 저장</button></div>`:''}${job.status==='delivery-unknown'?`<p class="hint error">Bitbucket에서 댓글을 확인해 주세요. 중복 저장을 막기 위해 새 댓글을 바로 보내지 않습니다.</p><button class="button" data-save-review="${esc(job.id)}">저장 결과 다시 확인</button>`:''}${job.status==='failed'||job.status==='stale'?`<button class="button" data-retry-review="${esc(job.id)}">다시 검토</button>`:''}</div></section>`;
+    }).join(''):empty('아직 리뷰가 없습니다.','리뷰 요청을 새로 확인하거나 PR 주소를 입력하세요.');
+  }catch(e){if(view==='reviews')notice(e.message);}
+  finally{if(view==='reviews')reviewPoll=setTimeout(()=>{if(!document.hidden&&!$('#modal').open)updateReviews();else reviewPoll=setTimeout(updateReviews,10000);},10000);}
 }
 function registeredOn(day){return (state.registeredWorklogs||[]).filter(row=>row.date===day);}
 function registeredSeconds(day){return registeredOn(day).reduce((sum,row)=>sum+row.seconds,0);}
@@ -275,6 +300,10 @@ document.addEventListener('click',async event=>{
   const b=event.target.closest('button');if(!b)return;
   try {
     if(b.dataset.view||b.dataset.go){view=b.dataset.view||b.dataset.go;render();}
+    if(b.id==='refresh-reviews'){b.disabled=true;try{await api('/api/reviews/refresh',{});await updateReviews();}finally{b.disabled=false;}}
+    if(b.dataset.saveReview){b.disabled=true;await api('/api/reviews/save',{id:b.dataset.saveReview});await updateReviews();notice('댓글 저장 상태를 확인했습니다. Bitbucket에서 비공개 초안을 확인하세요.');}
+    if(b.dataset.retryReview){const job=reviewState.jobs.find(row=>row.id===b.dataset.retryReview);b.disabled=true;await api('/api/reviews/request',{url:job.url,commentId:job.parentCommentId||0});await updateReviews();}
+    if(b.dataset.editReview){const job=reviewState.jobs.find(row=>row.id===b.dataset.editReview),item=job.kind==='reply'?{comment:job.reply}:job.findings.find(row=>row.id===b.dataset.findingId);modal('PR 댓글 초안 편집',`<form id="review-edit" data-id="${esc(job.id)}" data-finding-id="${esc(b.dataset.findingId)}"><div class="field"><label for="review-text">댓글 내용</label><textarea id="review-text" name="text" rows="9" required>${esc(item.comment)}</textarea></div><div class="form-actions"><button class="button primary" type="submit">초안 저장</button></div></form>`);}
     if(b.dataset.open){openForm(b.dataset.open);if(b.dataset.forToday)$('#record-form').dataset.forToday='true';}
     if(b.dataset.editTask)openForm('task',b.dataset.editTask);
     if(b.dataset.openStatus){b.disabled=true;try{await openStatus(findTask(b.dataset.openStatus));}finally{b.disabled=false;}}
@@ -329,6 +358,8 @@ document.addEventListener('keydown',async event=>{const handle=event.target.clos
 document.addEventListener('submit',async event=>{
   event.preventDefault();const form=event.target;const submit=$('[type="submit"]',form);if(submit)submit.disabled=true;
   try {
+    if(form.id==='review-request'){await api('/api/reviews/request',{url:new FormData(form).get('url')});await updateReviews();notice('PR 검토를 요청했습니다. 결과가 나오면 목록에 표시합니다.');}
+    if(form.id==='review-edit'){await api('/api/reviews/edit',{id:form.dataset.id,findingId:form.dataset.findingId,text:new FormData(form).get('text')});$('#modal').close();await updateReviews();notice('초안을 저장했습니다.');}
     if(form.id==='quick-task-form'){await api('/api/tasks',{title:$('#quick-task-title').value.trim(),today:true,date:state.date});await load();notice('오늘 할 일에 추가했습니다.');}
     if(form.id==='worklog-favorite-form'){await api('/api/worklogs/favorite',{jiraKey:form.elements.jiraKey.value.trim().toUpperCase(),favorite:true});await load();notice('워크로그 즐겨찾기에 추가했습니다.');}
     if(form.id==='group-form'){await api('/api/tasks/group',{taskIds:JSON.parse(form.dataset.taskIds),workGroup:form.elements.workGroup.value.trim()});$('#modal').close();await load();notice('업무 묶음을 변경했습니다.');}

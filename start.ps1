@@ -5,6 +5,10 @@ $taskUserJiraToken = [Environment]::GetEnvironmentVariable('JIRA_API_TOKEN', 'Us
 if (-not [string]::IsNullOrWhiteSpace($taskUserJiraToken)) {
     $env:JIRA_API_TOKEN = $taskUserJiraToken
 }
+$taskUserBitbucketToken = [Environment]::GetEnvironmentVariable('BITBUCKET_API_TOKEN', 'User')
+if (-not [string]::IsNullOrWhiteSpace($taskUserBitbucketToken)) {
+    $env:BITBUCKET_API_TOKEN = $taskUserBitbucketToken
+}
 foreach ($taskSharedName in @('GROUPWARE_CONFIG')) {
     $taskSharedValue = [Environment]::GetEnvironmentVariable($taskSharedName, 'User')
     if (-not [string]::IsNullOrWhiteSpace($taskSharedValue) -and -not [Environment]::GetEnvironmentVariable($taskSharedName, 'Process')) {
@@ -20,11 +24,11 @@ if ($Background) {
     if ($env:PORT) { $taskPort = [int]$env:PORT }
     if (Get-NetTCPConnection -LocalPort $taskPort -State Listen -ErrorAction SilentlyContinue) { return }
 }
-$taskJar = Join-Path $PSScriptRoot 'work-agent-0.3.11.jar'
+$taskJar = Join-Path $PSScriptRoot 'work-agent-0.4.0.jar'
 if (-not (Test-Path -LiteralPath $taskJar)) {
     & mvn -q package
     if ($LASTEXITCODE -ne 0) { throw '빌드에 실패했습니다.' }
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target/work-agent-0.3.11.jar') -Destination $taskJar
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target/work-agent-0.4.0.jar') -Destination $taskJar
 }
 if ($Background) {
     $taskLogDirectory = Join-Path $PSScriptRoot 'work/logs'

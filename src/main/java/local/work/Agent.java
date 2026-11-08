@@ -15,13 +15,19 @@ final class Agent {
     private final String name;
     private final String callName;
     private final GroupwareBooking booking;
+    private final PullRequestReview reviews;
+    private final ReviewMonitor reviewMonitor;
     Agent(WorkService service, Reports reports, Model model, Synchronizer synchronizer, String name, String callName) {
         this(service, reports, model, synchronizer, name, callName, null);
     }
     Agent(WorkService service, Reports reports, Model model, Synchronizer synchronizer, String name, String callName, GroupwareBooking booking) {
+        this(service, reports, model, synchronizer, name, callName, booking, null, null);
+    }
+    Agent(WorkService service, Reports reports, Model model, Synchronizer synchronizer, String name, String callName, GroupwareBooking booking, PullRequestReview reviews, ReviewMonitor reviewMonitor) {
         this.service = service; this.reports = reports; this.model = prompt -> model.complete(WritingStyle.prompt(prompt)); this.synchronizer = synchronizer;
         this.name = name; this.callName = callName;
         this.booking = booking;
+        this.reviews = reviews; this.reviewMonitor = reviewMonitor;
     }
     synchronized ObjectNode chat(String conversation, String requestId, String text) throws Exception {
         if (text.isBlank() || text.length() > 12000) throw new IllegalArgumentException("요청은 1자부터 12,000자까지 입력하세요.");
@@ -86,6 +92,16 @@ final class Agent {
         String message;
         LocalDate date = Json.text(p, "date").isBlank() ? service.time.today() : LocalDate.parse(Json.text(p, "date"));
         switch (type) {
+            case "pr_review", "pr_reply" -> {
+                if (reviews == null) throw new IllegalStateException("PR 리뷰 기능이 연결되지 않았습니다.");
+                if (type.equals("pr_reply") && p.path("commentId").asLong() <= 0) throw new IllegalArgumentException("답변할 댓글 번호를 알려 주세요.");
+                result = reviews.request(Json.required(p, "url"), type.equals("pr_reply") ? p.path("commentId").asLong() : 0, false);
+                message = "PR " + (type.equals("pr_reply") ? "댓글 답변" : "리뷰") + "를 요청했습니다. 업무 수첩의 PR 리뷰 메뉴에서 결과를 확인할 수 있습니다.\n" + Json.text(result, "url");
+            }
+            case "review_inbox" -> {
+                if (reviewMonitor == null) throw new IllegalStateException("PR 리뷰 기능이 연결되지 않았습니다.");
+                result = reviewMonitor.refresh(); message = "모든 저장소에서 나에게 온 리뷰 요청과 내 PR에 달린 댓글을 확인하고 있습니다. 결과는 PR 리뷰 메뉴에 표시합니다.";
+            }
             case "room_booking" -> {
                 if (booking == null) throw new IllegalStateException("회의실 예약 기능이 연결되지 않았습니다.");
                 result = booking.execute(id, p); message = Json.required(result, "message");
@@ -224,6 +240,10 @@ final class Agent {
             job: {title,jiraKey,result,artifact,verification,reviewed,date}. 실행 결과 수신 또는 사용자의 검토 결과를 기록한다. 작업을 실행했다고 만들지 않는다.
             report: {kind,date,from,to,memberId}. kind는 briefing,daily,worklog,oneonone. 기간을 물으면 worklog의 from/to를 설정한다.
             sync: {kind}. kind는 cli,jira,team,calendar,all.
+            pr_review: {url}. Bitbucket Cloud PR 전체 주소가 있을 때 리뷰를 요청한다. 코드 검토는 비동기로 진행하며 결과를 지어내지 않는다.
+            pr_reply: {url,commentId}. 내 PR에 다른 사람이 남긴 특정 댓글의 답변 초안을 요청한다. 댓글 번호가 없으면 묻는다.
+            review_inbox: {}. 저장소를 제한하지 않고 나에게 요청된 PR 리뷰와 내 PR의 답변할 댓글을 새로 확인한다.
+            PR 리뷰·답변은 비공개 초안으로만 작성한다. 승인·병합·리뷰 제출을 하지 않는다.
             한 요청에 최대 10개 actions. 업무 추가 후 계획에 넣을 때는 task 다음에 plan을 보내고 taskIds에서 새 업무를 "$lastTask"로 참조한다.
             """;
 }

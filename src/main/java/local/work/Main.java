@@ -69,8 +69,15 @@ public final class Main {
             }
             return result;
         };
-        Agent agent = new Agent(service, reports, new CliModel(config), sync, config.agentName(), config.agentCallName(), booking);
+        CliModel cli = new CliModel(config);
+        BitbucketClient bitbucket = new BitbucketClient(config);
+        PullRequestReview reviews = new PullRequestReview(service, bitbucket, cli::review, config.agentName());
+        // The notifier is attached after the Slack connection has been created.
+        SlackConnection[] slackTarget = new SlackConnection[1];
+        ReviewMonitor reviewMonitor = new ReviewMonitor(service, bitbucket, reviews, config, text -> slackTarget[0].notifyOwner(text));
+        Agent agent = new Agent(service, reports, cli, sync, config.agentName(), config.agentCallName(), booking, reviews, reviewMonitor);
         SlackConnection slack = new SlackConnection(config, store, agent);
+        slackTarget[0] = slack;
         Scheduler scheduler = new Scheduler(service, reports, slack, config, sync);
         int port = portOverride == null ? config.number("PORT", 8765) : portOverride;
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
@@ -101,6 +108,7 @@ public final class Main {
                     switch (path) {
                         case "/api/state" -> json(exchange, 200, service.state(date));
                         case "/api/team" -> json(exchange, 200, service.team());
+                        case "/api/reviews" -> json(exchange, 200, reviewMonitor.state());
                         case "/api/tasks/transitions" -> json(exchange, 200, service.transitions(query.getOrDefault("id", "")));
                         case "/api/messages" -> json(exchange, 200, store.list("message").stream().filter(n -> Json.text(n, "conversation").equals("web")).toList());
                         case "/api/settings" -> json(exchange, 200, Json.obj("agentName", config.agentName(), "agentCallName", config.agentCallName(), "engine", config.get("AGENT_ENGINE", "codex"), "slackConfigured", slack.configured(), "slackConnected", slack.connected(), "slackError", slack.lastError(), "jiraConfigured", service.jira.configured(), "calendarConfigured", calendar.configured(), "briefingTime", config.get("BRIEFING_TIME", "09:00"), "fridayTime", config.get("FRIDAY_REVIEW_TIME", "16:30"), "claudeSessionTime", config.get("CLAUDE_SESSION_TIME", ""), "claudeSession", store.get("scheduled", "claude-session:" + time.today()), "timezone", "Asia/Seoul"));
@@ -133,6 +141,10 @@ public final class Main {
                     JsonNode body = Json.read(new String(bytes, StandardCharsets.UTF_8));
                     Object result = switch (path) {
                         case "/api/rooms" -> booking.execute(Json.required(body, "requestId"), body);
+                        case "/api/reviews/refresh" -> reviewMonitor.refresh();
+                        case "/api/reviews/request" -> reviews.request(Json.required(body, "url"), body.path("commentId").asLong(), false);
+                        case "/api/reviews/edit" -> reviews.edit(body);
+                        case "/api/reviews/save" -> reviews.savePending(Json.required(body, "id"));
                         case "/api/chat" -> agent.chat("web", body.path("requestId").asText(UUID.randomUUID().toString()), Json.required(body, "text"));
                         case "/api/tasks" -> service.task(body);
                         case "/api/tasks/status" -> service.changeStatus(body);
@@ -163,8 +175,8 @@ public final class Main {
             catch (Exception e) { System.err.println(e.getClass().getSimpleName() + ": " + SlackConnection.friendly(e)); json(exchange, 502, Json.obj("error", SlackConnection.friendly(e))); }
             finally { exchange.close(); }
         });
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> { scheduler.close(); slack.close(); server.stop(1); httpWorkers.shutdownNow(); try { store.close(); } catch (Exception ignored) {} }));
-        server.start(); slack.start(); scheduler.start();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> { reviewMonitor.close(); reviews.close(); scheduler.close(); slack.close(); server.stop(1); httpWorkers.shutdownNow(); try { store.close(); } catch (Exception ignored) {} }));
+        server.start(); slack.start(); scheduler.start(); reviewMonitor.start();
         System.out.println("work-agent (" + config.agentName() + "): http://127.0.0.1:" + port + " (Asia/Seoul)");
         System.out.println("데이터: " + config.data());
     }
