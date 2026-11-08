@@ -25,13 +25,13 @@ final class PullRequestReview implements AutoCloseable {
         String commentRevision = "";
         if (parent > 0) {
             JsonNode incoming = api.comments(pr).stream().filter(comment -> comment.path("id").asLong() == parent && !comment.path("deleted").asBoolean()).findFirst().orElseThrow(() -> new IllegalArgumentException("답변할 댓글을 찾지 못했습니다."));
-            commentRevision = TranscriptImporter.hash(Json.text(incoming.path("content"), "raw") + ":" + Json.text(incoming, "updated_on"));
+            commentRevision = commentRevision(incoming);
         }
         String id = TranscriptImporter.hash(pr.url() + ":" + source + ":" + destination + ":" + parent + ":" + commentRevision);
         ObjectNode existing = service.store.get("prReview", id);
         if (existing != null && (automatic || !Set.of("failed", "stale").contains(Json.text(existing, "status")))) return existing;
         ObjectNode row = Json.obj("id", id, "url", pr.url(), "title", Json.text(metadata, "title"), "sourceCommit", source, "destinationCommit", destination,
-                "parentCommentId", parent, "kind", parent > 0 ? "reply" : "review", "status", "queued", "automatic", automatic, "createdAt", service.time.instant().toString(), "findings", List.of(), "limitations", List.of(), "summary", "");
+                "parentCommentId", parent, "commentRevision", commentRevision, "kind", parent > 0 ? "reply" : "review", "status", "queued", "automatic", automatic, "createdAt", service.time.instant().toString(), "findings", List.of(), "limitations", List.of(), "summary", "");
         service.store.put("prReview", row);
         enqueue(row);
         return row;
@@ -45,7 +45,10 @@ final class PullRequestReview implements AutoCloseable {
         });
     }
     void resume() {
-        for (ObjectNode row : service.store.list("prReview")) if (Set.of("queued", "running").contains(Json.text(row, "status"))) enqueue(row);
+        for (ObjectNode row : service.store.list("prReview")) {
+            if (Set.of("queued", "running").contains(Json.text(row, "status"))) enqueue(row);
+            if (Json.text(row, "status").equals("saving")) { row.put("status", "delivery-unknown").put("error", "서버가 재시작되어 이전 댓글 저장 결과를 확인해야 합니다."); save(row); }
+        }
     }
     void run(String id) throws Exception {
         ObjectNode row = required(id); row.put("status", "running"); save(row);
@@ -95,7 +98,8 @@ final class PullRequestReview implements AutoCloseable {
                     else rejected++;
                 }
                 rejected += Math.max(0, candidates.path("findings").size() - verified.path("findings").size());
-                summaries.add(Json.text(verified, "summary")); verified.path("limitations").forEach(value -> limitations.add(value.asText()));
+                summaries.add(Json.text(verified, "summary"));
+                for (JsonNode value : verified.path("limitations")) limitations.add("검토 묶음 " + (checked + 1) + "/" + batches.size() + ": " + value.asText());
                 row.put("checkedBatches", ++checked); save(row);
             }
         }
@@ -132,6 +136,7 @@ final class PullRequestReview implements AutoCloseable {
             String owner = Json.required(api.get("/user"), "uuid");
             if (!owner.equals(Json.text(current.path("author"), "uuid"))) throw new IllegalArgumentException("내 PR 댓글에만 답변할 수 있습니다.");
             long parent = row.path("parentCommentId").asLong();
+            if (!sameComment(row, comments)) { row.put("status", "stale").put("error", "댓글 내용이 바뀌었습니다. 다시 답변을 요청하세요."); return save(row); }
             if (!Set.of("saved", "delivery-unknown").contains(Json.text(row, "status")) && ReviewMonitor.unanswered(comments, owner).stream().noneMatch(comment -> comment.path("id").asLong() == parent)) {
                 row.put("status", "stale"); row.put("error", "해당 대화에 새 댓글이나 답변이 있어 저장을 중단했습니다."); return save(row);
             }
@@ -140,7 +145,7 @@ final class PullRequestReview implements AutoCloseable {
             ObjectNode finding = (ObjectNode) value;
             deliver(row, finding, comments, Json.text(finding, "id"), Json.text(finding, "comment"), Json.text(finding, "path"), finding.path("line").asInt(), Json.text(finding, "side"), 0);
         }
-        row.put("status", "saved"); return save(row);
+        row.put("status", "saved"); row.remove("error"); return save(row);
     }
     private void deliver(ObjectNode review, ObjectNode item, List<JsonNode> comments, String id, String text, String path, int line, String side, long parent) throws Exception {
         String marker = "<!-- work-agent-review:" + id + " -->";
@@ -149,14 +154,15 @@ final class PullRequestReview implements AutoCloseable {
         if (Set.of("pending", "published", "posting", "unknown").contains(Json.text(item, "delivery"))) throw new IllegalStateException("이전 댓글 저장 결과를 확인하지 못했습니다. Bitbucket에서 확인한 뒤 다시 요청하세요.");
         JsonNode current = api.pullRequest(BitbucketClient.PullRequest.parse(Json.text(review, "url")));
         if (!Json.text(current, "state").equals("OPEN") || !Json.text(review, "sourceCommit").equals(Json.text(current.path("source").path("commit"), "hash")) || !Json.text(review, "destinationCommit").equals(Json.text(current.path("destination").path("commit"), "hash"))) { review.put("status", "stale"); save(review); throw new IllegalStateException("PR 커밋이 바뀌어 저장을 중단했습니다. 다시 검토하세요."); }
-        item.put("delivery", "posting"); review.put("status", "delivery-unknown"); save(review);
+        if (parent > 0 && !sameComment(review, api.comments(BitbucketClient.PullRequest.parse(Json.text(review, "url"))))) { review.put("status", "stale"); save(review); throw new IllegalStateException("댓글 내용이 바뀌어 저장을 중단했습니다. 다시 답변을 요청하세요."); }
+        item.put("delivery", "posting"); review.put("status", "saving"); save(review);
         try {
             JsonNode result = api.pendingComment(BitbucketClient.PullRequest.parse(Json.text(review, "url")), "AI 리뷰 · " + agentName + "\n\n" + text + "\n\n" + marker, path, line, side, parent);
             if (!result.path("pending").asBoolean()) { item.put("delivery", "published").put("commentId", result.path("id").asLong()); save(review); throw new IllegalStateException("Bitbucket이 비공개 댓글 상태를 반환하지 않았습니다. 추가 저장을 중단했습니다."); }
             item.put("delivery", "pending").put("commentId", result.path("id").asLong()); save(review);
-        } catch (Exception e) { if (!Json.text(item, "delivery").equals("published")) item.put("delivery", "unknown"); save(review); throw e; }
+        } catch (Exception e) { if (!Json.text(item, "delivery").equals("published")) item.put("delivery", "unknown"); review.put("status", "delivery-unknown").put("error", SlackConnection.friendly(e)); save(review); throw e; }
     }
-    ObjectNode edit(JsonNode input) {
+    synchronized ObjectNode edit(JsonNode input) {
         ObjectNode row = required(Json.required(input, "id"));
         if (!Json.text(row, "status").equals("ready")) throw new IllegalArgumentException("Bitbucket에 저장하기 전 초안만 편집할 수 있습니다.");
         if (row.path("parentCommentId").asLong() > 0) row.put("reply", Json.required(input, "text"));
@@ -164,6 +170,16 @@ final class PullRequestReview implements AutoCloseable {
         return save(row);
     }
     private ObjectNode required(String id) { ObjectNode row = service.store.get("prReview", id); if (row == null) throw new IllegalArgumentException("리뷰 초안을 찾지 못했습니다."); return row; }
-    private ObjectNode save(ObjectNode row) { row.put("updatedAt", service.time.instant().toString()); return service.store.put("prReview", row); }
+    static String commentRevision(JsonNode comment) { return TranscriptImporter.hash(Json.text(comment.path("content"), "raw") + ":" + Json.text(comment, "updated_on")); }
+    private boolean sameComment(ObjectNode review, List<JsonNode> comments) {
+        return comments.stream().anyMatch(comment -> comment.path("id").asLong() == review.path("parentCommentId").asLong() && !comment.path("deleted").asBoolean() && commentRevision(comment).equals(Json.text(review, "commentRevision")));
+    }
+    private ObjectNode save(ObjectNode row) {
+        synchronized (service.store) {
+            ObjectNode current = service.store.get("prReview", Json.required(row, "id"));
+            if (current != null && current.path("notified").asBoolean()) row.put("notified", true);
+            row.put("updatedAt", service.time.instant().toString()); return service.store.put("prReview", row);
+        }
+    }
     @Override public void close() { worker.shutdownNow(); }
 }

@@ -88,13 +88,16 @@ final class ReviewMonitor implements AutoCloseable {
         status.put("scanning", scanning).put("configured", api.configured()).put("automatic", config.get("BITBUCKET_AUTO_REVIEW", "true").equals("true"));
         List<ObjectNode> jobs = service.store.list("prReview"); Collections.reverse(jobs); status.set("jobs", Json.MAPPER.valueToTree(jobs)); return status;
     }
-    private void notifyCompleted() throws Exception {
+    void notifyCompleted() throws Exception {
         for (ObjectNode row : service.store.list("prReview")) {
             if (row.path("notified").asBoolean() || !Set.of("ready", "saved", "failed", "stale", "delivery-unknown").contains(Json.text(row, "status"))) continue;
             String status = Json.text(row, "status");
             String outcome = switch (status) { case "saved" -> "Bitbucket에 비공개 초안을 저장했습니다. 확인한 뒤 제출해 주세요."; case "ready" -> "검토를 마쳤습니다. 확실한 지적이나 답변 근거가 없으면 댓글을 작성하지 않습니다."; case "stale" -> "PR 커밋이 바뀌었습니다. 다시 검토해야 합니다."; default -> "처리를 완료하지 못했습니다. PR 리뷰 화면에서 원인을 확인해 주세요."; };
             notifier.send((row.path("parentCommentId").asLong() > 0 ? "PR 댓글 답변: " : "PR 리뷰: ") + Json.text(row, "title") + "\n" + outcome + "\n" + Json.text(row, "url"));
-            row.put("notified", true); service.store.put("prReview", row);
+            synchronized (service.store) {
+                ObjectNode current = service.store.get("prReview", Json.required(row, "id"));
+                if (current != null) { current.put("notified", true); service.store.put("prReview", current); }
+            }
         }
     }
     @Override public void close() { worker.shutdownNow(); }

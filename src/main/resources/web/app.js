@@ -98,7 +98,7 @@ function render() {
   if(view==='today')renderToday(); if(view==='plan')renderPlan(); if(view==='worklog')renderWorklog(); if(view==='team')renderTeam();
   if(view==='reviews')renderReviews();else clearTimeout(reviewPoll);
 }
-const reviewStatus={queued:'대기 중',running:'검토 중',ready:'검토 완료',saved:'비공개 초안 저장됨',failed:'실패',stale:'새 커밋 확인 필요','delivery-unknown':'댓글 저장 결과 확인 필요'};
+const reviewStatus={queued:'대기 중',running:'검토 중',ready:'검토 완료',saving:'비공개 초안 저장 중',saved:'비공개 초안 저장됨',failed:'실패',stale:'내용 변경으로 재검토 필요','delivery-unknown':'댓글 저장 결과 확인 필요'};
 function prLink(url,label='Bitbucket에서 보기'){
   try{const target=new URL(url);if(target.protocol==='https:'&&target.hostname==='bitbucket.org')return `<a href="${esc(target.href)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;}catch{}
   return '';
