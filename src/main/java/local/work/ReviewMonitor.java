@@ -1,0 +1,101 @@
+package local.work;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.*;
+import java.util.concurrent.*;
+
+/** Finds the owner's review requests and unanswered threads across accessible repositories. */
+final class ReviewMonitor implements AutoCloseable {
+    private final WorkService service;
+    private final BitbucketClient api;
+    private final PullRequestReview reviews;
+    private final Config config;
+    private final Scheduler.Notifier notifier;
+    private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
+    private volatile boolean scanning;
+    ReviewMonitor(WorkService service, BitbucketClient api, PullRequestReview reviews, Config config, Scheduler.Notifier notifier) {
+        this.service = service; this.api = api; this.reviews = reviews; this.config = config; this.notifier = notifier;
+    }
+    void start() {
+        reviews.resume();
+        if (api.configured() && config.get("BITBUCKET_AUTO_REVIEW", "true").equals("true")) worker.scheduleWithFixedDelay(this::tick, 10, 600, TimeUnit.SECONDS);
+        worker.scheduleWithFixedDelay(() -> { try { notifyCompleted(); } catch (Exception e) { System.err.println("PR 알림을 보내지 못했습니다: " + SlackConnection.friendly(e)); } }, 30, 30, TimeUnit.SECONDS);
+    }
+    synchronized ObjectNode refresh() {
+        if (!scanning) { scanning = true; worker.submit(this::tick); }
+        return state();
+    }
+    private void tick() {
+        scanning = true;
+        try { scan(); }
+        catch (Exception e) {
+            ObjectNode status = service.store.get("reviewMonitor", "status");
+            if (status == null) status = Json.obj("id", "status", "items", List.of());
+            status.put("error", SlackConnection.friendly(e)).put("attemptedAt", service.time.instant().toString()); service.store.put("reviewMonitor", status);
+        } finally { scanning = false; }
+        try { notifyCompleted(); } catch (Exception e) { System.err.println("PR 알림을 보내지 못했습니다: " + SlackConnection.friendly(e)); }
+    }
+    ObjectNode scan() throws Exception {
+        String owner = Json.required(api.get("/user"), "uuid");
+        Set<String> workspaces = new LinkedHashSet<>(); List<String> warnings = new ArrayList<>();
+        try { for (JsonNode membership : api.pages("/user/workspaces?pagelen=100")) { String slug = Json.text(membership.path("workspace"), "slug"); if (!slug.isBlank()) workspaces.add(slug); } }
+        catch (BitbucketClient.Rejected e) { if (e.status != 403) throw e; warnings.add("워크스페이스 자동 조회 권한이 없습니다. read:workspace:bitbucket 권한을 추가하면 모든 워크스페이스를 찾습니다. 현재는 BITBUCKET_WORKSPACES에 지정한 범위를 확인합니다."); }
+        for (String slug : config.get("BITBUCKET_WORKSPACES", "").split(",")) if (!slug.isBlank()) workspaces.add(slug.strip());
+        if (workspaces.isEmpty()) throw new IllegalArgumentException("확인할 워크스페이스가 없습니다. read:workspace:bitbucket 권한을 추가하거나 BITBUCKET_WORKSPACES를 설정하세요.");
+        List<ObjectNode> items = new ArrayList<>(); Set<String> seen = new HashSet<>(); int repositoryCount = 0;
+        for (String workspace : workspaces) {
+            List<JsonNode> repositories;
+            try { repositories = api.pages("/user/workspaces/" + BitbucketClient.segment(workspace) + "/permissions/repositories?pagelen=100"); }
+            catch (Exception e) { warnings.add(workspace + ": " + SlackConnection.friendly(e)); continue; }
+            for (JsonNode permission : repositories) {
+                String fullName = Json.text(permission.path("repository"), "full_name");
+                if (!fullName.matches("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+") || !seen.add(fullName)) continue;
+                repositoryCount++;
+                try {
+                    String query = "state=\"OPEN\" AND (author.uuid=\"" + owner + "\" OR reviewers.uuid=\"" + owner + "\")";
+                    for (JsonNode pr : api.pages("/repositories/" + fullName + "/pullrequests?pagelen=50&fields=%2Bvalues.reviewers&q=" + BitbucketClient.segment(query))) {
+                        boolean own = owner.equals(Json.text(pr.path("author"), "uuid")), reviewer = false;
+                        for (JsonNode person : pr.path("reviewers")) reviewer |= owner.equals(Json.text(person, "uuid"));
+                        if (!Json.text(pr, "state").equals("OPEN") || (!own && !reviewer)) continue;
+                        String url = "https://bitbucket.org/" + fullName + "/pull-requests/" + pr.path("id").asInt();
+                        if (!own && reviewer) { ObjectNode job = reviews.request(url, 0, true); items.add(item(job, fullName, "review")); }
+                        if (own) {
+                            List<JsonNode> comments = api.comments(BitbucketClient.PullRequest.parse(url));
+                            for (JsonNode incoming : unanswered(comments, owner)) { ObjectNode job = reviews.request(url, incoming.path("id").asLong(), true); items.add(item(job, fullName, "reply")); }
+                        }
+                    }
+                } catch (Exception e) { warnings.add(fullName + ": " + SlackConnection.friendly(e)); }
+            }
+        }
+        return service.store.put("reviewMonitor", Json.obj("id", "status", "at", service.time.instant().toString(), "repositoryCount", repositoryCount, "workspaces", workspaces, "warnings", warnings, "items", items));
+    }
+    private static ObjectNode item(ObjectNode job, String repository, String kind) { return Json.obj("id", Json.text(job, "id"), "url", Json.text(job, "url"), "repository", repository, "kind", kind); }
+    static List<JsonNode> unanswered(List<JsonNode> comments, String owner) {
+        Map<Long, JsonNode> byId = new HashMap<>(), latest = new LinkedHashMap<>();
+        for (JsonNode comment : comments) if (!comment.path("deleted").asBoolean()) byId.put(comment.path("id").asLong(), comment);
+        comments.stream().filter(comment -> !comment.path("deleted").asBoolean()).sorted(Comparator.comparing(comment -> Json.text(comment, "created_on"))).forEach(comment -> {
+            long root = comment.path("id").asLong(); JsonNode ancestor = comment; Set<Long> visited = new HashSet<>();
+            while (ancestor.path("parent").path("id").asLong() > 0 && visited.add(root)) { root = ancestor.path("parent").path("id").asLong(); ancestor = byId.get(root); if (ancestor == null) break; }
+            latest.put(root, comment);
+        });
+        return latest.entrySet().stream().filter(entry -> byId.containsKey(entry.getKey()) && !byId.get(entry.getKey()).path("resolution").isObject()).map(Map.Entry::getValue)
+                .filter(comment -> !owner.equals(Json.text(comment.path("user"), "uuid")) && !comment.path("pending").asBoolean()).toList();
+    }
+    ObjectNode state() {
+        ObjectNode status = service.store.get("reviewMonitor", "status");
+        if (status == null) status = Json.obj("items", List.of(), "warnings", List.of());
+        status.put("scanning", scanning).put("configured", api.configured()).put("automatic", config.get("BITBUCKET_AUTO_REVIEW", "true").equals("true"));
+        List<ObjectNode> jobs = service.store.list("prReview"); Collections.reverse(jobs); status.set("jobs", Json.MAPPER.valueToTree(jobs)); return status;
+    }
+    private void notifyCompleted() throws Exception {
+        for (ObjectNode row : service.store.list("prReview")) {
+            if (row.path("notified").asBoolean() || !Set.of("ready", "saved", "failed", "stale", "delivery-unknown").contains(Json.text(row, "status"))) continue;
+            String status = Json.text(row, "status");
+            String outcome = switch (status) { case "saved" -> "Bitbucket에 비공개 초안을 저장했습니다. 확인한 뒤 제출해 주세요."; case "ready" -> "검토를 마쳤습니다. 확실한 지적이나 답변 근거가 없으면 댓글을 작성하지 않습니다."; case "stale" -> "PR 커밋이 바뀌었습니다. 다시 검토해야 합니다."; default -> "처리를 완료하지 못했습니다. PR 리뷰 화면에서 원인을 확인해 주세요."; };
+            notifier.send((row.path("parentCommentId").asLong() > 0 ? "PR 댓글 답변: " : "PR 리뷰: ") + Json.text(row, "title") + "\n" + outcome + "\n" + Json.text(row, "url"));
+            row.put("notified", true); service.store.put("prReview", row);
+        }
+    }
+    @Override public void close() { worker.shutdownNow(); }
+}

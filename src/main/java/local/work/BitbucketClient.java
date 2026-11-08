@@ -2,6 +2,7 @@ package local.work;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.io.IOException;
 import java.net.*;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
@@ -20,7 +21,7 @@ class BitbucketClient {
             return new PullRequest(match.group(1), match.group(2), Integer.parseInt(match.group(3)));
         }
     }
-    static final class Rejected extends java.io.IOException {
+    static final class Rejected extends IOException {
         final int status;
         Rejected(int status) { super("Bitbucket 요청에 실패했습니다(HTTP " + status + "). 토큰 권한과 저장소 접근 권한을 확인하세요."); this.status = status; }
     }
