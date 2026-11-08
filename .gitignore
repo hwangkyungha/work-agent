@@ -24,3 +24,14 @@ config.local.properties
 *.iml
 .DS_Store
 Thumbs.db
+
+# 글쓰기 설치 도구가 만든 로컬 사본과 백업
+/.work-agent/
+/.agents/skills/write-message/
+/.agents/skills/write-document/
+/.agents/skills/work-agent-writing/
+/.claude/skills/write-message/
+/.claude/skills/write-document/
+/.claude/skills/work-agent-writing/
+/.claude/output-styles/work-agent-korean.md
+/.claude/settings.local.json

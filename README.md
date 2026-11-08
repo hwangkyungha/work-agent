@@ -4,6 +4,8 @@ Slack에서 요청하고, 로컬 웹페이지에서 업무를 조회하며, Jira
 
 ## 준비 사항
 
+업무 글쓰기 스킬과 Claude 출력 스타일의 설치·업데이트·평가는 [글쓰기 설치 안내](docs/writing-installation.md)를 참고하세요. 공통 기준과 `write-message`, `write-document`를 저장소에서 함께 관리합니다.
+
 - Java 21 이상과 Maven이 필요합니다.
 - 자연어 요청을 사용하려면 Codex CLI 또는 Claude Code CLI를 설치하고 로그인해야 합니다.
 - Slack, Jira, 캘린더는 사용할 기능에 맞춰 연결합니다. 연결하지 않아도 로컬 화면에서 할 일과 계획을 관리할 수 있습니다.
