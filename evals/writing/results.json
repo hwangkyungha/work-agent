@@ -1,0 +1,53 @@
+{
+  "date": "2026-11-09",
+  "cli": {
+    "output": "codex-cli 0.153.4 (CLI default model)",
+    "selection": "Claude Code 2.1.288 (CLI default model)"
+  },
+  "sourceFiles": {
+    "skills/work-agent-writing/common.md": "3e9b4ed9660056c0ded448b58836ce581c991c3d2944e66fab7c6245664cf726",
+    "skills/write-document/references/brief.md": "f55f3ecdba1c3f1bb1244c6dc7bc8b803c82e7c9da4506fd771a4398f93986cd",
+    "skills/write-document/references/decision.md": "ce162120d45c25d369564e4e98c1bc99c665aa3db5b97bcb89b3ba26840bb1c2",
+    "skills/write-document/references/meeting.md": "4c645f4b7d530b05dd63d3784089d88392b4d3fd1db38bf8fc9ab9a6bb5be47a",
+    "skills/write-document/references/plan.md": "73989cee4925f93092a41348dd97144564213dda8f20079e4e253b3c6c355f63",
+    "skills/write-document/references/reader-check.md": "f9145b50d48a0821162eb16f433ae1853117d59766709748371aa93a4320ec58",
+    "skills/write-document/references/research.md": "ad1bb6679475c888e1a417ef62f3a4a7aadf4a355230457d39ee2aae17ec3c14",
+    "skills/write-document/SKILL.md": "c689fe95e6b471234447482cc028aa67f97861f2d09ef843b2f8ad7b3fd40fca",
+    "skills/write-message/references/pr-comments.md": "b152ecbb38d699e036c9c7c508df885f8aaeb1d524fdecb01304146cc2f3e630",
+    "skills/write-message/SKILL.md": "2609abb2e01663aee87a1fa8db064520ef999ceb7b58982282aa254a9b9cffd5"
+  },
+  "initial": {
+    "outputCandidates": 18,
+    "criticalFailures": 2,
+    "selectionCases": 24,
+    "selectionFailures": 3,
+    "observed": [
+      "미확인 위험에 원문에 없는 조건을 추가함",
+      "PR 제목과 본문 요청에 메시지 스킬이 선택됨"
+    ]
+  },
+  "final": {
+    "outputCandidates": 18,
+    "criticalFailures": 0,
+    "qualityFailures": 0,
+    "selectionCases": 24,
+    "selectionFailures": 0,
+    "selectionErrors": 0
+  },
+  "forwardTest": {
+    "request": "2주 시험 적용 검토를 요청하는 의사결정 문서",
+    "independentReader": true,
+    "revisions": 1,
+    "result": "문서와 독자 정보만으로 요청·추정·미확인 사항을 구분함"
+  },
+  "liveApplication": {
+    "messageFactsPreserved": true,
+    "newTasks": 0,
+    "newWorklogs": 0
+  },
+  "limits": [
+    "동일 모델의 소규모 반복 비교이며 일반적인 품질 향상을 보장하지 않는다.",
+    "출력 평가는 최종 글을 비교한다. 전체 절차와 독립 독자 검토는 별도 실행으로 확인했다.",
+    "원본 모델 응답과 CLI 진단은 개인 work/ 폴더에 저장하고 공유하지 않는다."
+  ]
+}

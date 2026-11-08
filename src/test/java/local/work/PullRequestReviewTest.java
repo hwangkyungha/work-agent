@@ -51,7 +51,7 @@ class PullRequestReviewTest {
     @Test void requiresSecondPassExactEvidenceAndChangedAnchor() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         ObjectNode wrong = finding(); wrong.put("line", 20);
-        reviews = new PullRequestReview(service, api, prompt -> { assertTrue(prompt.contains("사람이 읽는 업무 글")); return result(calls.incrementAndGet() == 1 ? List.of(finding(), wrong) : List.of(finding(), wrong)); });
+        reviews = new PullRequestReview(service, api, prompt -> { assertTrue(prompt.contains("name: write-message")); return result(calls.incrementAndGet() == 1 ? List.of(finding(), wrong) : List.of(finding(), wrong)); });
         ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 0, false));
         assertEquals("ready", Json.text(row, "status")); assertEquals(2, calls.get()); assertEquals(1, row.path("findings").size()); assertEquals(1, row.path("rejectedCount").asInt()); assertEquals(0, api.writes);
         String id = Json.required(row, "id"); reviews.savePending(id); reviews.savePending(id);
