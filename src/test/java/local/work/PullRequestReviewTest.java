@@ -17,13 +17,13 @@ class PullRequestReviewTest {
     @TempDir Path temporary;
     Store store; WorkService service; FakeApi api; PullRequestReview reviews;
     static class FakeApi extends BitbucketClient {
-        String source = "source", author = "other"; boolean loseResponse, pending = true;
+        String source = "source", destination = "destination", author = "other"; boolean loseResponse, pending = true;
         int writes; List<JsonNode> comments = new ArrayList<>();
         FakeApi(Config config) { super(config); }
         @Override boolean configured() { return true; }
         @Override JsonNode pullRequest(PullRequest pr) {
             return Json.obj("id", pr.number(), "state", "OPEN", "title", "테스트 PR", "author", Json.obj("uuid", author), "reviewers", List.of(Json.obj("uuid", "owner")),
-                    "source", Json.obj("commit", Json.obj("hash", source), "repository", Json.obj("full_name", "team/repo")), "destination", Json.obj("commit", Json.obj("hash", "destination"), "repository", Json.obj("full_name", "team/repo")));
+                    "source", Json.obj("commit", Json.obj("hash", source), "repository", Json.obj("full_name", "team/repo")), "destination", Json.obj("commit", Json.obj("hash", destination), "repository", Json.obj("full_name", "team/repo")));
         }
         @Override JsonNode get(String path) { return path.equals("/user") ? Json.obj("uuid", "owner") : Json.obj("hash", "base"); }
         @Override String request(String method, String path, JsonNode body) { assertEquals("GET", method); return "diff --git a/foo.java b/foo.java\n--- a/foo.java\n+++ b/foo.java\n@@ -1 +1 @@\n-return input;\n+return null;\n"; }
@@ -252,6 +252,71 @@ class PullRequestReviewTest {
         assertEquals(Json.text(first, "sourceCommit"), Json.text(second, "sourceCommit"));
         assertEquals(0, api.writes);
     }
+    @Test void automaticReviewReusesCompletedHeadAcrossBaseChangesAndRestarts() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        reviews = new PullRequestReview(service, api, prompt -> { calls.incrementAndGet(); return result(List.of()); });
+        String url = "https://bitbucket.org/team/repo/pull-requests/1";
+        ObjectNode first = await(reviews.request(url, 0, false, true));
+        int reviewedCalls = calls.get();
+        api.destination = "new-base";
+        reviews.close();
+        reviews = new PullRequestReview(service, api, prompt -> { calls.incrementAndGet(); return result(List.of()); });
+        ObjectNode reused = await(reviews.request(url, 0, true));
+        assertEquals(Json.text(first, "id"), Json.text(reused, "id"));
+        assertEquals(reviewedCalls, calls.get());
+        api.source = "new-head";
+        ObjectNode next = await(reviews.request(url, 0, true));
+        assertNotEquals(Json.text(first, "id"), Json.text(next, "id"));
+        assertTrue(calls.get() > reviewedCalls);
+    }
+    @Test void unchangedCommentIsNotAnsweredAgainWhenCommitsChange() throws Exception {
+        api.author = "owner";
+        api.comments.add(Json.obj("id", 7, "user", Json.obj("uuid", "other"), "content", Json.obj("raw", "왜 null을 반환하나요?")));
+        AtomicInteger calls = new AtomicInteger();
+        reviews = new PullRequestReview(service, api, prompt -> {
+            calls.incrementAndGet();
+            ObjectNode response = result(List.of()).put("reply", "현재 null을 반환합니다.").put("replyConfidence", "high");
+            response.set("replyEvidence", Json.MAPPER.valueToTree(List.of(evidence())));
+            return response;
+        });
+        String url = "https://bitbucket.org/team/repo/pull-requests/1";
+        ObjectNode first = await(reviews.request(url, 7, false));
+        int answeredCalls = calls.get();
+        api.destination = "new-base";
+        api.source = "new-head";
+        assertEquals(Json.text(first, "id"), Json.text(reviews.request(url, 7, true), "id"));
+        assertEquals(answeredCalls, calls.get());
+    }
+    @Test void validationCannotPostDraftsOrReplaceTheOperationalHead() throws Exception {
+        reviews = new PullRequestReview(service, api, prompt -> result(List.of(finding())));
+        String url = "https://bitbucket.org/team/repo/pull-requests/1";
+        ObjectNode validation = await(reviews.request(url, 0, true, true, Json.MAPPER.createArrayNode(), true));
+        assertFalse(validation.path("automatic").asBoolean());
+        assertEquals(0, api.writes);
+        assertThrows(IllegalArgumentException.class, () -> reviews.savePending(Json.text(validation, "id")));
+        ObjectNode operational = await(reviews.request(url, 0, true));
+        assertNotEquals(Json.text(validation, "id"), Json.text(operational, "id"));
+        assertEquals(1, api.writes);
+    }
+    @Test void baseMovementAfterReadingEvidenceDoesNotInvalidateTheSameSourceHead() throws Exception {
+        reviews = new PullRequestReview(service, api, prompt -> { api.destination = "moved-base"; return result(List.of(finding())); });
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 0, false));
+        assertEquals("ready", Json.text(row, "status"), Json.text(row, "error"));
+        assertEquals("destination", Json.text(row, "destinationCommit"));
+        assertEquals("saved", Json.text(reviews.savePending(Json.text(row, "id")), "status"));
+        assertEquals(1, api.writes);
+    }
+    @Test void oldHistoryRemainsReusableWhenRepositoryReferencesChange() throws Exception {
+        String url = "https://bitbucket.org/team/repo/pull-requests/1";
+        store.put("prReview", Json.obj("id", "old-hash-id", "url", url, "sourceCommit", "source", "destinationCommit", "old-base", "status", "ready", "notified", true));
+        reviews = new PullRequestReview(service, api, prompt -> { fail("same head must not call AI"); return null; });
+        reviews.sources.configure(Json.obj("repository", "team/repo", "sources", List.of(temporary.resolve("not-mounted").toString())));
+        api.destination = "new-base";
+        assertEquals("old-hash-id", Json.text(reviews.request(url, 0, true), "id"));
+        reviews.sources.configure(Json.obj("repository", "team/repo", "sources", List.of("https://bitbucket.org/team/docs/src/main/spec.md")));
+        assertEquals("old-hash-id", Json.text(reviews.request(url, 0, true), "id"));
+        assertEquals(1, store.list("prReview").size());
+    }
     @Test void requiresCausalExplanationAndIncludesImpactInSlackSummary() throws Exception {
         ReviewContext context = new ReviewContext(api, BitbucketClient.PullRequest.parse("https://bitbucket.org/team/repo/pull-requests/1"));
         ObjectNode missing = finding();
@@ -370,7 +435,7 @@ class PullRequestReviewTest {
         assertEquals(1, row.path("totalBatches").asInt());
         assertEquals("https://bitbucket.org/team/contracts/src/" + commit + "/spec.md", row.path("referenceUrls").get(0).asText());
         ObjectNode withoutReference = await(reviews.request(url, 0, false));
-        assertNotEquals(Json.text(row, "id"), Json.text(withoutReference, "id"));
+        assertEquals(Json.text(row, "id"), Json.text(withoutReference, "id"));
         assertThrows(IllegalArgumentException.class, () -> reviews.request(url, 0, false, false,
                 Json.MAPPER.valueToTree(List.of("https://example.com/secret.md"))));
         assertEquals(0, withReference.writes);

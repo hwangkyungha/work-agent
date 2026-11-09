@@ -118,4 +118,23 @@ class ReviewMonitorTest {
         while (store.list("prReview").stream().anyMatch(PullRequestReview::inProgress) && System.nanoTime() < end) Thread.sleep(10);
         assertFalse(store.list("prReview").stream().anyMatch(PullRequestReview::inProgress));
     }
+    @Test void validationRunsAndAlreadyNotifiedHeadsDoNotSendCompletionMessages() throws Exception {
+        Config config = new Config(temporary.resolve("none"), Map.of());
+        store = new Store(temporary.resolve("test.db"));
+        WorkService service = new WorkService(store, new KoreaTime(Clock.systemUTC()), new JiraClient(config));
+        PullRequestReviewTest.FakeApi api = new PullRequestReviewTest.FakeApi(config);
+        reviews = new PullRequestReview(service, api, prompt -> Json.object());
+        List<String> sent = new ArrayList<>();
+        monitor = new ReviewMonitor(service, api, reviews, config, text -> sent.add(text));
+        String url = "https://bitbucket.org/team/repo/pull-requests/1";
+        store.put("prReview", Json.obj("id", "old", "url", url, "sourceCommit", "head", "status", "ready", "notified", true));
+        store.put("prReview", Json.obj("id", "duplicate", "url", url, "sourceCommit", "head", "status", "ready"));
+        store.put("prReview", Json.obj("id", "validation", "url", url, "sourceCommit", "test-head", "status", "ready", "validation", true));
+        monitor.notifyCompleted();
+        assertTrue(sent.isEmpty());
+        store.put("prReview", Json.obj("id", "next", "url", url, "sourceCommit", "next-head", "status", "ready"));
+        monitor.notifyCompleted();
+        monitor.notifyCompleted();
+        assertEquals(1, sent.size());
+    }
 }
