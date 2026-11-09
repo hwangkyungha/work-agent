@@ -39,16 +39,53 @@ final class PullRequestReview implements AutoCloseable {
     private void enqueue(ObjectNode row) {
         String id = Json.required(row, "id");
         if (active.add(id)) worker.submit(() -> {
-            try { run(id); if (row.path("automatic").asBoolean()) savePending(id); }
+            try {
+                if (!needsAutomaticSave(row)) run(id);
+                if (row.path("automatic").asBoolean()) savePending(id);
+            }
             catch (Exception e) { ObjectNode current = service.store.get("prReview", id); if (!Set.of("delivery-unknown", "stale").contains(Json.text(current, "status"))) current.put("status", "failed"); current.put("error", SlackConnection.friendly(e)); save(current); }
             finally { active.remove(id); }
         });
     }
     void resume() {
         for (ObjectNode row : service.store.list("prReview")) {
-            if (Set.of("queued", "running").contains(Json.text(row, "status"))) enqueue(row);
+            if (Set.of("queued", "running").contains(Json.text(row, "status")) || needsAutomaticSave(row)) enqueue(row);
             if (Json.text(row, "status").equals("saving")) { row.put("status", "delivery-unknown").put("error", "서버가 재시작되어 이전 댓글 저장 결과를 확인해야 합니다."); save(row); }
         }
+    }
+    private static boolean needsAutomaticSave(JsonNode row) {
+        return Json.text(row, "status").equals("ready") && row.path("automatic").asBoolean() && hasDraft(row);
+    }
+    static boolean inProgress(JsonNode row) {
+        return Set.of("queued", "running", "saving").contains(Json.text(row, "status")) || needsAutomaticSave(row);
+    }
+    static boolean succeeded(JsonNode row) {
+        return Set.of("ready", "saved").contains(Json.text(row, "status"));
+    }
+    private static boolean hasDraft(JsonNode row) {
+        return row.path("parentCommentId").asLong() > 0 ? !Json.text(row, "reply").isBlank() : !row.path("findings").isEmpty();
+    }
+    static String requestMessage(JsonNode row) {
+        if (!inProgress(row)) return resultMessage(row);
+        int number = BitbucketClient.PullRequest.parse(Json.required(row, "url")).number();
+        String action = row.path("parentCommentId").asLong() > 0 ? "댓글 답변을" : "검토를";
+        return "PR #" + number + " " + action + " 요청했습니다.\n" + Json.text(row, "url");
+    }
+    static String resultMessage(JsonNode row) {
+        String url = Json.required(row, "url");
+        int number = BitbucketClient.PullRequest.parse(url).number();
+        boolean reply = row.path("parentCommentId").asLong() > 0;
+        String outcome = switch (Json.text(row, "status")) {
+            case "saved" -> reply ? "Bitbucket에 답변 초안을 저장했습니다." : "Bitbucket에 비공개 리뷰 초안 " + row.path("findings").size() + "건을 저장했습니다.";
+            case "ready" -> hasDraft(row)
+                    ? (reply ? "답변 초안을 작성했습니다." : "검토 결과 " + row.path("findings").size() + "건을 정리했습니다.") + " 업무 수첩의 PR 리뷰에서 확인할 수 있습니다."
+                    : reply ? "근거가 충분한 답변을 만들지 못했습니다." : "검토 결과, 남길 지적이 없었습니다.";
+            case "stale" -> "검토 중 PR이나 댓글이 바뀌었습니다. 다시 검토해 주세요.";
+            case "delivery-unknown" -> "초안 저장 결과를 확인하지 못했습니다. Bitbucket에서 확인해 주세요.";
+            default -> "검토를 완료하지 못했습니다. 업무 수첩의 PR 리뷰에서 원인을 확인해 주세요.";
+        };
+        String title = Json.text(row, "title");
+        return "PR #" + number + (title.isBlank() ? "" : " · " + title) + "\n" + outcome + "\n" + url;
     }
     void run(String id) throws Exception {
         ObjectNode row = required(id); row.put("status", "running"); save(row);

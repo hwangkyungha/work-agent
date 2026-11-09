@@ -10,10 +10,12 @@ import java.util.*;
 import java.util.concurrent.*;
 
 final class SlackConnection implements AutoCloseable {
+    private static final String WORKING = "hourglass_flowing_sand";
     private final Config config;
     private final Store store;
     private final Agent agent;
     private final SlackTokens tokens;
+    private final URI apiRoot;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
     private final ScheduledExecutorService maintenance = Executors.newSingleThreadScheduledExecutor();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -21,9 +23,14 @@ final class SlackConnection implements AutoCloseable {
     private volatile boolean closed;
     private volatile boolean connected;
     private volatile boolean connecting;
+    private volatile boolean reactionScopeMissing;
     private volatile String lastError = "";
     SlackConnection(Config config, Store store, Agent agent) {
+        this(config, store, agent, URI.create("https://slack.com/api/"));
+    }
+    SlackConnection(Config config, Store store, Agent agent, URI apiRoot) {
         this.config = config; this.store = store; this.agent = agent;
+        this.apiRoot = apiRoot;
         tokens = new SlackTokens(config, store, body -> {
             String form = body.properties().stream().map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "=" + URLEncoder.encode(e.getValue().asText(), StandardCharsets.UTF_8)).collect(java.util.stream.Collectors.joining("&"));
             HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create("https://slack.com/api/oauth.v2.access")).timeout(Duration.ofSeconds(30)).header("Content-Type", "application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString(form)).build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -43,6 +50,9 @@ final class SlackConnection implements AutoCloseable {
                 try { connect(); } catch (Exception e) { connected = false; lastError = "Slack 연결 실패. 토큰과 Socket Mode 설정을 확인하세요."; }
             }
         }, 0, 20, TimeUnit.SECONDS);
+        maintenance.scheduleWithFixedDelay(() -> {
+            for (ObjectNode progress : store.list("slackProgress")) settleProgress(Json.required(progress, "id"));
+        }, 5, 10, TimeUnit.SECONDS);
         worker.submit(this::drain);
     }
     private void connect() throws Exception {
@@ -75,24 +85,86 @@ final class SlackConnection implements AutoCloseable {
         if (!config.get("SLACK_USER_ID", "").equals(Json.text(event, "user"))) return;
         String id = Json.text(envelope.path("payload"), "event_id");
         if (id.isBlank() || Json.text(event, "text").isBlank()) return;
-        store.enqueue(id, Json.obj("channel", Json.text(event, "channel"), "text", Json.text(event, "text"), "thread", Json.text(event, "thread_ts")));
+        store.enqueue(id, Json.obj("channel", Json.text(event, "channel"), "text", Json.text(event, "text"), "thread", Json.text(event, "thread_ts"), "ts", Json.text(event, "ts")));
     }
     private void drain() {
         while (!closed) {
             for (ObjectNode event : store.pending()) {
                 if (closed) return;
-                JsonNode payload = event.path("payload");
-                String id = Json.text(event, "id"), channel = Json.text(payload, "channel");
-                try {
-                    ObjectNode result = agent.chat("slack:" + channel, id, Json.required(payload, "text"));
-                    send(channel, Json.text(result, "text"), Json.text(payload, "thread"));
-                    store.finish(id);
-                } catch (Exception e) {
-                    try { send(channel, "요청을 완료하지 못했습니다. " + friendly(e), Json.text(payload, "thread")); store.finish(id); }
-                    catch (Exception retry) { lastError = "Slack 응답 전송에 실패했습니다. 연결 후 다시 시도합니다."; }
-                }
+                handleEvent(event);
             }
             try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+        }
+    }
+    void handleEvent(ObjectNode event) {
+        JsonNode payload = event.path("payload");
+        String id = Json.text(event, "id"), channel = Json.text(payload, "channel"), thread = Json.text(payload, "thread");
+        reaction("add", payload, WORKING);
+        ObjectNode result;
+        try {
+            result = agent.chat("slack:" + channel, id, Json.required(payload, "text"));
+        } catch (Exception e) {
+            try {
+                send(channel, "요청을 완료하지 못했습니다. " + friendly(e), thread);
+                rememberCompletion(id, payload, Json.object(), true);
+            } catch (Exception retry) { lastError = "Slack 응답 전송에 실패했습니다. 연결 후 다시 시도합니다."; }
+            return;
+        }
+        try {
+            send(channel, Json.text(result, "text"), thread);
+            rememberCompletion(id, payload, result, false);
+        } catch (Exception e) { lastError = "Slack 응답 전송에 실패했습니다. 연결 후 다시 시도합니다."; }
+    }
+    private void rememberCompletion(String id, JsonNode payload, ObjectNode response, boolean failed) {
+        Set<String> reviews = new LinkedHashSet<>();
+        String scanSince = "";
+        for (JsonNode item : response.path("results")) {
+            String type = Json.text(item, "type");
+            JsonNode result = item.path("result");
+            if (type.equals("pr_review") || type.equals("pr_reply")) reviews.add(Json.required(result, "id"));
+            if (type.equals("review_inbox") && result.path("scanning").asBoolean()) scanSince = Json.text(result, "requestedAt");
+        }
+        ObjectNode progress = Json.obj("id", id, "channel", Json.text(payload, "channel"), "ts", Json.text(payload, "ts"),
+                "reviews", reviews, "scanSince", scanSince, "failed", failed);
+        store.transaction(() -> {
+            if (!Json.text(progress, "ts").isBlank() && !reactionScopeMissing) store.put("slackProgress", progress);
+            store.finish(id);
+        });
+        settleProgress(id);
+    }
+    synchronized void settleProgress(String id) {
+        if (reactionScopeMissing) return;
+        ObjectNode progress = store.get("slackProgress", id);
+        if (progress == null) return;
+        boolean failed = progress.path("failed").asBoolean();
+        for (JsonNode reviewId : progress.path("reviews")) {
+            ObjectNode review = store.get("prReview", reviewId.asText());
+            if (review != null && PullRequestReview.inProgress(review)) return;
+            failed |= review == null || !PullRequestReview.succeeded(review);
+        }
+        String since = Json.text(progress, "scanSince");
+        if (!since.isBlank()) {
+            ObjectNode scan = store.get("reviewMonitor", "status");
+            if (scan == null) return;
+            Instant start = Instant.parse(since);
+            boolean completed = !Json.text(scan, "at").isBlank() && !Instant.parse(Json.text(scan, "at")).isBefore(start);
+            boolean scanFailed = !Json.text(scan, "attemptedAt").isBlank() && !Instant.parse(Json.text(scan, "attemptedAt")).isBefore(start);
+            if (!completed && !scanFailed) return;
+            failed |= scanFailed && !completed;
+        }
+        if (reaction("add", progress, failed ? "x" : "white_check_mark") && reaction("remove", progress, WORKING)) store.delete("slackProgress", id);
+    }
+    private boolean reaction(String operation, JsonNode message, String name) {
+        String timestamp = Json.text(message, "ts");
+        if (timestamp.isBlank() || reactionScopeMissing) return false;
+        try {
+            api("reactions." + operation, config.get("SLACK_BOT_TOKEN", ""), Json.obj("channel", Json.text(message, "channel"), "timestamp", timestamp, "name", name));
+            return true;
+        } catch (Exception e) {
+            String error = e.getMessage();
+            if ("Slack 요청 실패: missing_scope".equals(error)) reactionScopeMissing = true;
+            return Set.of("Slack 요청 실패: already_reacted", "Slack 요청 실패: no_reaction",
+                    "Slack 요청 실패: message_not_found", "Slack 요청 실패: channel_not_found").contains(Objects.toString(error, ""));
         }
     }
     void notifyOwner(String text) throws Exception {
@@ -108,7 +180,7 @@ final class SlackConnection implements AutoCloseable {
         }
     }
     private JsonNode api(String method, String token, ObjectNode body) throws Exception {
-        HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create("https://slack.com/api/" + method)).timeout(Duration.ofSeconds(30))
+        HttpResponse<String> response = http.send(HttpRequest.newBuilder(apiRoot.resolve(method)).timeout(Duration.ofSeconds(method.startsWith("reactions.") ? 5 : 30))
                 .header("Authorization", "Bearer " + token).header("Content-Type", "application/json; charset=utf-8")
                 .POST(HttpRequest.BodyPublishers.ofString(Json.write(body), StandardCharsets.UTF_8)).build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (response.statusCode() != 200) throw new IllegalStateException("Slack 요청 실패(HTTP " + response.statusCode() + ")");

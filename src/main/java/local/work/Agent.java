@@ -79,7 +79,8 @@ final class Agent {
             results.add(done);
             if (!Json.text(done, "message").isBlank()) answer.append(Json.text(done, "message")).append("\n\n");
         }
-        if (results.isEmpty() || !Json.text(parsed, "reply").isBlank()) answer.insert(0, Json.text(parsed, "reply") + (results.isEmpty() ? "" : "\n\n"));
+        boolean reviewRequest = results.stream().anyMatch(row -> Set.of("pr_review", "pr_reply", "review_inbox").contains(Json.text(row, "type")));
+        if (!reviewRequest && (results.isEmpty() || !Json.text(parsed, "reply").isBlank())) answer.insert(0, Json.text(parsed, "reply") + (results.isEmpty() ? "" : "\n\n"));
         ObjectNode response = Json.obj("id", id, "text", answer.toString().trim(), "results", results, "at", service.time.instant().toString());
         service.store.transaction(() -> {
             service.store.put("message", Json.obj("id", id + ":user", "conversation", conversation, "role", "user", "text", text));
@@ -124,11 +125,13 @@ final class Agent {
                 if (reviews == null) throw new IllegalStateException("PR 리뷰 기능이 연결되지 않았습니다.");
                 if (type.equals("pr_reply") && p.path("commentId").asLong() <= 0) throw new IllegalArgumentException("답변할 댓글 번호를 알려 주세요.");
                 result = reviews.request(Json.required(p, "url"), type.equals("pr_reply") ? p.path("commentId").asLong() : 0, false);
-                message = "PR " + (type.equals("pr_reply") ? "댓글 답변" : "리뷰") + "를 요청했습니다. 업무 수첩의 PR 리뷰 메뉴에서 결과를 확인할 수 있습니다.\n" + Json.text(result, "url");
+                message = PullRequestReview.requestMessage(result);
             }
             case "review_inbox" -> {
                 if (reviewMonitor == null) throw new IllegalStateException("PR 리뷰 기능이 연결되지 않았습니다.");
-                result = reviewMonitor.refresh(); message = "모든 저장소에서 나에게 온 리뷰 요청과 내 PR에 달린 댓글을 확인하고 있습니다. 결과는 PR 리뷰 메뉴에 표시합니다.";
+                String requestedAt = service.time.instant().toString();
+                result = reviewMonitor.refresh().put("requestedAt", requestedAt);
+                message = "리뷰 요청과 내 PR 댓글을 확인하고 있습니다.";
             }
             case "room_booking" -> {
                 if (booking == null) throw new IllegalStateException("회의실 예약 기능이 연결되지 않았습니다.");
@@ -176,7 +179,7 @@ final class Agent {
             }
             default -> throw new IllegalArgumentException("지원하지 않는 작업입니다: " + type);
         }
-        return Json.obj("id", id, "result", result, "message", message);
+        return Json.obj("id", id, "type", type, "result", result, "message", message);
     }
     private static String writingReply(JsonNode result) {
         if (!result.path("actions").isArray() || !result.path("actions").isEmpty()) throw new IllegalArgumentException("글쓰기 응답에 실행 요청이 포함되어 처리하지 않았습니다.");
@@ -277,7 +280,7 @@ final class Agent {
             pr_review: {url}. Bitbucket Cloud PR 전체 주소가 있을 때 리뷰를 요청한다. 코드 검토는 비동기로 진행하며 결과를 지어내지 않는다.
             pr_reply: {url,commentId}. 내 PR에 다른 사람이 남긴 특정 댓글의 답변 초안을 요청한다. 댓글 번호가 없으면 묻는다.
             review_inbox: {}. 저장소를 제한하지 않고 나에게 요청된 PR 리뷰와 내 PR의 답변할 댓글을 새로 확인한다.
-            PR 리뷰·답변은 비공개 초안으로만 작성한다. 승인·병합·리뷰 제출을 하지 않는다.
+            PR 리뷰·답변은 비공개 초안으로만 작성한다. 승인·병합·리뷰 제출을 하지 않는다. pr_review, pr_reply, review_inbox를 실행할 때 reply는 비운다.
             한 요청에 최대 10개 actions. 업무 추가 후 계획에 넣을 때는 task 다음에 plan을 보내고 taskIds에서 새 업무를 "$lastTask"로 참조한다.
             """;
 }

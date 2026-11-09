@@ -59,6 +59,8 @@ AGENT_CALL_NAME=work-agent
 
 공개 수신 주소 없이 Socket Mode로 연결합니다. 초기 버전은 개인용이며 공용 채널의 멘션이나 여러 사용자의 업무 분리를 지원하지 않습니다.
 
+Slack 요청 메시지에는 처리 중 모래시계, 성공 시 체크, 실패 시 X 반응을 붙입니다. 이미 설치한 Slack 앱에 `reactions:write`가 없으면 봇 권한에 추가하고 앱을 다시 설치하세요.
+
 만료되는 app-level 토큰(`xoxe.xapp-`)을 사용한다면 `SLACK_REFRESH_TOKEN`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_APP_TOKEN_EXPIRES_AT`도 설정하세요. 만료 시각은 밀리초 단위 Unix 시간입니다. 만료 1시간 전에 토큰을 갱신하며, 갱신된 access/refresh 토큰 쌍은 개인 SQLite 데이터베이스에 함께 저장하여 재시작 후에도 사용합니다. 만료가 없는 `xapp-` 토큰에는 이 설정이 필요 없습니다. 같은 갱신 토큰을 사용하는 다른 봇은 이전 전에 종료해야 합니다. [Slack 공식 안내](https://docs.slack.dev/authentication/using-token-rotation/)
 
 `CLAUDE_SESSION_TIME=06:00` 또는 `CODEX_SESSION_TIME=06:00`을 설정하면 주말을 포함해 매일 한국 시간 오전 6시에 해당 CLI에서 임시 세션을 열어 짧은 질문을 보내고, 성공 여부를 본인 Slack DM으로 알립니다. 각 예약은 업무에 사용하는 `AGENT_ENGINE`과 별도로 동작하며, 값을 비우면 꺼집니다. 필요한 경우 `CLAUDE_EXECUTABLE`에 Claude 실행 파일 경로를 지정하세요. 실패하면 그날은 다시 호출하지 않으며, 예정 시각에서 한 시간이 지난 뒤 프로그램을 켜면 그날 요청을 생략합니다.
@@ -197,7 +199,7 @@ CT-123 리뷰 준비를 내일 마감인 중요한 일로 등록해 줘.
 
 ## Bitbucket PR 리뷰와 댓글 답변
 
-서버가 실행 중이면 한국 시간 08:00부터 16:30까지 30분마다 Bitbucket에서 접근 가능한 모든 저장소를 확인합니다. 수동 조회는 언제든 실행할 수 있습니다. 나에게 리뷰가 요청된 열린 PR은 검토하고, 내가 작성한 열린 PR에서는 아직 답변하지 않은 대화의 마지막 댓글에 답변 초안을 만듭니다. 저장소 목록을 미리 등록할 필요는 없습니다. 토큰이 가리키는 계정을 본인으로 판단합니다.
+서버가 실행 중이면 한국 시간 08:00부터 16:30까지 30분마다 Bitbucket에서 접근 가능한 모든 저장소를 확인합니다. 수동 조회는 언제든 실행할 수 있습니다. 조회에서 새로 발견한 리뷰 요청과 내 PR의 답변할 댓글은 이어서 AI 검토와 답변 생성을 시작합니다. 같은 커밋과 댓글에 대해 처리한 결과는 재사용합니다. 저장소 목록을 미리 등록할 필요는 없습니다. 토큰이 가리키는 계정을 본인으로 판단합니다.
 
 `BITBUCKET_API_TOKEN` 사용자 환경변수와 `BITBUCKET_EMAIL`을 설정하세요. 이메일을 비우면 `JIRA_EMAIL`을 사용합니다. API 토큰에는 `read:user:bitbucket`, `read:workspace:bitbucket`, `read:repository:bitbucket`, `read:pullrequest:bitbucket` 권한이 필요합니다. 워크스페이스 자동 조회 권한이 없을 때는 `BITBUCKET_WORKSPACES`에 워크스페이스 이름을 쉼표로 지정할 수 있습니다. 이 경우 조회하지 못하는 범위를 화면에 표시합니다. `BITBUCKET_AUTO_REVIEW=false`이면 자동 조회를 끄고 직접 요청한 PR만 검토합니다.
 

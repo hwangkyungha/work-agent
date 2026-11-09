@@ -68,13 +68,27 @@ class ReviewMonitorTest {
             @Override List<JsonNode> comments(PullRequest pr) { return pr.number() == 2 ? List.of(comment(7, 0, "other", "01", false)) : List.of(); }
         };
         WorkService service = new WorkService(store, new KoreaTime(Clock.systemUTC()), new JiraClient(config));
-        reviews = new PullRequestReview(service, api, prompt -> Json.obj("findings", List.of(), "reply", "", "summary", "", "limitations", List.of()));
+        var modelCalls = new java.util.concurrent.atomic.AtomicInteger();
+        reviews = new PullRequestReview(service, api, prompt -> {
+            modelCalls.incrementAndGet();
+            return Json.obj("findings", List.of(), "reply", "현재 null을 반환합니다.", "replyKind", "fact", "replyConfidence", "high",
+                    "replyEvidence", List.of(Json.obj("path", "foo.java", "side", "new", "line", 1, "quote", "return null;")),
+                    "summary", "확인했습니다.", "limitations", List.of());
+        });
         monitor = new ReviewMonitor(service, api, reviews, config, text -> fail("no notification during scan"));
         ObjectNode status = monitor.scan(); assertEquals(4, status.path("repositoryCount").asInt()); assertEquals(4, status.path("items").size());
         assertEquals(2, status.path("items").findValuesAsText("kind").stream().filter(kind -> kind.equals("review")).count());
         assertEquals(2, status.path("items").findValuesAsText("kind").stream().filter(kind -> kind.equals("reply")).count());
         assertTrue(requests.stream().anyMatch(path -> path.contains("/beta/two/")));
         waitForJobs();
+        assertTrue(modelCalls.get() > 0);
+        assertEquals(2, store.list("prReview").stream().filter(row -> Json.text(row, "status").equals("saved")).count());
+        assertEquals(2, api.writes);
+        int firstScanCalls = modelCalls.get();
+        monitor.scan();
+        waitForJobs();
+        assertEquals(firstScanCalls, modelCalls.get());
+        assertEquals(2, api.writes);
     }
     @Test void missingWorkspaceScopeUsesExplicitFallbackWithVisibleWarning() throws Exception {
         Config config = new Config(temporary.resolve("none"), Map.of("BITBUCKET_WORKSPACES", "example")); store = new Store(temporary.resolve("test.db"));
@@ -101,7 +115,7 @@ class ReviewMonitorTest {
     }
     private void waitForJobs() throws Exception {
         long end = System.nanoTime() + 5_000_000_000L;
-        while (store.list("prReview").stream().anyMatch(row -> Set.of("queued", "running").contains(Json.text(row, "status"))) && System.nanoTime() < end) Thread.sleep(10);
-        assertFalse(store.list("prReview").stream().anyMatch(row -> Set.of("queued", "running").contains(Json.text(row, "status"))));
+        while (store.list("prReview").stream().anyMatch(PullRequestReview::inProgress) && System.nanoTime() < end) Thread.sleep(10);
+        assertFalse(store.list("prReview").stream().anyMatch(PullRequestReview::inProgress));
     }
 }
