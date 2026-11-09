@@ -10,10 +10,6 @@ $ErrorActionPreference = 'Stop'
 $sourceRoot = Split-Path -Parent $PSScriptRoot
 if (-not $TargetRoot) { $TargetRoot = if ($Scope -eq 'User') { [Environment]::GetFolderPath('UserProfile') } else { $sourceRoot } }
 $target = [IO.Path]::GetFullPath($TargetRoot)
-$manifestPath = Join-Path $target '.work-agent/writing-install.json'
-$prior = if (Test-Path -LiteralPath $manifestPath) { Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json } else { $null }
-$expected = @{}
-if ($prior) { foreach ($file in $prior.files) { $expected[$file.path] = $file.hash } }
 $planned = [Collections.Generic.List[object]]::new()
 $conflicts = [Collections.Generic.List[string]]::new()
 $legacyPaths = [Collections.Generic.List[string]]::new()
@@ -24,16 +20,24 @@ function Full-Target([string]$relative) {
     $parent = Split-Path -Parent $path
     while ($parent -and $parent.Length -ge $target.Length) {
         $item = Get-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue
-        if ($item -and $item.LinkType) { throw "다른 위치를 가리키는 폴더 안에는 설치하지 않습니다: $parent" }
+        if ($item -and ($item.LinkType -or -not $item.PSIsContainer)) { throw "일반 폴더에만 설치할 수 있습니다: $parent" }
         if ($parent -eq $target) { break }; $parent = Split-Path -Parent $parent
     }
     return $path
 }
-function Hash-Text([string]$text) { return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($utf8.GetBytes($text))) }
-function Plan-File([string]$relative, [string]$text, [switch]$Merge) {
+function File-Target([string]$relative) {
     $path = Full-Target $relative
     $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-    if ($item -and $item.LinkType) { throw "연결된 파일을 자동으로 바꾸지 않습니다: $path" }
+    if ($item -and ($item.LinkType -or $item.PSIsContainer)) { throw "일반 파일만 설치하거나 갱신할 수 있습니다: $path" }
+    return $path
+}
+$manifestPath = File-Target '.work-agent/writing-install.json'
+$prior = if (Test-Path -LiteralPath $manifestPath) { Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json } else { $null }
+$expected = @{}
+if ($prior) { foreach ($file in $prior.files) { $expected[$file.path] = $file.hash } }
+function Hash-Text([string]$text) { return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($utf8.GetBytes($text))) }
+function Plan-File([string]$relative, [string]$text, [switch]$Merge) {
+    $path = File-Target $relative
     $old = if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::ReadAllText($path) } else { $null }
     if ($null -ne $old -and $old -ne $text -and -not $Merge) {
         if (-not $expected.ContainsKey($relative) -or (Hash-Text $old) -ne $expected[$relative]) { $conflicts.Add($relative) }
@@ -78,26 +82,29 @@ foreach ($agent in @('.agents','.claude')) {
 $style = [IO.File]::ReadAllText((Join-Path $sourceRoot 'writing/claude-style.md')).Replace('{{COMMON}}', $common)
 Plan-File '.claude/output-styles/work-agent-korean.md' $style
 $agentsRelative = if ($Scope -eq 'User') { '.codex/AGENTS.md' } else { 'AGENTS.md' }
-$agentsPath = Full-Target $agentsRelative
+$agentsPath = File-Target $agentsRelative
 $agents = if (Test-Path -LiteralPath $agentsPath) { [IO.File]::ReadAllText($agentsPath) } else { '' }
 if ($MigrateLegacy) { $agents = Remove-LegacySections $agents }
 $commonPath = if ($Scope -eq 'User') { (Full-Target '.agents/skills/work-agent-writing/common.md').Replace('\','/') } else { '.agents/skills/work-agent-writing/common.md' }
 $block = [IO.File]::ReadAllText((Join-Path $sourceRoot 'writing/codex-instructions.md')).Replace('{{COMMON_PATH}}', $commonPath).Trim()
 $pattern = '(?s)<!-- work-agent:writing:start -->.*?<!-- work-agent:writing:end -->'
 $existingBlock = [regex]::Match($agents, $pattern)
-if ($existingBlock.Success) { $agents = $agents.Remove($existingBlock.Index, $existingBlock.Length).Insert($existingBlock.Index, $block) }
+if ($existingBlock.Success) {
+    if ($existingBlock.Value -cne $block -and (Hash-Text $existingBlock.Value) -ne $prior.agentsBlockHash) { $conflicts.Add("$agentsRelative 글쓰기 관리 구간") }
+    $agents = $agents.Remove($existingBlock.Index, $existingBlock.Length).Insert($existingBlock.Index, $block)
+}
 else { $agents = $agents.TrimEnd() + $(if ($agents.Trim()) { "`n`n" } else { '' }) + $block + "`n" }
 Plan-File $agentsRelative ($agents.TrimEnd() + "`n") -Merge
 $settingsRelative = if ($Scope -eq 'User') { '.claude/settings.json' } else { '.claude/settings.local.json' }
 if ($ActivateStyle) {
-    $settingsPath = Full-Target $settingsRelative
+    $settingsPath = File-Target $settingsRelative
     $settings = if (Test-Path -LiteralPath $settingsPath) { Get-Content -LiteralPath $settingsPath -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable } else { @{} }
     $settings['outputStyle'] = 'work-agent-korean'
     Plan-File $settingsRelative (($settings | ConvertTo-Json -Depth 100) + "`n") -Merge
 }
 if ($MigrateLegacy) {
     $claudeRelative = '.claude/CLAUDE.md'
-    $claudePath = Full-Target $claudeRelative
+    $claudePath = File-Target $claudeRelative
     if (Test-Path -LiteralPath $claudePath) { Plan-File $claudeRelative ((Remove-LegacySections ([IO.File]::ReadAllText($claudePath))) + "`n") -Merge }
     foreach ($root in @('.agents/skills','.codex/skills','.claude/skills','agent-skills/global')) {
         foreach ($name in @('polish-message','ct-doc')) {
@@ -136,5 +143,5 @@ foreach ($path in $legacyPaths) {
 }
 $owned = @($planned | Where-Object { $_.path -notin @($agentsRelative,$settingsRelative,'.claude/CLAUDE.md') } | ForEach-Object { @{path=$_.path;hash=(Hash-Text $_.text)} })
 New-Item -ItemType Directory -Path (Split-Path -Parent $manifestPath) -Force | Out-Null
-[IO.File]::WriteAllText($manifestPath, (@{version=1;scope=$Scope;files=$owned} | ConvertTo-Json -Depth 6), $utf8)
+[IO.File]::WriteAllText($manifestPath, (@{version=1;scope=$Scope;files=$owned;agentsBlockHash=(Hash-Text $block)} | ConvertTo-Json -Depth 6), $utf8)
 [pscustomobject]@{ok=$true;scope=$Scope;changed=$changes.Count;retired=$legacyPaths.Count;backup=$(if ($changes.Count -or $legacyPaths.Count) {$backup} else {''})} | ConvertTo-Json
