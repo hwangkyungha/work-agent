@@ -6,6 +6,8 @@ import java.util.Locale;
 import java.util.concurrent.*;
 
 final class Scheduler implements AutoCloseable {
+    private static final int SYNC_INTERVAL_MINUTES = 5;
+    private static final int BRIEFING_REFRESH_MINUTES = 5;
     @FunctionalInterface interface SessionStart { void run(String engine) throws Exception; }
     @FunctionalInterface interface Notifier { void send(String text) throws Exception; }
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
@@ -35,15 +37,14 @@ final class Scheduler implements AutoCloseable {
         startSessionIfDue(now, "claude", "Claude");
         startSessionIfDue(now, "codex", "Codex");
         boolean weekday = now.getDayOfWeek().getValue() <= 5;
-        if (config.get("AUTO_SYNC", "true").equals("true")) {
-            var last = service.store.get("sync", "automatic");
-            if (last == null || Duration.between(KoreaTime.parse(Json.text(last, "at")), now.toInstant()).toMinutes() >= 5) {
-                synchronizer.sync("all");
-                service.store.put("sync", Json.obj("id", "automatic", "at", now.toInstant().toString(), "ok", true));
-            }
+        boolean automatic = config.get("AUTO_SYNC", "true").equals("true");
+        if (automatic) syncIfDue("cli", SYNC_INTERVAL_MINUTES, now.toInstant());
+        if (weekday && slack.configured()) sendMorningBriefing(now);
+        if (automatic) {
+            if (service.jira.configured()) syncIfDue("jira", SYNC_INTERVAL_MINUTES, now.toInstant());
+            if (CalendarSync.configured(config)) syncIfDue("calendar", SYNC_INTERVAL_MINUTES, now.toInstant());
         }
         if (!weekday) return;
-        if (slack.configured() && !LeaveCalendar.onLeave(service, config, now.toLocalDate())) sendOnce("morning:" + now.toLocalDate(), config.get("BRIEFING_TIME", "09:00"), now, () -> reports.briefing(now.toLocalDate()));
         if (now.getDayOfWeek() == DayOfWeek.FRIDAY) {
             if (slack.configured()) sendOnce("friday:" + now.toLocalDate(), config.get("FRIDAY_REVIEW_TIME", "16:30"), now,
                     () -> reports.worklog(service.time.monday(now.toLocalDate()), now.toLocalDate()));
@@ -53,6 +54,43 @@ final class Scheduler implements AutoCloseable {
                 service.store.put("scheduled", Json.obj("id", key, "at", now.toInstant().toString()));
             }
         }
+    }
+    private void syncIfDue(String kind, int minutes, Instant now) {
+        ObjectNode last = service.store.get("sync", kind);
+        if (last == null || Duration.between(KoreaTime.parse(Json.required(last, "at")), now).toMinutes() >= minutes) sync(kind);
+    }
+    private boolean sync(String kind) {
+        try {
+            synchronizer.sync(kind);
+            return true;
+        } catch (Exception e) {
+            System.err.println("예약 동기화 실패(" + kind + "): " + SlackConnection.friendly(e));
+            return false;
+        }
+    }
+    private void sendMorningBriefing(ZonedDateTime now) throws Exception {
+        String hour = config.get("BRIEFING_TIME", "09:00");
+        String key = "morning:" + now.toLocalDate();
+        if (!due(key, hour, now)) return;
+        Instant scheduled = now.toLocalDate().atTime(LocalTime.parse(hour)).atZone(now.getZone()).toInstant();
+        if (CalendarSync.configured(config)) {
+            ObjectNode calendar = service.store.get("sync", "calendar");
+            if (calendar != null && calendar.path("ok").asBoolean() && !KoreaTime.parse(Json.required(calendar, "at")).isBefore(scheduled)
+                    && LeaveCalendar.onLeave(service, config, now.toLocalDate())) return;
+            if (!refreshForBriefing("calendar", scheduled, now.toInstant())) return;
+        }
+        if (LeaveCalendar.onLeave(service, config, now.toLocalDate())) return;
+        if (service.jira.configured() && !refreshForBriefing("jira", scheduled, now.toInstant())) return;
+        if (!refreshForBriefing("cli", scheduled, now.toInstant())) return;
+        sendOnce(key, hour, now, () -> reports.briefing(now.toLocalDate()));
+    }
+    private boolean refreshForBriefing(String kind, Instant scheduled, Instant now) {
+        ObjectNode last = service.store.get("sync", kind);
+        if (last != null) {
+            Instant at = KoreaTime.parse(Json.required(last, "at"));
+            if (!at.isBefore(scheduled) && Duration.between(at, now).toMinutes() < BRIEFING_REFRESH_MINUTES) return last.path("ok").asBoolean();
+        }
+        return sync(kind);
     }
     private void startSessionIfDue(ZonedDateTime now, String engine, String label) {
         String hour = config.get(engine.toUpperCase(Locale.ROOT) + "_SESSION_TIME", "");
@@ -71,11 +109,14 @@ final class Scheduler implements AutoCloseable {
         service.store.put("scheduled", row);
     }
     private void sendOnce(String key, String hour, ZonedDateTime now, java.util.function.Supplier<String> text) throws Exception {
-        if (hour.isBlank() || now.toLocalTime().isBefore(LocalTime.parse(hour)) || service.store.get("scheduled", key) != null) return;
-        // Do not deliver an old morning notification when the app is first started late in the day.
-        if (Duration.between(LocalTime.parse(hour), now.toLocalTime()).toMinutes() >= 60) return;
+        if (!due(key, hour, now)) return;
         notifier.send(text.get());
         service.store.put("scheduled", Json.obj("id", key, "at", now.toInstant().toString()));
+    }
+    private boolean due(String key, String hour, ZonedDateTime now) {
+        if (hour.isBlank() || service.store.get("scheduled", key) != null) return false;
+        LocalTime target = LocalTime.parse(hour);
+        return !now.toLocalTime().isBefore(target) && Duration.between(target, now.toLocalTime()).toMinutes() < 60;
     }
     @Override public void close() { executor.shutdownNow(); }
 }

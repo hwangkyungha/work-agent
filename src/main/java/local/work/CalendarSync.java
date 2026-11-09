@@ -17,7 +17,8 @@ final class CalendarSync {
     private final Config config;
     private final WorkService service;
     CalendarSync(Config config, WorkService service) { this.config = config; this.service = service; }
-    boolean configured() { return config.has("CALENDAR_ICS_URL") || config.has("CALENDAR_ICS_FILE"); }
+    boolean configured() { return configured(config); }
+    static boolean configured(Config config) { return config.has("CALENDAR_ICS_URL") || config.has("CALENDAR_ICS_FILE"); }
     synchronized ObjectNode sync() throws Exception {
         if (!configured()) throw new IllegalArgumentException("캘린더 ICS 주소나 파일을 설정하세요.");
         byte[] bytes;

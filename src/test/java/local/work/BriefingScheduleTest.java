@@ -19,9 +19,72 @@ class BriefingScheduleTest {
     }
     void tick(String now) throws Exception {
         Config config = new Config(temporary.resolve("none"), Map.of("AUTO_SYNC", "false", "CALENDAR_OWNER_NAME", "홍길동", "SLACK_APP_TOKEN", "test", "SLACK_BOT_TOKEN", "test", "SLACK_USER_ID", "test", "FRIDAY_REVIEW_TIME", ""));
-        WorkService service = service(now);
+        tick(now, config, k -> Json.object(), sent::add);
+    }
+    private void tick(String now, Config config, Agent.Synchronizer sync, Scheduler.Notifier notifier) throws Exception {
+        WorkService service = new WorkService(store, new KoreaTime(Clock.fixed(Instant.parse(now), ZoneOffset.UTC)), new JiraClient(config));
         Agent agent = new Agent(service, new Reports(service), p -> Json.object(), k -> Json.object(), "테스트", "테스트야");
-        try (SlackConnection slack = new SlackConnection(config, store, agent); Scheduler scheduler = new Scheduler(service, new Reports(service), slack, config, k -> Json.object(), engine -> {}, sent::add)) { scheduler.tick(); }
+        try (SlackConnection slack = new SlackConnection(config, store, agent); Scheduler scheduler = new Scheduler(service, new Reports(service), slack, config, sync, engine -> {}, notifier)) { scheduler.tick(); }
+    }
+    private Config connected(boolean automatic) throws Exception {
+        return new Config(temporary.resolve("none"), Map.of("AUTO_SYNC", Boolean.toString(automatic), "CALENDAR_OWNER_NAME", "홍길동",
+                "CALENDAR_ICS_FILE", "test.ics", "JIRA_URL", "https://jira.example", "JIRA_TOKEN", "test",
+                "SLACK_APP_TOKEN", "test", "SLACK_BOT_TOKEN", "test", "SLACK_USER_ID", "test"));
+    }
+    private void synced(String kind, String at, boolean ok) {
+        store.put("sync", Json.obj("id", kind, "at", at, "ok", ok));
+    }
+    @Test void allSourcesSyncEveryFiveMinutes() throws Exception {
+        Config config = connected(true);
+        List<String> calls = new ArrayList<>();
+        for (String now : List.of("2026-11-09T04:00:00Z", "2026-11-09T04:04:59Z", "2026-11-09T04:05:00Z",
+                "2026-11-09T04:09:59Z", "2026-11-09T04:10:00Z")) {
+            tick(now, config, kind -> {
+                calls.add(kind);
+                synced(kind, now, true);
+                return Json.object();
+            }, sent::add);
+        }
+        assertEquals(List.of("cli", "jira", "calendar", "cli", "jira", "calendar", "cli", "jira", "calendar"), calls);
+        assertTrue(sent.isEmpty());
+    }
+    @Test void morningRefreshPrecedesDeliveryEvenWhenPeriodicSyncIsOff() throws Exception {
+        Config config = connected(false);
+        List<String> calls = new ArrayList<>();
+        synced("jira", "2026-11-08T23:59:00Z", true);
+        synced("calendar", "2026-11-08T23:59:00Z", true);
+        synced("cli", "2026-11-08T23:59:00Z", true);
+        String now = "2026-11-09T00:00:00Z";
+        tick(now, config, kind -> { calls.add(kind); synced(kind, now, true); return Json.object(); }, message -> calls.add("briefing"));
+        assertEquals(List.of("calendar", "jira", "cli", "briefing"), calls);
+    }
+    @Test void freshLeaveStopsBriefingAndAvoidsExtraCalendarDownloads() throws Exception {
+        Config config = connected(false);
+        List<String> calls = new ArrayList<>();
+        for (String now : List.of("2026-11-09T00:00:00Z", "2026-11-09T00:10:00Z")) {
+            tick(now, config, kind -> {
+                calls.add(kind);
+                synced(kind, now, true);
+                store.put("meeting", Json.obj("id", "leave", "title", "홍길동 휴가", "start", "2026-11-09T00:00:00+09:00", "end", "2026-11-10T00:00:00+09:00"));
+                return Json.object();
+            }, sent::add);
+        }
+        assertEquals(List.of("calendar"), calls);
+        assertTrue(sent.isEmpty());
+    }
+    @Test void failedMorningRefreshWaitsBeforeRetryingAndSending() throws Exception {
+        Config config = connected(false);
+        List<String> calls = new ArrayList<>();
+        for (String now : List.of("2026-11-09T00:00:00Z", "2026-11-09T00:01:00Z", "2026-11-09T00:05:00Z")) {
+            tick(now, config, kind -> {
+                calls.add(kind);
+                boolean ok = !now.equals("2026-11-09T00:00:00Z");
+                synced(kind, now, ok);
+                if (!ok) throw new IOException("offline");
+                return Json.object();
+            }, message -> calls.add("briefing"));
+        }
+        assertEquals(List.of("calendar", "calendar", "jira", "cli", "briefing"), calls);
     }
     @Test void sendsOnceAtNineInKoreaAndNeverOnWeekendsOrLateStartup() throws Exception {
         tick("2026-11-05T23:59:59Z"); assertTrue(sent.isEmpty());
