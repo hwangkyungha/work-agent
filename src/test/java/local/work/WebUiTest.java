@@ -361,6 +361,20 @@ class WebUiTest {
         assertEquals("jira:CT-42",planUpdates.getFirst().path("taskIds").get(0).asText());
         assertEquals("local",state.path("plan").get(0).path("id").asText());
     }
+    @Test void reviewDetailsStayOpenAcrossUnchangedAndChangedPollingResponses() {
+        ObjectNode job=Json.obj("id","stable-review","kind","review","status","running","title","CI PR","url","https://bitbucket.org/team/repo/pull-requests/105","sourceCommit","head","findings",List.of(),"limitations",List.of("외부 실행은 하지 않았습니다."));
+        reviewJobs.add(job);
+        page.locator("[data-view='reviews']").click();
+        Locator detail=page.locator(".review-card details").last();
+        detail.locator("summary").click();detail.evaluate("el=>el.dataset.marker='kept'");
+        page.evaluate("updateReviews()");
+        assertEquals("kept",detail.getAttribute("data-marker"));
+        assertTrue((Boolean)detail.evaluate("el=>el.open"));
+        job.put("status","ready");page.evaluate("updateReviews()");
+        assertTrue((Boolean)detail.evaluate("el=>el.open"));
+        detail.locator("summary").click();job.put("summary","갱신 완료");page.evaluate("updateReviews()");
+        assertFalse((Boolean)detail.evaluate("el=>el.open"));
+    }
     @Test void draftResultsAndProposalsShareOneSectionAndRequireExplicitSelection() {
         state.set("draftDigest",Json.obj("generatedAt","2026-11-05T22:30:00Z","from","2026-11-04T15:00:00Z","until","2026-11-05T22:30:00Z","errors",List.of(),"prs",List.of(Json.obj("id","draft","number",105,"title","CT-42 CI 구현","url","https://bitbucket.org/team/repo/pull-requests/105","summary","PR 설명 요약","reviewed",false,"reviewSuggestion",Json.obj("id","review-draft"),"suggestions",List.of(Json.obj("id","followup-draft","title","배포 문서 작성","reason","PR에 남은 작업으로 기록돼 있습니다."))))));
         page.reload();page.getByRole(AriaRole.HEADING,new Page.GetByRoleOptions().setName("작업 결과와 다음 할 일").setExact(true)).waitFor();
