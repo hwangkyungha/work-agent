@@ -46,6 +46,34 @@ class WritingInstallTest {
         assertNotEquals(0, install("User", "-ActivateStyle").exit()); assertEquals(changed, read(skill)); assertEquals(before, read(agents));
         assertFalse(Files.exists(temporary.resolve(".claude/settings.json")));
     }
+    @Test void changingTheManagedInstructionsStopsAnUpdateWithoutLosingTheEdit() throws Exception {
+        assertEquals(0, install("User").exit());
+        Path agents = temporary.resolve(".codex/AGENTS.md");
+        String edited = read(agents).replace("<!-- work-agent:writing:end -->", "사용자가 관리 구간에 추가한 규칙\n<!-- work-agent:writing:end -->");
+        write(agents, edited);
+        Run blocked = install("User", "-ActivateStyle");
+        assertNotEquals(0, blocked.exit());
+        assertEquals(edited, read(agents));
+        assertFalse(Files.exists(temporary.resolve(".claude/settings.json")));
+    }
+    @Test void directoryInPlaceOfTheStyleStopsBeforeAnyFilesAreInstalled() throws Exception {
+        Path style = temporary.resolve(".claude/output-styles/work-agent-korean.md");
+        Files.createDirectories(style);
+        assertNotEquals(0, install("Project", "-ActivateStyle").exit());
+        assertTrue(Files.isDirectory(style));
+        assertFalse(Files.exists(temporary.resolve(".agents/skills/write-message")));
+        assertFalse(Files.exists(temporary.resolve(".work-agent/writing-install.json")));
+    }
+    @Test void linkedManifestCannotOverwriteAnotherFile() throws Exception {
+        Path original = temporary.resolve("user-settings.json");
+        write(original, "{\"personal\":true}");
+        Path manifest = temporary.resolve(".work-agent/writing-install.json");
+        Files.createDirectories(manifest.getParent());
+        Files.createLink(manifest, original);
+        assertNotEquals(0, install("User").exit());
+        assertEquals("{\"personal\":true}", read(original));
+        assertFalse(Files.exists(temporary.resolve(".agents/skills/write-message")));
+    }
     @Test void legacyMigrationMovesOnlyOldSkillsAndRetainsFullKoreanRulesInSharedSource() throws Exception {
         String common = read(Path.of("skills/work-agent-writing/common.md"));
         String original = common.substring(0, common.indexOf("# 업무 글의 사실과 근거")).strip();
