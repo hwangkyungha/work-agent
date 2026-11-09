@@ -11,27 +11,45 @@ final class ReviewContext {
     final JsonNode metadata;
     final String sourceCommit, destinationCommit, baseCommit, diff;
     private final String sourceRepository;
+    private final Store cache;
+    final List<String> currentPaths = new ArrayList<>();
     final Map<String, String> files = new LinkedHashMap<>();
     final Map<String, Set<Integer>> changed = new LinkedHashMap<>();
     final List<String> limitations = new ArrayList<>();
     final List<ObjectNode> documents = new ArrayList<>();
     ReviewContext(BitbucketClient api, BitbucketClient.PullRequest pr) throws Exception {
+        this(api, pr, null, true);
+    }
+    ReviewContext(BitbucketClient api, BitbucketClient.PullRequest pr, Store cache, boolean full) throws Exception {
         this.pr = pr; metadata = api.pullRequest(pr);
+        this.cache = cache;
         sourceCommit = Json.required(metadata.path("source").path("commit"), "hash");
         destinationCommit = Json.required(metadata.path("destination").path("commit"), "hash");
-        if (!Json.text(metadata, "state").equals("OPEN")) throw new IllegalArgumentException("열려 있는 PR만 검토할 수 있습니다.");
-        baseCommit = Json.required(api.get("/repositories/" + BitbucketClient.segment(pr.workspace()) + "/" + BitbucketClient.segment(pr.repository()) + "/merge-base/" + sourceCommit + ".." + destinationCommit), "hash");
-        diff = api.request("GET", pr.api() + "/diff", null);
+        if (full && !Json.text(metadata, "state").equals("OPEN")) throw new IllegalArgumentException("열려 있는 PR만 검토할 수 있습니다.");
+        baseCommit = full ? Json.required(api.get("/repositories/" + BitbucketClient.segment(pr.workspace()) + "/" + BitbucketClient.segment(pr.repository()) + "/merge-base/" + sourceCommit + ".." + destinationCommit), "hash") : "";
+        diff = full ? api.request("GET", pr.api() + "/diff", null) : "";
         if (diff.length() > 1_500_000) throw new IllegalArgumentException("PR 변경이 너무 큽니다. PR을 나눈 뒤 다시 검토하세요.");
         parseChanges(diff);
         sourceRepository = Json.required(metadata.path("source").path("repository"), "full_name");
         String destinationRepository = Json.required(metadata.path("destination").path("repository"), "full_name");
-        for (JsonNode stat : api.pages(pr.api() + "/diffstat?pagelen=100")) {
+        String snapshot = TranscriptImporter.hash(pr.url() + ":" + sourceCommit + ":" + destinationCommit);
+        ObjectNode saved = cache == null ? null : cache.get("prFileIndex", snapshot);
+        List<JsonNode> stats = new ArrayList<>();
+        if (saved != null) saved.path("stats").forEach(stats::add);
+        else {
+            stats.addAll(api.pages(pr.api() + "/diffstat?pagelen=100"));
+            if (!sameHead(api.pullRequest(pr))) throw new IllegalStateException("자료를 읽는 중 PR 커밋이 바뀌었습니다. 다시 검토하세요.");
+            if (cache != null) cache.put("prFileIndex", Json.obj("id", snapshot, "stats", stats));
+        }
+        for (JsonNode stat : stats) {
             String oldPath = Json.text(stat.path("old"), "path"), newPath = Json.text(stat.path("new"), "path");
+            if (!newPath.isBlank()) currentPaths.add(newPath);
+            if (!full) continue;
             if (stat.path("lines_added").asInt() == 0 && stat.path("lines_removed").asInt() == 0) { limitations.add((newPath.isBlank() ? oldPath : newPath) + ": 텍스트 변경 없이 이동했거나 바이너리 파일입니다."); continue; }
             if (!newPath.isBlank()) load(api, sourceRepository, sourceCommit, newPath, "new");
             if (!oldPath.isBlank()) load(api, destinationRepository, baseCommit, oldPath, "old");
         }
+        if (!full) return;
         for (String path : List.of("AGENTS.md", "CLAUDE.md", "README.md")) if (!files.containsKey("new:" + path)) {
             try { load(api, sourceRepository, sourceCommit, path, "new"); }
             catch (BitbucketClient.Rejected e) { if (e.status != 404) throw e; }
@@ -40,10 +58,27 @@ final class ReviewContext {
         if (!sameHead(current)) throw new IllegalStateException("자료를 읽는 중 PR 커밋이 바뀌었습니다. 다시 검토하세요.");
     }
     private void load(BitbucketClient api, String repository, String commit, String path, String side) throws Exception {
-        String text = api.source(repository, commit, path).replace("\r\n", "\n");
+        String key = sourceKey(repository, commit, path);
+        ObjectNode saved = cache == null ? null : cache.get("prSource", key);
+        String text = saved == null ? api.source(repository, commit, path).replace("\r\n", "\n") : Json.text(saved, "text");
         if (text.length() > 220_000) { limitations.add(path + ": 파일이 커서 본문 검토에서 제외했습니다."); return; }
+        if (cache != null && saved == null) cache.put("prSource", Json.obj("id", key, "text", text));
         files.put(side + ":" + path, text);
         documents.add(Json.obj("path", path, "side", side, "content", numbered(text)));
+    }
+    private static String sourceKey(String repository, String commit, String path) {
+        return TranscriptImporter.hash(Json.write(List.of(repository, commit, path)));
+    }
+    String cachedCurrent(String path) {
+        ObjectNode saved = cache == null ? null : cache.get("prSource", sourceKey(sourceRepository, sourceCommit, path));
+        return saved == null ? "" : Json.text(saved, "text");
+    }
+    boolean includeCurrent(BitbucketClient api, String path) throws Exception {
+        if (files.containsKey("new:" + path)) return false;
+        if (!currentPaths.contains(path) && !path.matches("(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.(?:json|md|go|java|kt|rs|py|cs|c|cpp|h|hpp|js|ts|yaml|yml|toml)")) return false;
+        try { load(api, sourceRepository, sourceCommit, path, "new"); }
+        catch (BitbucketClient.Rejected e) { if (e.status != 404) throw e; }
+        return files.containsKey("new:" + path);
     }
     void includeCommentFile(BitbucketClient api, JsonNode comment) throws Exception {
         String path = Json.text(comment.path("inline"), "path");
@@ -197,6 +232,31 @@ final class ReviewContext {
     private static void addExcerpt(Map<String, NavigableMap<Integer, String>> excerpts, String key, String[] lines, int from, int to) {
         NavigableMap<Integer, String> selected = excerpts.computeIfAbsent(key, unused -> new TreeMap<>());
         for (int line = Math.max(1, from); line <= Math.min(lines.length, to); line++) selected.put(line, lines[line - 1]);
+    }
+    List<ObjectNode> questionExcerpts(List<String> terms) {
+        List<ObjectNode> excerpts = new ArrayList<>();
+        for (var entry : files.entrySet()) {
+            String[] lines = entry.getValue().split("\n", -1);
+            List<Integer> matches = new ArrayList<>();
+            int[] scores = new int[lines.length];
+            for (int i = 0; i < lines.length; i++) {
+                String lower = lines[i].toLowerCase(Locale.ROOT);
+                for (String term : terms) if (lower.contains(term)) scores[i]++;
+                if (scores[i] > 0) matches.add(i);
+            }
+            matches.sort(Comparator.comparingInt((Integer i) -> scores[i]).reversed());
+            Set<Integer> selected = new TreeSet<>();
+            for (int i = 0; i < Math.min(6, lines.length); i++) selected.add(i);
+            for (int anchor : matches) {
+                if (selected.size() >= 42) break;
+                if (!selected.contains(anchor)) for (int i = Math.max(0, anchor - 5); i < Math.min(lines.length, anchor + 6); i++) selected.add(i);
+            }
+            if (matches.isEmpty()) for (int i = 6; i < Math.min(lines.length, 20); i++) selected.add(i);
+            StringBuilder excerpt = new StringBuilder();
+            for (int index : selected) if (lines[index].length() <= 1200 && excerpt.length() + lines[index].length() <= 3500) excerpt.append(index + 1).append(": ").append(lines[index]).append('\n');
+            excerpts.add(Json.obj("path", entry.getKey().substring(4), "side", "new", "content", excerpt.toString()));
+        }
+        return excerpts;
     }
     List<List<ObjectNode>> batches() {
         List<List<ObjectNode>> batches = new ArrayList<>(); List<ObjectNode> batch = new ArrayList<>(); int size = 2;

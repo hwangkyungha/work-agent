@@ -4,9 +4,12 @@ import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.node.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.regex.Pattern;
 
 /** Generates and checks review/reply drafts, retaining commit pins and pending-comment delivery state. */
 final class PullRequestReview implements AutoCloseable {
+    static final Pattern PR_LINK = Pattern.compile("https://bitbucket\\.org/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull-requests/[1-9][0-9]*");
+    private static final Pattern PR_NUMBER = Pattern.compile("(?i)\\bPR\\s*#?\\s*([1-9][0-9]*)");
     @FunctionalInterface interface Model { JsonNode complete(String prompt) throws Exception; }
     private final WorkService service;
     private final BitbucketClient api;
@@ -16,7 +19,22 @@ final class PullRequestReview implements AutoCloseable {
     private final Set<String> active = ConcurrentHashMap.newKeySet();
     PullRequestReview(WorkService service, BitbucketClient api, Model model) { this(service, api, model, "work-agent"); }
     PullRequestReview(WorkService service, BitbucketClient api, Model model, String agentName) { this.service = service; this.api = api; this.model = model; this.agentName = agentName; }
+    ObjectNode answerQuestion(String question, String boundUrl, String reviewedCommit, List<String> recentUrls) throws Exception {
+        Set<String> urls = new LinkedHashSet<>(PR_LINK.matcher(question).results().map(match -> match.group()).toList());
+        var match = PR_NUMBER.matcher(question);
+        String number = match.find() ? match.group(1) : "";
+        if (urls.isEmpty() && !boundUrl.isBlank() && (number.isBlank() || boundUrl.endsWith("/" + number))) urls.add(boundUrl);
+        if (urls.isEmpty()) recentUrls.stream().filter(url -> number.isBlank() || url.endsWith("/" + number)).forEach(urls::add);
+        if (urls.isEmpty() && !number.isBlank()) service.store.list("prReview").stream().map(row -> Json.text(row, "url"))
+                .filter(url -> url.endsWith("/" + number)).forEach(urls::add);
+        if (urls.size() != 1) return Json.obj("message", "어느 PR을 확인할까요? Bitbucket PR 주소를 알려 주세요.");
+        String url = urls.iterator().next();
+        return new PrQuestion(service.store, api, model).answer(url, question, url.equals(boundUrl) ? reviewedCommit : "");
+    }
     synchronized ObjectNode request(String url, long parent, boolean automatic) throws Exception {
+        return request(url, parent, automatic, false);
+    }
+    synchronized ObjectNode request(String url, long parent, boolean automatic, boolean rerun) throws Exception {
         if (parent < 0) throw new IllegalArgumentException("댓글 번호는 0보다 커야 합니다.");
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(url);
         JsonNode metadata = api.pullRequest(pr);
@@ -29,7 +47,14 @@ final class PullRequestReview implements AutoCloseable {
         }
         String id = TranscriptImporter.hash(pr.url() + ":" + source + ":" + destination + ":" + parent + ":" + commentRevision);
         ObjectNode existing = service.store.get("prReview", id);
-        if (existing != null && (automatic || !Set.of("failed", "stale").contains(Json.text(existing, "status")))) return existing;
+        if (rerun) {
+            for (ObjectNode job : service.store.list("prReview")) {
+                if (pr.url().equals(Json.text(job, "url")) && source.equals(Json.text(job, "sourceCommit"))
+                        && destination.equals(Json.text(job, "destinationCommit")) && parent == job.path("parentCommentId").asLong()
+                        && commentRevision.equals(Json.text(job, "commentRevision")) && inProgress(job)) return job;
+            }
+            id = UUID.randomUUID().toString();
+        } else if (existing != null && (automatic || !Set.of("failed", "stale").contains(Json.text(existing, "status")))) return existing;
         ObjectNode row = Json.obj("id", id, "url", pr.url(), "title", Json.text(metadata, "title"), "sourceCommit", source, "destinationCommit", destination,
                 "parentCommentId", parent, "commentRevision", commentRevision, "kind", parent > 0 ? "reply" : "review", "status", "queued", "automatic", automatic, "createdAt", service.time.instant().toString(), "findings", List.of(), "limitations", List.of(), "summary", "");
         service.store.put("prReview", row);
@@ -90,7 +115,7 @@ final class PullRequestReview implements AutoCloseable {
     void run(String id) throws Exception {
         ObjectNode row = required(id); row.put("status", "running"); save(row);
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.text(row, "url"));
-        ReviewContext context = new ReviewContext(api, pr);
+        ReviewContext context = new ReviewContext(api, pr, service.store, true);
         if (!context.sourceCommit.equals(Json.text(row, "sourceCommit")) || !context.destinationCommit.equals(Json.text(row, "destinationCommit"))) throw new IllegalStateException("PR 커밋이 바뀌었습니다. 다시 요청하세요.");
         List<JsonNode> comments = api.comments(pr);
         String owner = Json.required(api.get("/user"), "uuid");

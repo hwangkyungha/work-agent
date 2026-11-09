@@ -24,7 +24,7 @@ class SlackProgressTest {
     private final List<String> messages = new CopyOnWriteArrayList<>();
 
     @BeforeEach void open() throws Exception {
-        config = new Config(temporary.resolve("none"), Map.of("SLACK_BOT_TOKEN", "test-token"));
+        config = new Config(temporary.resolve("none"), Map.of("SLACK_BOT_TOKEN", "test-token", "SLACK_APP_TOKEN", "test-app", "SLACK_USER_ID", "owner"));
         store = new Store(temporary.resolve("test.db"));
         service = new WorkService(store, new KoreaTime(Clock.systemUTC()), new JiraClient(config));
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -33,7 +33,12 @@ class SlackProgressTest {
             String method = exchange.getRequestURI().getPath().substring(5);
             if (method.equals("chat.postMessage")) messages.add(Json.text(body, "text"));
             calls.add(method + ":" + Json.text(body, "name") + ":" + Json.text(body, "timestamp"));
-            byte[] response = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
+            String result = switch (method) {
+                case "conversations.open" -> "{\"ok\":true,\"channel\":{\"id\":\"D123\"}}";
+                case "chat.postMessage" -> "{\"ok\":true,\"ts\":\"parent\"}";
+                default -> "{\"ok\":true}";
+            };
+            byte[] response = result.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, response.length);
             try (var output = exchange.getResponseBody()) { output.write(response); }
         });
@@ -91,5 +96,41 @@ class SlackProgressTest {
         try (SlackConnection slack = new SlackConnection(config, store, agent, apiRoot)) { slack.handleEvent(event("처리해줘")); }
         assertEquals(List.of("reactions.add:hourglass_flowing_sand:123.456", "chat.postMessage::",
                 "reactions.add:x:123.456", "reactions.remove:hourglass_flowing_sand:123.456"), calls);
+    }
+    @Test void reviewNoticeThreadReusesPinnedSourcesAndAnswersWithoutPostingToBitbucket() throws Exception {
+        var sourceReads = new java.util.concurrent.atomic.AtomicInteger();
+        PullRequestReviewTest.FakeApi api = new PullRequestReviewTest.FakeApi(config) {
+            @Override String source(String repo, String commit, String path) throws Exception {
+                if (path.equals("foo.java")) sourceReads.incrementAndGet();
+                return super.source(repo, commit, path);
+            }
+        };
+        String url = "https://bitbucket.org/team/repo/pull-requests/111";
+        try (PullRequestReview reviews = new PullRequestReview(service, api, prompt -> {
+            if (!prompt.contains("현재 질문")) return Json.obj("findings", List.of(), "limitations", List.of());
+            assertTrue(prompt.contains("1: return null;"));
+            return Json.obj("reply", "현재 null을 반환합니다.", "replyEvidence",
+                    List.of(Json.obj("path", "foo.java", "side", "new", "line", 1, "quote", "return null;")));
+        })) {
+            var review = reviews.request(url, 0, false);
+            String reviewId = Json.required(review, "id");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (PullRequestReview.inProgress(store.get("prReview", reviewId)) && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals("ready", Json.text(store.get("prReview", reviewId), "status"));
+            Agent agent = new Agent(service, new Reports(service), prompt -> { throw new AssertionError("Thread should route without classification."); },
+                    kind -> Json.object(), "호박", "호박아", null, reviews, null);
+            int readsAfterReview = sourceReads.get();
+            try (SlackConnection slack = new SlackConnection(config, store, agent, apiRoot)) {
+                slack.notifyReview("검토를 마쳤습니다.", review);
+                assertEquals(url, Json.text(store.get("prSlackThread", "D123:parent"), "url"));
+            }
+            try (SlackConnection restarted = new SlackConnection(config, store, agent, apiRoot)) {
+                restarted.handleEvent(event("foo.java에서 뭘 반환해?"));
+            }
+            assertTrue(messages.getLast().contains("현재 null을 반환합니다."));
+            assertTrue(messages.getLast().contains("foo.java:1"));
+            assertEquals(readsAfterReview, sourceReads.get());
+            assertEquals(0, api.writes);
+        }
     }
 }

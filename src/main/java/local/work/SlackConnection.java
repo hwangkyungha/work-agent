@@ -102,7 +102,9 @@ final class SlackConnection implements AutoCloseable {
         reaction("add", payload, WORKING);
         ObjectNode result;
         try {
-            result = agent.chat("slack:" + channel, id, Json.required(payload, "text"));
+            ObjectNode reviewThread = thread.isBlank() ? null : store.get("prSlackThread", channel + ":" + thread);
+            String conversation = "slack:" + channel + (reviewThread == null ? "" : ":" + thread);
+            result = agent.chat(conversation, id, Json.required(payload, "text"), reviewThread);
         } catch (Exception e) {
             try {
                 send(channel, "요청을 완료하지 못했습니다. " + friendly(e), thread);
@@ -169,15 +171,29 @@ final class SlackConnection implements AutoCloseable {
     }
     void notifyOwner(String text) throws Exception {
         if (!configured()) return;
-        JsonNode opened = api("conversations.open", config.get("SLACK_BOT_TOKEN", ""), Json.obj("users", config.get("SLACK_USER_ID", "")));
-        send(Json.required(opened.path("channel"), "id"), text, "");
+        send(ownerChannel(), text, "");
     }
-    private void send(String channel, String text, String thread) throws Exception {
+    void notifyReview(String text, ObjectNode review) throws Exception {
+        if (!configured()) return;
+        String channel = ownerChannel();
+        String timestamp = send(channel, text + "\n이 PR에 관한 질문은 이 메시지의 스레드에 남겨 주세요.", "");
+        if (!timestamp.isBlank()) store.put("prSlackThread", Json.obj("id", channel + ":" + timestamp,
+                "url", Json.text(review, "url"), "sourceCommit", Json.text(review, "sourceCommit"),
+                "reviewId", Json.text(review, "id")));
+    }
+    private String ownerChannel() throws Exception {
+        JsonNode opened = api("conversations.open", config.get("SLACK_BOT_TOKEN", ""), Json.obj("users", config.get("SLACK_USER_ID", "")));
+        return Json.required(opened.path("channel"), "id");
+    }
+    private String send(String channel, String text, String thread) throws Exception {
+        String first = "";
         for (int offset = 0; offset < text.length(); offset += 3500) {
             ObjectNode body = Json.obj("channel", channel, "text", text.substring(offset, Math.min(text.length(), offset + 3500)), "unfurl_links", false, "unfurl_media", false);
             if (!thread.isBlank()) body.put("thread_ts", thread);
-            api("chat.postMessage", config.get("SLACK_BOT_TOKEN", ""), body);
+            JsonNode result = api("chat.postMessage", config.get("SLACK_BOT_TOKEN", ""), body);
+            if (offset == 0) first = Json.text(result, "ts");
         }
+        return first;
     }
     private JsonNode api(String method, String token, ObjectNode body) throws Exception {
         HttpResponse<String> response = http.send(HttpRequest.newBuilder(apiRoot.resolve(method)).timeout(Duration.ofSeconds(method.startsWith("reactions.") ? 5 : 30))

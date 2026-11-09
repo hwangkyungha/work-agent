@@ -74,7 +74,7 @@ public final class Main {
         PullRequestReview reviews = new PullRequestReview(service, bitbucket, cli::review, config.agentName());
         // The notifier is attached after the Slack connection has been created.
         SlackConnection[] slackTarget = new SlackConnection[1];
-        ReviewMonitor reviewMonitor = new ReviewMonitor(service, bitbucket, reviews, config, text -> slackTarget[0].notifyOwner(text));
+        ReviewMonitor reviewMonitor = new ReviewMonitor(service, bitbucket, reviews, config, (text, review) -> slackTarget[0].notifyReview(text, review));
         Agent agent = new Agent(service, reports, cli, sync, config.agentName(), config.agentCallName(), booking, reviews, reviewMonitor);
         SlackConnection slack = new SlackConnection(config, store, agent);
         slackTarget[0] = slack;
@@ -142,7 +142,7 @@ public final class Main {
                     Object result = switch (path) {
                         case "/api/rooms" -> booking.execute(Json.required(body, "requestId"), body);
                         case "/api/reviews/refresh" -> reviewMonitor.refresh();
-                        case "/api/reviews/request" -> reviews.request(Json.required(body, "url"), body.path("commentId").asLong(), false);
+                        case "/api/reviews/request" -> reviews.request(Json.required(body, "url"), body.path("commentId").asLong(), false, body.path("rerun").asBoolean());
                         case "/api/reviews/edit" -> reviews.edit(body);
                         case "/api/reviews/save" -> reviews.savePending(Json.required(body, "id"));
                         case "/api/chat" -> agent.chat("web", body.path("requestId").asText(UUID.randomUUID().toString()), Json.required(body, "text"));

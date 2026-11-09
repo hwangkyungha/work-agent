@@ -241,4 +241,14 @@ class PullRequestReviewTest {
         assertTrue(excerpts.contains("return checkConnection(ctx)"));
         assertFalse(excerpts.contains("FAR_UNRELATED_SOURCE"));
     }
+    @Test void manualRerunCreatesANewReviewForTheSameCommit() throws Exception {
+        reviews = new PullRequestReview(service, api, prompt -> result(List.of()));
+        String url = "https://bitbucket.org/team/repo/pull-requests/111";
+        ObjectNode first = await(reviews.request(url, 0, false));
+        ObjectNode second = await(reviews.request(url, 0, false, true));
+        assertNotEquals(Json.text(first, "id"), Json.text(second, "id"));
+        assertEquals("ready", Json.text(second, "status"), Json.text(second, "error"));
+        assertEquals(Json.text(first, "sourceCommit"), Json.text(second, "sourceCommit"));
+        assertEquals(0, api.writes);
+    }
 }

@@ -10,17 +10,21 @@ import java.util.concurrent.*;
 
 /** Finds the owner's review requests and unanswered threads across accessible repositories. */
 final class ReviewMonitor implements AutoCloseable {
+    @FunctionalInterface interface CompletionNotifier { void send(String text, ObjectNode review) throws Exception; }
     private static final int FIRST_SCAN_HOUR = 8;
     private static final int END_SCAN_HOUR = 17;
-    private final WorkService service;
     private static final int SCAN_INTERVAL_MINUTES = 30;
+    private final WorkService service;
     private final BitbucketClient api;
     private final PullRequestReview reviews;
     private final Config config;
-    private final Scheduler.Notifier notifier;
+    private final CompletionNotifier notifier;
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
     private volatile boolean scanning;
     ReviewMonitor(WorkService service, BitbucketClient api, PullRequestReview reviews, Config config, Scheduler.Notifier notifier) {
+        this(service, api, reviews, config, (text, review) -> notifier.send(text));
+    }
+    ReviewMonitor(WorkService service, BitbucketClient api, PullRequestReview reviews, Config config, CompletionNotifier notifier) {
         this.service = service; this.api = api; this.reviews = reviews; this.config = config; this.notifier = notifier;
     }
     void start() {
@@ -121,7 +125,7 @@ final class ReviewMonitor implements AutoCloseable {
         for (ObjectNode row : service.store.list("prReview")) {
             if (row.path("notified").asBoolean() || PullRequestReview.inProgress(row)) continue;
             if (!Set.of("ready", "saved", "failed", "stale", "delivery-unknown").contains(Json.text(row, "status"))) continue;
-            notifier.send(PullRequestReview.resultMessage(row));
+            notifier.send(PullRequestReview.resultMessage(row), row);
             synchronized (service.store) {
                 ObjectNode current = service.store.get("prReview", Json.required(row, "id"));
                 if (current != null) { current.put("notified", true); service.store.put("prReview", current); }
