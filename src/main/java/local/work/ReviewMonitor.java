@@ -2,12 +2,18 @@ package local.work;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.Duration;
+import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.*;
 
 /** Finds the owner's review requests and unanswered threads across accessible repositories. */
 final class ReviewMonitor implements AutoCloseable {
+    private static final int FIRST_SCAN_HOUR = 8;
+    private static final int END_SCAN_HOUR = 17;
     private final WorkService service;
+    private static final int SCAN_INTERVAL_MINUTES = 30;
     private final BitbucketClient api;
     private final PullRequestReview reviews;
     private final Config config;
@@ -19,15 +25,38 @@ final class ReviewMonitor implements AutoCloseable {
     }
     void start() {
         reviews.resume();
-        if (api.configured() && config.get("BITBUCKET_AUTO_REVIEW", "true").equals("true")) worker.scheduleWithFixedDelay(this::tick, 10, 600, TimeUnit.SECONDS);
+        if (api.configured() && config.get("BITBUCKET_AUTO_REVIEW", "true").equals("true")) scheduleNextScan();
         worker.scheduleWithFixedDelay(() -> { try { notifyCompleted(); } catch (Exception e) { System.err.println("PR 알림을 보내지 못했습니다: " + SlackConnection.friendly(e)); } }, 30, 30, TimeUnit.SECONDS);
     }
-    synchronized ObjectNode refresh() {
-        if (!scanning) { scanning = true; worker.submit(this::tick); }
+    ObjectNode refresh() {
+        if (beginScan()) worker.submit(this::tick);
         return state();
     }
-    private void tick() {
+    private synchronized boolean beginScan() {
+        if (scanning) return false;
         scanning = true;
+        return true;
+    }
+    static ZonedDateTime nextScanTime(ZonedDateTime now) {
+        ZonedDateTime next = now.truncatedTo(ChronoUnit.MINUTES).plusMinutes(SCAN_INTERVAL_MINUTES - now.getMinute() % SCAN_INTERVAL_MINUTES);
+        if (next.getHour() >= END_SCAN_HOUR) return next.plusDays(1).withHour(FIRST_SCAN_HOUR).withMinute(0);
+        if (next.getHour() < FIRST_SCAN_HOUR) return next.withHour(FIRST_SCAN_HOUR).withMinute(0);
+        return next;
+    }
+    private void scheduleNextScan() {
+        if (worker.isShutdown()) return;
+        ZonedDateTime now = service.time.now();
+        ZonedDateTime target = nextScanTime(now);
+        worker.schedule(() -> {
+            try {
+                ZonedDateTime actual = service.time.now();
+                if (!actual.isBefore(target) && actual.isBefore(target.plusMinutes(SCAN_INTERVAL_MINUTES)) && beginScan()) tick();
+            } finally {
+                scheduleNextScan();
+            }
+        }, Duration.between(now, target).toNanos(), TimeUnit.NANOSECONDS);
+    }
+    private void tick() {
         try { scan(); }
         catch (Exception e) {
             ObjectNode status = service.store.get("reviewMonitor", "status");

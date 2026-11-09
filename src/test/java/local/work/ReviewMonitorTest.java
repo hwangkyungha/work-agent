@@ -6,7 +6,10 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.ZonedDateTime;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ReviewMonitorTest {
@@ -15,6 +18,40 @@ class ReviewMonitorTest {
     @AfterEach void close() throws Exception {
         if (monitor != null) monitor.close(); if (reviews != null) reviews.close();
         if (store != null) store.close();
+    }
+    @Test void autoScanRunsOnTheHourAndHalfHourDuringKoreanDaytime() {
+        Map<String, String> slots = Map.of(
+                "2026-11-09T07:59:59", "2026-11-09T08:00:00",
+                "2026-11-09T08:00:00", "2026-11-09T08:30:00",
+                "2026-11-09T08:29:59", "2026-11-09T08:30:00",
+                "2026-11-09T08:30:00", "2026-11-09T09:00:00",
+                "2026-11-09T15:59:59", "2026-11-09T16:00:00",
+                "2026-11-09T16:00:00", "2026-11-09T16:30:00",
+                "2026-11-09T16:30:00", "2026-11-10T08:00:00",
+                "2026-11-09T17:00:00", "2026-11-10T08:00:00",
+                "2026-11-09T23:59:59", "2026-11-10T08:00:00",
+                "2026-11-07T07:00:00", "2026-11-07T08:00:00");
+        slots.forEach((now, next) -> assertEquals(
+                ZonedDateTime.parse(next + "+09:00[Asia/Seoul]"),
+                ReviewMonitor.nextScanTime(ZonedDateTime.parse(now + "+09:00[Asia/Seoul]"))));
+    }
+    @Test void manualRefreshStillWorksOutsideScheduledHours() throws Exception {
+        Config config = new Config(temporary.resolve("none"), Map.of("BITBUCKET_WORKSPACES", "example"));
+        store = new Store(temporary.resolve("test.db"));
+        CountDownLatch queried = new CountDownLatch(1);
+        PullRequestReviewTest.FakeApi api = new PullRequestReviewTest.FakeApi(config) {
+            @Override List<JsonNode> pages(String path) {
+                if (path.contains("/permissions/repositories")) queried.countDown();
+                return List.of();
+            }
+        };
+        ZonedDateTime evening = ZonedDateTime.parse("2026-11-09T18:00:00+09:00[Asia/Seoul]");
+        WorkService service = new WorkService(store, new KoreaTime(Clock.fixed(evening.toInstant(), KoreaTime.ZONE)), new JiraClient(config));
+        reviews = new PullRequestReview(service, api, prompt -> Json.object());
+        monitor = new ReviewMonitor(service, api, reviews, config, text -> {});
+        monitor.start();
+        monitor.refresh();
+        assertTrue(queried.await(5, TimeUnit.SECONDS));
     }
     @Test void scansMultipleWorkspacesAndRepositoriesWithoutRepositoryAllowlist() throws Exception {
         Config config = new Config(temporary.resolve("none"), Map.of()); store = new Store(temporary.resolve("test.db"));

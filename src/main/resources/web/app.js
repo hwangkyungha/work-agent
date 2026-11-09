@@ -112,7 +112,7 @@ async function updateReviews(){
   clearTimeout(reviewPoll);
   try{
     reviewState=await api('/api/reviews');if(view!=='reviews')return;
-    $('#review-status').innerHTML=`<p class="hint">${reviewState.scanning?'저장소 확인 중…':reviewState.at?`${esc((reviewState.workspaces||[]).join(', '))} · 저장소 ${Number(reviewState.repositoryCount||0)}개 확인 · ${esc(clock(reviewState.at))}`:reviewState.configured?'아직 자동 조회 전입니다.':'Bitbucket 이메일과 토큰을 설정해 주세요.'} · 자동 확인 ${reviewState.automatic?'켜짐 (10분 간격)':'꺼짐'}</p>${[...(reviewState.warnings||[]),reviewState.error].filter(Boolean).map(text=>`<p class="hint error">${esc(text)}</p>`).join('')}`;
+    $('#review-status').innerHTML=`<p class="hint">${reviewState.scanning?'저장소 확인 중…':reviewState.at?`${esc((reviewState.workspaces||[]).join(', '))} · 저장소 ${Number(reviewState.repositoryCount||0)}개 확인 · ${esc(clock(reviewState.at))}`:reviewState.configured?'아직 자동 조회 전입니다.':'Bitbucket 이메일과 토큰을 설정해 주세요.'} · 자동 확인 ${reviewState.automatic?'켜짐 (한국 시간 08:00~16:30, 30분 간격)':'꺼짐'}</p>${[...(reviewState.warnings||[]),reviewState.error].filter(Boolean).map(text=>`<p class="hint error">${esc(text)}</p>`).join('')}`;
     const jobs=reviewState.jobs||[];
     $('#review-list').innerHTML=jobs.length?jobs.map(job=>{
       const items=job.kind==='reply'?(job.reply?[{id:'reply',comment:job.reply,evidence:job.replyEvidence||[]}]:[]):job.findings||[];
