@@ -15,9 +15,11 @@
       }, "required": ["path", "line", "side", "title", "comment", "severity", "confidence", "trigger", "impact", "fix", "evidence"]
     }},
     "reply": {"type": "string"}, "replyConfidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    "replyKind": {"type": "string", "enum": ["none", "fact", "design"]},
+    "relatedPaths": {"type": "array", "items": {"type": "string"}},
     "replyEvidence": {"type": "array", "items": {"type": "object", "additionalProperties": false,
       "properties": {"path": {"type": "string"}, "line": {"type": "integer"}, "side": {"type": "string", "enum": ["new", "old"]}, "quote": {"type": "string"}},
       "required": ["path", "line", "side", "quote"]}},
     "limitations": {"type": "array", "items": {"type": "string"}}
-  }, "required": ["summary", "findings", "reply", "replyConfidence", "replyEvidence", "limitations"]
+  }, "required": ["summary", "findings", "reply", "replyKind", "relatedPaths", "replyConfidence", "replyEvidence", "limitations"]
 }

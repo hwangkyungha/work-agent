@@ -10,6 +10,7 @@ final class ReviewContext {
     final BitbucketClient.PullRequest pr;
     final JsonNode metadata;
     final String sourceCommit, destinationCommit, baseCommit, diff;
+    private final String sourceRepository;
     final Map<String, String> files = new LinkedHashMap<>();
     final Map<String, Set<Integer>> changed = new LinkedHashMap<>();
     final List<String> limitations = new ArrayList<>();
@@ -23,7 +24,7 @@ final class ReviewContext {
         diff = api.request("GET", pr.api() + "/diff", null);
         if (diff.length() > 1_500_000) throw new IllegalArgumentException("PR 변경이 너무 큽니다. PR을 나눈 뒤 다시 검토하세요.");
         parseChanges(diff);
-        String sourceRepository = Json.required(metadata.path("source").path("repository"), "full_name");
+        sourceRepository = Json.required(metadata.path("source").path("repository"), "full_name");
         String destinationRepository = Json.required(metadata.path("destination").path("repository"), "full_name");
         for (JsonNode stat : api.pages(pr.api() + "/diffstat?pagelen=100")) {
             String oldPath = Json.text(stat.path("old"), "path"), newPath = Json.text(stat.path("new"), "path");
@@ -47,9 +48,53 @@ final class ReviewContext {
     void includeCommentFile(BitbucketClient api, JsonNode comment) throws Exception {
         String path = Json.text(comment.path("inline"), "path");
         if (!path.isBlank() && !files.containsKey("new:" + path)) {
-            try { load(api, Json.required(metadata.path("source").path("repository"), "full_name"), sourceCommit, path, "new"); }
+            try { load(api, sourceRepository, sourceCommit, path, "new"); }
             catch (BitbucketClient.Rejected e) { if (e.status != 404) throw e; limitations.add(path + ": 현재 소스에 없는 파일의 댓글입니다."); }
         }
+    }
+    Set<String> relatedFileCandidates(BitbucketClient api, JsonNode incoming) throws Exception {
+        Set<String> paths = new LinkedHashSet<>(), directories = new LinkedHashSet<>();
+        String inline = Json.text(incoming.path("inline"), "path");
+        if (!inline.isBlank()) directories.add(parentDirectory(inline));
+        for (ObjectNode document : documents) {
+            if (!Json.text(document, "side").equals("new")) continue;
+            String path = Json.text(document, "path");
+            paths.add(path);
+            if (!path.endsWith(".md")) directories.add(parentDirectory(path));
+        }
+        Set<String> search = new LinkedHashSet<>(directories.stream().limit(4).toList());
+        search.addAll(List.of("openspec/specs", "docs", "specs", ""));
+        for (String directory : search) {
+            try {
+                JsonNode page = api.sourceDirectory(sourceRepository, sourceCommit, directory, directories.contains(directory) || directory.isEmpty() ? 1 : 2);
+                for (JsonNode entry : page.path("values")) {
+                    String path = Json.text(entry, "path");
+                    if (Json.text(entry, "type").equals("commit_file") && path.matches("(?:[\\p{L}\\p{N}_-][\\p{L}\\p{N}_.-]*/)*[\\p{L}\\p{N}_-][\\p{L}\\p{N}_.-]*\\.(?:md|rst|adoc|go|java|kt|cs|rs|py|rb|js|ts|jsx|tsx|c|cc|cpp|h|hpp|sh|ps1)")) paths.add(path);
+                }
+                if (page.hasNonNull("next")) limitations.add(directory + " 파일 목록은 처음 100개까지만 확인했습니다.");
+            } catch (BitbucketClient.Rejected e) {
+                if (e.status != 404) limitations.add(directory + " 관련 파일 목록을 읽지 못했습니다(HTTP " + e.status + ").");
+            }
+        }
+        if (directories.size() > 4) limitations.add("관련 호출부 검색은 우선순위가 높은 소스 디렉터리 4곳까지 확인했습니다.");
+        return paths;
+    }
+    Set<String> includeRelatedFiles(BitbucketClient api, Set<String> candidates, JsonNode selected) throws Exception {
+        Set<String> included = new LinkedHashSet<>();
+        for (JsonNode value : selected) {
+            if (included.size() == 4) break;
+            String path = value.asText();
+            if (!candidates.contains(path) || !included.add(path)) continue;
+            if (files.containsKey("new:" + path)) continue;
+            try { load(api, sourceRepository, sourceCommit, path, "new"); }
+            catch (BitbucketClient.Rejected e) { limitations.add(path + ": 관련 자료를 읽지 못했습니다(HTTP " + e.status + ")."); }
+        }
+        included.removeIf(path -> !files.containsKey("new:" + path));
+        return included;
+    }
+    private static String parentDirectory(String path) {
+        int slash = path.lastIndexOf('/');
+        return slash < 0 ? "" : path.substring(0, slash);
     }
     private static String numbered(String text) {
         String[] lines = text.split("\n", -1); StringBuilder result = new StringBuilder();

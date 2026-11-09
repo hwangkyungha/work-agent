@@ -42,7 +42,7 @@ class PullRequestReviewTest {
     @AfterEach void close() throws Exception { if (reviews != null) reviews.close(); store.close(); }
     ObjectNode evidence() { return Json.obj("path", "foo.java", "side", "new", "line", 1, "quote", "return null;"); }
     ObjectNode finding() { return Json.obj("path", "foo.java", "side", "new", "line", 1, "title", "반환값 누락", "comment", "입력이 있어도 null을 반환하여 호출한 코드가 실패합니다. 입력값을 반환해 주세요.", "severity", "medium", "confidence", "high", "trigger", "입력이 있음", "impact", "호출한 코드 실패", "fix", "입력값 반환", "evidence", List.of(evidence())); }
-    ObjectNode result(List<ObjectNode> findings) { return Json.obj("summary", "검토 완료", "findings", findings, "reply", "", "replyConfidence", "low", "replyEvidence", List.of(), "limitations", List.of()); }
+    ObjectNode result(List<ObjectNode> findings) { return Json.obj("summary", "검토 완료", "findings", findings, "reply", "", "replyKind", "fact", "relatedPaths", List.of(), "replyConfidence", "low", "replyEvidence", List.of(), "limitations", List.of()); }
     ObjectNode await(ObjectNode row) throws Exception {
         long end = System.nanoTime() + 5_000_000_000L;
         do { row = store.get("prReview", Json.required(row, "id")); if (!Set.of("queued", "running").contains(Json.text(row, "status"))) return row; Thread.sleep(10); } while (System.nanoTime() < end);
@@ -98,10 +98,63 @@ class PullRequestReviewTest {
         api.author = "owner"; api.comments.add(Json.obj("id", 7, "created_on", "2026-11-06T00:00:00Z", "user", Json.obj("uuid", "other"), "content", Json.obj("raw", "왜 null을 반환하나요?")));
         AtomicInteger calls = new AtomicInteger(); reviews = new PullRequestReview(service, api, prompt -> { calls.incrementAndGet(); ObjectNode response = result(List.of()); response.put("reply", "현재 코드는 null을 반환합니다. 입력값을 반환하도록 수정해야 합니다.").put("replyConfidence", "high"); response.set("replyEvidence", Json.MAPPER.valueToTree(List.of(evidence()))); return response; });
         ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 7, false)); assertEquals(2, calls.get()); assertFalse(Json.text(row, "reply").isBlank());
+        assertEquals("fact", Json.text(row, "replyKind"));
         api.comments.add(Json.obj("id", 8, "parent", Json.obj("id", 7), "created_on", "2026-11-06T01:00:00Z", "user", Json.obj("uuid", "owner")));
         assertEquals("stale", Json.text(reviews.savePending(Json.required(row, "id")), "status")); assertEquals(0, api.writes);
         api.author = "other";
         ObjectNode invalid = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/2", 7, false)); assertEquals("failed", Json.text(invalid, "status"));
+    }
+    @Test void designReplyLoadsUnchangedCallerAndSpecAtThePrCommitBeforeVerification() throws Exception {
+        String spec = "openspec/specs/test-generator-setup/spec.md", caller = "install.go";
+        String specLine = "명시한 false를 보내고, 값이 없으면 서버가 거부할 때 필드 없이 다시 보낸다.";
+        String callerLine = "return checkConnection(ctx, dep.check, out, checker)";
+        api = new FakeApi(new Config(temporary.resolve("none"), Map.of())) {
+            @Override JsonNode sourceDirectory(String repository, String commit, String directory, int depth) {
+                assertEquals("team/repo", repository);
+                assertEquals("source", commit);
+                if (directory.equals("openspec/specs")) return Json.obj("values", List.of(Json.obj("type", "commit_file", "path", spec)));
+                if (directory.isEmpty()) return Json.obj("values", List.of(Json.obj("type", "commit_file", "path", caller)));
+                return Json.obj("values", List.of());
+            }
+            @Override String source(String repository, String commit, String path) throws Exception {
+                if (path.equals(spec) || path.equals(caller)) {
+                    assertEquals("source", commit);
+                    return path.equals(spec) ? specLine : callerLine;
+                }
+                return super.source(repository, commit, path);
+            }
+        };
+        api.author = "owner";
+        api.comments.add(Json.obj("id", 7, "user", Json.obj("uuid", "other"), "content", Json.obj("raw", "thinking_unsupported이면 model.thinking을 자동으로 지우면 어떨까요?")));
+        AtomicInteger calls = new AtomicInteger();
+        reviews = new PullRequestReview(service, api, prompt -> {
+            ObjectNode response = result(List.of()).put("replyKind", "design");
+            int pass = calls.incrementAndGet();
+            if (pass == 1) {
+                assertFalse(prompt.contains(caller));
+                return response;
+            }
+            if (pass == 2) {
+                assertTrue(prompt.contains(spec));
+                assertTrue(prompt.contains(caller));
+                response.set("relatedPaths", Json.MAPPER.valueToTree(List.of(spec, caller, "../secret.md")));
+                return response;
+            }
+            assertTrue(prompt.contains(specLine));
+            assertTrue(prompt.contains(callerLine));
+            assertTrue(prompt.contains("채택 여부에 직접 답했는지") == (pass == 4));
+            response.set("replyEvidence", Json.MAPPER.valueToTree(List.of(
+                    Json.obj("path", spec, "side", "new", "line", 1, "quote", specLine),
+                    Json.obj("path", caller, "side", "new", "line", 1, "quote", callerLine))));
+            return response.put("reply", "값을 빼고 재시험하는 방안에 찬성합니다. 설정 삭제는 설치에 미치는 영향까지 확인한 뒤 결정하는 편이 좋겠습니다.").put("replyConfidence", "high");
+        });
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 7, false));
+        assertEquals("ready", Json.text(row, "status"), Json.text(row, "error"));
+        assertEquals("design", Json.text(row, "replyKind"));
+        assertEquals(4, calls.get());
+        assertEquals(2, row.path("replyEvidence").size());
+        assertFalse(Json.text(row, "reply").isBlank());
+        assertEquals(0, api.writes);
     }
     @Test void editedQuestionCannotReceiveThePreviousAnswersDraft() throws Exception {
         api.author = "owner";

@@ -60,6 +60,10 @@ class BitbucketClient {
     JsonNode pullRequest(PullRequest pr) throws Exception { return get(pr.api()); }
     List<JsonNode> comments(PullRequest pr) throws Exception { return pages(pr.api() + "/comments?pagelen=100"); }
     String source(String repository, String commit, String path) throws Exception { return request("GET", "/repositories/" + repository + "/src/" + segment(commit) + "/" + pathSegment(path), null); }
+    JsonNode sourceDirectory(String repository, String commit, String directory, int depth) throws Exception {
+        String path = directory.isEmpty() ? "" : pathSegment(directory) + "/";
+        return get("/repositories/" + repository + "/src/" + segment(commit) + "/" + path + "?pagelen=100&max_depth=" + depth);
+    }
     JsonNode pendingComment(PullRequest pr, String text, String path, int line, String side, long parent) throws Exception {
         ObjectNode body = Json.obj("content", Json.obj("raw", text), "pending", true);
         if (parent > 0) body.set("parent", Json.obj("id", parent));
