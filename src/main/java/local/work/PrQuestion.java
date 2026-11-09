@@ -42,8 +42,12 @@ final class PrQuestion {
             context.includeCurrent(api, path);
         }
         ObjectNode review = store.list("prReview").reversed().stream().filter(row -> pr.url().equals(Json.text(row, "url"))
-                && context.sourceCommit.equals(Json.text(row, "sourceCommit")) && context.destinationCommit.equals(Json.text(row, "destinationCommit"))
+                && context.sourceCommit.equals(Json.text(row, "sourceCommit")) && !row.path("validation").asBoolean() && PullRequestReview.succeeded(row)
                 && row.path("parentCommentId").asLong() == 0).findFirst().orElse(null);
+        if (review != null) {
+            new ReviewSources(store, api).restore(context, review);
+            for (JsonNode reference : review.path("referenceUrls")) context.includeReference(api, reference.asText());
+        }
         if (reviewedCommit.isBlank() && review != null) reviewedCommit = Json.text(review, "sourceCommit");
         ObjectNode history = Json.obj("status", review == null ? "" : Json.text(review, "status"),
                 "summary", review == null ? "" : Json.text(review, "summary"), "previousTurns", turns);

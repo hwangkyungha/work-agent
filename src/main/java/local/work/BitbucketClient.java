@@ -15,7 +15,7 @@ class BitbucketClient {
     record SourceReference(String repository, String revision, String path) {
         static SourceReference parse(String url) {
             URI uri = URI.create(url.strip());
-            Matcher match = Pattern.compile("^/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/src/([^/]+)/(.+\\.(?:md|txt|rst|adoc))$").matcher(uri.getPath() == null ? "" : uri.getPath());
+            Matcher match = Pattern.compile("^/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/src/([^/]+)/(.+\\.(?:md|txt|rst|adoc|json))$").matcher(uri.getPath() == null ? "" : uri.getPath());
             if (!"https".equals(uri.getScheme()) || !"bitbucket.org".equals(uri.getHost()) || !match.matches()
                     || Arrays.asList(match.group(3).split("/")).contains("..")) throw new IllegalArgumentException("Bitbucket의 참고 문서 파일 주소를 입력하세요.");
             return new SourceReference(match.group(1), match.group(2), match.group(3));

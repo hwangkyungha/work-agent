@@ -145,7 +145,7 @@ final class ReviewContext {
         int slash = path.lastIndexOf('/');
         return slash < 0 ? "" : path.substring(0, slash);
     }
-    private static String numbered(String text) {
+    static String numbered(String text) {
         String[] lines = text.split("\n", -1); StringBuilder result = new StringBuilder();
         for (int i = 0; i < lines.length; i++) result.append(i + 1).append(": ").append(lines[i]).append('\n');
         return result.toString();
@@ -170,6 +170,9 @@ final class ReviewContext {
     }
     boolean sameHead(JsonNode current) {
         return sourceCommit.equals(Json.text(current.path("source").path("commit"), "hash")) && destinationCommit.equals(Json.text(current.path("destination").path("commit"), "hash"));
+    }
+    boolean sameSourceHead(JsonNode current) {
+        return sourceCommit.equals(Json.text(current.path("source").path("commit"), "hash"));
     }
     boolean validFinding(JsonNode finding) {
         String key = Json.text(finding, "side") + ":" + Json.text(finding, "path");

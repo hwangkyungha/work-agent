@@ -90,7 +90,7 @@ final class Agent {
             results.add(done);
             if (!Json.text(done, "message").isBlank()) answer.append(Json.text(done, "message")).append("\n\n");
         }
-        boolean reviewRequest = results.stream().anyMatch(row -> Set.of("pr_review", "pr_reply", "pr_question", "review_inbox").contains(Json.text(row, "type")));
+        boolean reviewRequest = results.stream().anyMatch(row -> Set.of("pr_review", "pr_reply", "pr_question", "review_inbox", "review_sources").contains(Json.text(row, "type")));
         if (!reviewRequest && (results.isEmpty() || !Json.text(parsed, "reply").isBlank())) answer.insert(0, Json.text(parsed, "reply") + (results.isEmpty() ? "" : "\n\n"));
         ObjectNode response = Json.obj("id", id, "text", answer.toString().trim(), "results", results, "at", service.time.instant().toString());
         service.store.transaction(() -> {
@@ -132,10 +132,15 @@ final class Agent {
                 }
                 result = Json.obj("format", format, "text", message);
             }
+            case "review_sources" -> {
+                if (reviews == null) throw new IllegalStateException("PR 리뷰 기능이 연결되지 않았습니다.");
+                result = reviews.sources.configure(p);
+                message = Json.text(result, "repository") + " 저장소의 참고 명세를 저장했습니다. 다음 새 head의 자동·수동 리뷰부터 함께 확인합니다.";
+            }
             case "pr_review", "pr_reply" -> {
                 if (reviews == null) throw new IllegalStateException("PR 리뷰 기능이 연결되지 않았습니다.");
                 if (type.equals("pr_reply") && p.path("commentId").asLong() <= 0) throw new IllegalArgumentException("답변할 댓글 번호를 알려 주세요.");
-                result = reviews.request(Json.required(p, "url"), type.equals("pr_reply") ? p.path("commentId").asLong() : 0, false, false, p.path("referenceUrls"));
+                result = reviews.request(Json.required(p, "url"), type.equals("pr_reply") ? p.path("commentId").asLong() : 0, false, p.path("rerun").asBoolean(), p.path("referenceUrls"), p.path("validation").asBoolean());
                 message = PullRequestReview.requestMessage(result);
             }
             case "review_inbox" -> {
@@ -288,11 +293,12 @@ final class Agent {
             sync: {kind}. kind는 cli,jira,team,calendar,all.
             write_text: {format,kind,source,audience,date,memberId}. 문장 수정·메시지 초안·공유 문서 작성은 이 작업 하나만 사용하고 reply는 비운다. 원문은 프로그램이 그대로 전달한다.
             format은 message 또는 document. message의 kind는 일반 메시지이면 message, PR 댓글이면 pr이다. document의 kind는 brief,meeting,plan,research,decision이며 짧은 공유는 brief이다. source는 제공한 원문만 쓰면 none, 데일리 자료는 daily, 주간 활동과 등록 시간은 weekly, 특정 팀원 면담 자료는 oneonone이다. 면담 자료는 사용자가 명시적으로 요청한 경우에만 실제 memberId와 함께 사용한다. 자료 조회만 요청하면 기존 report를 사용한다. 글쓰기 요청을 이슈·워크로그 등록이나 외부 게시로 바꾸지 않는다.
-            pr_review: {url,referenceUrls?}. Bitbucket Cloud PR 전체 주소가 있을 때 리뷰를 요청한다. 사용자가 함께 준 Bitbucket 참고 문서 링크는 referenceUrls 배열에 최대 4개 넣는다. 문서 주소를 지어내지 않는다. 코드 검토는 비동기로 진행하며 결과를 지어내지 않는다.
+            review_sources: {repository,sources}. 저장소별 참고 명세를 한 번 연결하거나 바꾸는 요청이다. repository는 workspace/repository이며 sources는 사용자가 제공한 Bitbucket 문서 파일 주소 또는 공개 계약 폴더의 절대 경로 배열(최대 4개)이다. 경로를 지어내지 않는다. 빈 배열은 연결을 비운다.
+            pr_review: {url,referenceUrls?,rerun?,validation?}. Bitbucket Cloud PR 전체 주소가 있을 때 리뷰를 요청한다. 사용자가 함께 준 Bitbucket 참고 문서 링크는 referenceUrls 배열에 최대 4개 넣는다. 문서 주소를 지어내지 않는다. 같은 head는 기존 결과를 재사용한다. 사용자가 명시적으로 강제 재검토를 요청했을 때만 rerun=true를 넣는다. 검증용 실행을 요청했을 때는 validation=true를 넣으며 Slack 완료 알림과 Bitbucket 저장을 하지 않는다. 코드 검토는 비동기로 진행하며 결과를 지어내지 않는다.
             pr_reply: {url,commentId}. 내 PR에 다른 사람이 남긴 특정 댓글의 답변 초안을 요청한다. 댓글 번호가 없으면 묻는다.
             pr_question: {}. 현재 또는 최근 대화의 Bitbucket PR 코드, 리뷰 결과나 변경 사항을 묻는 질문이다. 자료를 읽어 프로그램이 채팅에서 답변한다.
             review_inbox: {}. 저장소를 제한하지 않고 나에게 요청된 PR 리뷰와 내 PR의 답변할 댓글을 새로 확인한다.
-            PR 리뷰·답변은 비공개 초안으로만 작성한다. 승인·병합·리뷰 제출을 하지 않는다. pr_review, pr_reply, pr_question, review_inbox를 실행할 때 reply는 비운다.
+            PR 리뷰·답변은 비공개 초안으로만 작성한다. 승인·병합·리뷰 제출을 하지 않는다. pr_review, pr_reply, pr_question, review_inbox, review_sources를 실행할 때 reply는 비운다.
             한 요청에 최대 10개 actions. 업무 추가 후 계획에 넣을 때는 task 다음에 plan을 보내고 taskIds에서 새 업무를 "$lastTask"로 참조한다.
             """;
 }

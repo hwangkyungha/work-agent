@@ -119,14 +119,19 @@ final class ReviewMonitor implements AutoCloseable {
         ObjectNode status = service.store.get("reviewMonitor", "status");
         if (status == null) status = Json.obj("items", List.of(), "warnings", List.of());
         status.put("scanning", scanning).put("configured", api.configured()).put("automatic", config.get("BITBUCKET_AUTO_REVIEW", "true").equals("true"));
-        List<ObjectNode> jobs = service.store.list("prReview"); Collections.reverse(jobs); status.set("jobs", Json.MAPPER.valueToTree(jobs)); return status;
+        List<ObjectNode> jobs = service.store.list("prReview"); Collections.reverse(jobs); status.set("jobs", Json.MAPPER.valueToTree(jobs));
+        status.set("repositories", Json.MAPPER.valueToTree(reviews.sources.settings())); return status;
     }
-    void notifyCompleted() throws Exception {
+    synchronized void notifyCompleted() throws Exception {
         for (ObjectNode row : service.store.list("prReview")) {
-            if (row.path("notified").asBoolean() || PullRequestReview.inProgress(row)) continue;
+            if (row.path("validation").asBoolean() || row.path("notified").asBoolean() || PullRequestReview.inProgress(row)) continue;
             if (!Set.of("ready", "saved", "failed", "stale", "delivery-unknown").contains(Json.text(row, "status"))) continue;
-            notifier.send(PullRequestReview.resultMessage(row), row);
+            String key = PullRequestReview.notificationKey(row);
+            boolean sent = service.store.get("prReviewNotice", key) != null || service.store.list("prReview").stream()
+                    .anyMatch(old -> !old.path("validation").asBoolean() && old.path("notified").asBoolean() && key.equals(PullRequestReview.notificationKey(old)));
+            if (!sent) notifier.send(PullRequestReview.resultMessage(row), row);
             synchronized (service.store) {
+                service.store.put("prReviewNotice", Json.obj("id", key, "reviewId", Json.text(row, "id"), "at", service.time.instant().toString()));
                 ObjectNode current = service.store.get("prReview", Json.required(row, "id"));
                 if (current != null) { current.put("notified", true); service.store.put("prReview", current); }
             }
