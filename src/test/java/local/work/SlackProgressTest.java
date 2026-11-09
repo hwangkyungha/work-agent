@@ -84,7 +84,7 @@ class SlackProgressTest {
             while (PullRequestReview.inProgress(store.list("prReview").getFirst()) && System.nanoTime() < deadline) Thread.sleep(10);
             ObjectNode row = store.list("prReview").getFirst();
             assertEquals("ready", Json.text(row, "status"));
-            assertTrue(PullRequestReview.resultMessage(row).contains("남길 지적이 없었습니다."));
+            assertTrue(PullRequestReview.resultMessage(row).contains("확정한 신규 지적은 없습니다."));
             try (SlackConnection restarted = new SlackConnection(config, store, agent, apiRoot)) { restarted.settleProgress("event"); }
             assertEquals(List.of("reactions.add:hourglass_flowing_sand:123.456", "chat.postMessage::",
                     "reactions.add:white_check_mark:123.456", "reactions.remove:hourglass_flowing_sand:123.456"), calls);

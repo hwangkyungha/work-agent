@@ -135,7 +135,7 @@ final class Agent {
             case "pr_review", "pr_reply" -> {
                 if (reviews == null) throw new IllegalStateException("PR 리뷰 기능이 연결되지 않았습니다.");
                 if (type.equals("pr_reply") && p.path("commentId").asLong() <= 0) throw new IllegalArgumentException("답변할 댓글 번호를 알려 주세요.");
-                result = reviews.request(Json.required(p, "url"), type.equals("pr_reply") ? p.path("commentId").asLong() : 0, false);
+                result = reviews.request(Json.required(p, "url"), type.equals("pr_reply") ? p.path("commentId").asLong() : 0, false, false, p.path("referenceUrls"));
                 message = PullRequestReview.requestMessage(result);
             }
             case "review_inbox" -> {
@@ -288,7 +288,7 @@ final class Agent {
             sync: {kind}. kind는 cli,jira,team,calendar,all.
             write_text: {format,kind,source,audience,date,memberId}. 문장 수정·메시지 초안·공유 문서 작성은 이 작업 하나만 사용하고 reply는 비운다. 원문은 프로그램이 그대로 전달한다.
             format은 message 또는 document. message의 kind는 일반 메시지이면 message, PR 댓글이면 pr이다. document의 kind는 brief,meeting,plan,research,decision이며 짧은 공유는 brief이다. source는 제공한 원문만 쓰면 none, 데일리 자료는 daily, 주간 활동과 등록 시간은 weekly, 특정 팀원 면담 자료는 oneonone이다. 면담 자료는 사용자가 명시적으로 요청한 경우에만 실제 memberId와 함께 사용한다. 자료 조회만 요청하면 기존 report를 사용한다. 글쓰기 요청을 이슈·워크로그 등록이나 외부 게시로 바꾸지 않는다.
-            pr_review: {url}. Bitbucket Cloud PR 전체 주소가 있을 때 리뷰를 요청한다. 코드 검토는 비동기로 진행하며 결과를 지어내지 않는다.
+            pr_review: {url,referenceUrls?}. Bitbucket Cloud PR 전체 주소가 있을 때 리뷰를 요청한다. 사용자가 함께 준 Bitbucket 참고 문서 링크는 referenceUrls 배열에 최대 4개 넣는다. 문서 주소를 지어내지 않는다. 코드 검토는 비동기로 진행하며 결과를 지어내지 않는다.
             pr_reply: {url,commentId}. 내 PR에 다른 사람이 남긴 특정 댓글의 답변 초안을 요청한다. 댓글 번호가 없으면 묻는다.
             pr_question: {}. 현재 또는 최근 대화의 Bitbucket PR 코드, 리뷰 결과나 변경 사항을 묻는 질문이다. 자료를 읽어 프로그램이 채팅에서 답변한다.
             review_inbox: {}. 저장소를 제한하지 않고 나에게 요청된 PR 리뷰와 내 PR의 답변할 댓글을 새로 확인한다.

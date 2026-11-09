@@ -2,6 +2,7 @@ package local.work;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
@@ -41,7 +42,7 @@ class PullRequestReviewTest {
     }
     @AfterEach void close() throws Exception { if (reviews != null) reviews.close(); store.close(); }
     ObjectNode evidence() { return Json.obj("path", "foo.java", "side", "new", "line", 1, "quote", "return null;"); }
-    ObjectNode finding() { return Json.obj("path", "foo.java", "side", "new", "line", 1, "title", "반환값 누락", "comment", "입력이 있어도 null을 반환하여 호출한 코드가 실패합니다. 입력값을 반환해 주세요.", "severity", "medium", "confidence", "high", "trigger", "입력이 있음", "impact", "호출한 코드 실패", "fix", "입력값 반환", "evidence", List.of(evidence())); }
+    ObjectNode finding() { return Json.obj("path", "foo.java", "side", "new", "line", 1, "title", "반환값 누락", "comment", "입력이 있어도 null을 반환하여 호출한 코드가 실패합니다. 입력값을 반환해 주세요.", "severity", "medium", "confidence", "high", "trigger", "입력이 있음", "expected", "입력을 반환", "actual", "null을 반환", "reasoning", "기존에는 입력을 반환했으나 현재 무조건 null을 반환", "impact", "호출한 코드 실패", "fix", "입력값 반환", "evidence", List.of(evidence())); }
     ObjectNode result(List<ObjectNode> findings) { return Json.obj("summary", "검토 완료", "findings", findings, "reply", "", "replyKind", "fact", "relatedPaths", List.of(), "replyConfidence", "low", "replyEvidence", List.of(), "limitations", List.of()); }
     ObjectNode await(ObjectNode row) throws Exception {
         long end = System.nanoTime() + 5_000_000_000L;
@@ -250,5 +251,128 @@ class PullRequestReviewTest {
         assertEquals("ready", Json.text(second, "status"), Json.text(second, "error"));
         assertEquals(Json.text(first, "sourceCommit"), Json.text(second, "sourceCommit"));
         assertEquals(0, api.writes);
+    }
+    @Test void requiresCausalExplanationAndIncludesImpactInSlackSummary() throws Exception {
+        ReviewContext context = new ReviewContext(api, BitbucketClient.PullRequest.parse("https://bitbucket.org/team/repo/pull-requests/1"));
+        ObjectNode missing = finding();
+        missing.remove("actual");
+        assertFalse(context.validFinding(missing));
+        String message = PullRequestReview.resultMessage(Json.obj("url", "https://bitbucket.org/team/repo/pull-requests/1",
+                "status", "ready", "findings", List.of(finding())));
+        assertTrue(message.contains("반환값 누락"));
+        assertTrue(message.contains("호출한 코드 실패"));
+    }
+    @Test void gathersSupportAcrossBatchesWithoutPresentingOldCodeAsCurrent() throws Exception {
+        ReviewContext context = new ReviewContext(api, BitbucketClient.PullRequest.parse("https://bitbucket.org/team/repo/pull-requests/1"));
+        context.files.put("new:contract.md", "foo.java must return input when input is present");
+        context.files.put("old:contract.md", "OLD_ONLY_CONTRACT");
+        context.files.put("new:caller.java", "return foo(input);");
+        String support = Json.write(context.reviewSupport(List.of(Json.obj("path", "foo.java")),
+                "foo input", 12000));
+        assertTrue(support.contains("contract.md"));
+        assertTrue(support.contains("caller.java"));
+        assertFalse(support.contains("OLD_ONLY_CONTRACT"));
+    }
+    @Test void loadsMissingDefenseBeforeAcceptingAFinding() throws Exception {
+        FakeApi guarded = new FakeApi(new Config(temporary.resolve("none"), Map.of())) {
+            @Override String source(String repository, String commit, String path) throws Exception {
+                if (path.equals("guard.java")) return "return checked(input);";
+                return super.source(repository, commit, path);
+            }
+        };
+        AtomicInteger calls = new AtomicInteger();
+        reviews = new PullRequestReview(service, guarded, prompt -> {
+            int pass = calls.incrementAndGet();
+            if (pass == 1) return result(List.of(finding()));
+            if (pass == 2) {
+                ObjectNode pending = result(List.of());
+                pending.set("relatedPaths", Json.MAPPER.valueToTree(List.of("guard.java")));
+                return pending;
+            }
+            assertTrue(prompt.contains("return checked(input);"));
+            return result(List.of());
+        });
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 0, false));
+        assertEquals("ready", Json.text(row, "status"), Json.text(row, "error"));
+        assertEquals(3, calls.get());
+        assertTrue(row.path("findings").isEmpty());
+        assertEquals(0, guarded.writes);
+    }
+    @Test void readsMissingContractEvenWhenDiscoveryHasNoCandidates() throws Exception {
+        FakeApi withContract = new FakeApi(new Config(temporary.resolve("none"), Map.of())) {
+            @Override JsonNode sourceDirectory(String repository, String commit, String directory, int depth) {
+                return Json.obj("values", directory.equals("openspec/specs")
+                        ? List.of(Json.obj("type", "commit_file", "path", "contract.md")) : List.of());
+            }
+            @Override String source(String repository, String commit, String path) throws Exception {
+                if (path.equals("contract.md")) return "foo must return input";
+                return super.source(repository, commit, path);
+            }
+        };
+        AtomicInteger calls = new AtomicInteger();
+        reviews = new PullRequestReview(service, withContract, prompt -> {
+            int pass = calls.incrementAndGet();
+            if (pass == 1) {
+                assertTrue(prompt.contains("contract.md"));
+                assertFalse(prompt.contains("foo must return input"));
+                ObjectNode missing = result(List.of());
+                missing.set("relatedPaths", Json.MAPPER.valueToTree(List.of("contract.md", "../secret.md")));
+                return missing;
+            }
+            assertTrue(prompt.contains("foo must return input"));
+            return result(List.of(finding()));
+        });
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 0, false));
+        assertEquals("ready", Json.text(row, "status"), Json.text(row, "error"));
+        assertEquals(3, calls.get());
+        assertEquals(1, row.path("findings").size());
+        assertEquals(0, withContract.writes);
+    }
+    @Test void requestedSupportIncludesTheWholeControlFlowWhenItFits() throws Exception {
+        ReviewContext context = new ReviewContext(api, BitbucketClient.PullRequest.parse("https://bitbucket.org/team/repo/pull-requests/1"));
+        String path = "control.java";
+        context.files.put("new:" + path, "start();\n" + "\n".repeat(70) + "handleFailure();");
+        context.documents.add(Json.obj("path", path, "side", "new", "content", "1: start();\n72: handleFailure();"));
+        String support = Json.write(context.requestedReviewSupport(Set.of(path), "start"));
+        assertTrue(support.contains("handleFailure();"));
+        assertTrue(support.contains("start();"));
+    }
+    @Test void pinsAndVerifiesReferencesFromAnotherRepositoryWithoutAddingReviewBatches() throws Exception {
+        String commit = "a".repeat(40);
+        FakeApi withReference = new FakeApi(new Config(temporary.resolve("none"), Map.of())) {
+            @Override JsonNode get(String path) {
+                if (path.equals("/repositories/team/contracts/commit/main")) return Json.obj("hash", commit);
+                return super.get(path);
+            }
+            @Override String source(String repository, String revision, String path) throws Exception {
+                if (repository.equals("team/contracts")) {
+                    assertEquals(commit, revision);
+                    assertEquals("spec.md", path);
+                    return "foo must return input";
+                }
+                return super.source(repository, revision, path);
+            }
+        };
+        ObjectNode supported = finding();
+        ((ArrayNode) supported.path("evidence")).add(Json.obj("path", "@team/contracts/" + commit + "/spec.md", "side", "new", "line", 1, "quote", "foo must return input"));
+        AtomicInteger calls = new AtomicInteger();
+        reviews = new PullRequestReview(service, withReference, prompt -> {
+            if (calls.incrementAndGet() <= 2) {
+                assertTrue(prompt.contains("foo must return input"));
+                return result(List.of(supported));
+            }
+            return result(List.of(finding()));
+        });
+        String url = "https://bitbucket.org/team/repo/pull-requests/1";
+        ObjectNode row = await(reviews.request(url, 0, false, false, Json.MAPPER.valueToTree(List.of("https://bitbucket.org/team/contracts/src/main/spec.md"))));
+        assertEquals("ready", Json.text(row, "status"), Json.text(row, "error"));
+        assertEquals(1, row.path("findings").size());
+        assertEquals(1, row.path("totalBatches").asInt());
+        assertEquals("https://bitbucket.org/team/contracts/src/" + commit + "/spec.md", row.path("referenceUrls").get(0).asText());
+        ObjectNode withoutReference = await(reviews.request(url, 0, false));
+        assertNotEquals(Json.text(row, "id"), Json.text(withoutReference, "id"));
+        assertThrows(IllegalArgumentException.class, () -> reviews.request(url, 0, false, false,
+                Json.MAPPER.valueToTree(List.of("https://example.com/secret.md"))));
+        assertEquals(0, withReference.writes);
     }
 }

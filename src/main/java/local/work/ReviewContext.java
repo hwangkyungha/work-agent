@@ -69,6 +69,19 @@ final class ReviewContext {
     private static String sourceKey(String repository, String commit, String path) {
         return TranscriptImporter.hash(Json.write(List.of(repository, commit, path)));
     }
+    String includeReference(BitbucketClient api, String url) throws Exception {
+        BitbucketClient.SourceReference ref = BitbucketClient.SourceReference.parse(url);
+        if (!ref.revision().matches("[0-9a-f]{40}")) throw new IllegalArgumentException("참고 문서 커밋을 먼저 확정해야 합니다.");
+        String key = sourceKey(ref.repository(), ref.revision(), ref.path());
+        ObjectNode saved = cache == null ? null : cache.get("prSource", key);
+        String text = saved == null ? api.source(ref.repository(), ref.revision(), ref.path()).replace("\r\n", "\n") : Json.text(saved, "text");
+        if (text.length() > 65_000) throw new IllegalArgumentException("참고 문서가 너무 큽니다. 필요한 내용을 담은 작은 문서를 선택하세요.");
+        if (saved == null && cache != null) cache.put("prSource", Json.obj("id", key, "text", text));
+        String path = "@" + ref.repository() + "/" + ref.revision() + "/" + ref.path();
+        files.put("new:" + path, text);
+        documents.add(Json.obj("path", path, "side", "new", "url", url, "content", numbered(text)));
+        return path;
+    }
     String cachedCurrent(String path) {
         ObjectNode saved = cache == null ? null : cache.get("prSource", sourceKey(sourceRepository, sourceCommit, path));
         return saved == null ? "" : Json.text(saved, "text");
@@ -94,6 +107,7 @@ final class ReviewContext {
         for (ObjectNode document : documents) {
             if (!Json.text(document, "side").equals("new")) continue;
             String path = Json.text(document, "path");
+            if (path.startsWith("@")) continue;
             paths.add(path);
             if (!path.endsWith(".md")) directories.add(parentDirectory(path));
         }
@@ -160,7 +174,7 @@ final class ReviewContext {
     boolean validFinding(JsonNode finding) {
         String key = Json.text(finding, "side") + ":" + Json.text(finding, "path");
         if (!Json.text(finding, "confidence").equals("high") || !Set.of("high", "medium").contains(Json.text(finding, "severity")) || !changed.getOrDefault(key, Set.of()).contains(finding.path("line").asInt())) return false;
-        for (String field : List.of("title", "comment", "trigger", "impact", "fix")) if (Json.text(finding, field).isBlank()) return false;
+        for (String field : List.of("title", "comment", "trigger", "expected", "actual", "reasoning", "impact", "fix")) if (Json.text(finding, field).isBlank()) return false;
         if (!finding.path("evidence").isArray() || finding.path("evidence").isEmpty()) return false;
         boolean anchor = false;
         for (JsonNode evidence : finding.path("evidence")) {
@@ -177,6 +191,70 @@ final class ReviewContext {
         if (line > lines.length || quoted.length > lines.length - line + 1) return false;
         for (int offset = 0; offset < quoted.length; offset++) if (!lines[line - 1 + offset].strip().equals(quoted[offset].strip())) return false;
         return true;
+    }
+    List<ObjectNode> reviewSupport(List<ObjectNode> focus, String details, int budget) {
+        Set<String> focusPaths = new HashSet<>();
+        Set<String> terms = reviewTerms(focus, details);
+        for (ObjectNode doc : focus) {
+            String path = Json.text(doc, "path");
+            focusPaths.add(path);
+        }
+        List<String> ordered = files.entrySet().stream().filter(entry -> entry.getKey().startsWith("new:") && !focusPaths.contains(entry.getKey().substring(4)))
+                .map(entry -> {
+                    String path = entry.getKey().substring(4).toLowerCase(Locale.ROOT);
+                    String text = entry.getValue().toLowerCase(Locale.ROOT);
+                    int score = 0;
+                    for (String term : terms) {
+                        if (path.contains(term)) score += 5;
+                        if (text.contains(term)) score++;
+                    }
+                    return Map.entry(entry.getKey().substring(4), score);
+                }).filter(entry -> entry.getValue() > 0)
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()).limit(6).map(Map.Entry::getKey).toList();
+        List<ObjectNode> support = new ArrayList<>();
+        Map<String, ObjectNode> excerpts = new HashMap<>();
+        for (ObjectNode doc : questionExcerpts(new ArrayList<>(terms))) excerpts.put(Json.text(doc, "path"), doc);
+        int size = 0;
+        for (String path : ordered) {
+            ObjectNode doc = excerpts.get(path);
+            if (doc == null) continue;
+            int length = Json.write(doc).length();
+            if (size + length > budget) continue;
+            support.add(doc);
+            size += length;
+        }
+        return support;
+    }
+    List<ObjectNode> requestedReviewSupport(Set<String> paths, String details) {
+        Map<String, ObjectNode> excerpts = new HashMap<>();
+        for (ObjectNode doc : questionExcerpts(new ArrayList<>(reviewTerms(List.of(), details)))) excerpts.put(Json.text(doc, "path"), doc);
+        List<ObjectNode> support = new ArrayList<>();
+        int size = 0;
+        for (String path : paths) {
+            ObjectNode full = documents.stream().filter(doc -> Json.text(doc, "side").equals("new") && path.equals(Json.text(doc, "path"))).findFirst().orElse(null);
+            if (full == null) continue;
+            ObjectNode selected = size + Json.write(full).length() <= 65_000 ? full : excerpts.get(path);
+            if (selected != full) limitations.add(path + ": 추가 자료도 크기 제한으로 관련 부분만 발췌했습니다.");
+            if (selected != null && size + Json.write(selected).length() <= 65_000) {
+                support.add(selected);
+                size += Json.write(selected).length();
+            }
+        }
+        return support;
+    }
+    private static Set<String> reviewTerms(List<ObjectNode> focus, String details) {
+        Set<String> terms = new LinkedHashSet<>();
+        for (ObjectNode doc : focus) {
+            String path = Json.text(doc, "path");
+            String name = path.substring(path.lastIndexOf('/') + 1).replaceFirst("\\.[^.]+$", "");
+            if (name.length() >= 4) {
+                terms.add(name.toLowerCase(Locale.ROOT));
+                terms.add(name.replace('_', '-').toLowerCase(Locale.ROOT));
+            }
+        }
+        Matcher words = Pattern.compile("[A-Za-z_][A-Za-z0-9_.-]{3,}").matcher(details.toLowerCase(Locale.ROOT));
+        while (words.find() && terms.size() < 40) terms.add(words.group());
+        return terms;
     }
     List<ObjectNode> replyExcerpts(JsonNode evidence, Set<String> related, String question, String reply) {
         Map<String, NavigableMap<Integer, String>> excerpts = new LinkedHashMap<>();
@@ -236,6 +314,7 @@ final class ReviewContext {
     List<ObjectNode> questionExcerpts(List<String> terms) {
         List<ObjectNode> excerpts = new ArrayList<>();
         for (var entry : files.entrySet()) {
+            if (!entry.getKey().startsWith("new:")) continue;
             String[] lines = entry.getValue().split("\n", -1);
             List<Integer> matches = new ArrayList<>();
             int[] scores = new int[lines.length];
@@ -261,7 +340,7 @@ final class ReviewContext {
     List<List<ObjectNode>> batches() {
         List<List<ObjectNode>> batches = new ArrayList<>(); List<ObjectNode> batch = new ArrayList<>(); int size = 2;
         Map<String, List<ObjectNode>> paths = new LinkedHashMap<>();
-        for (ObjectNode doc : documents) paths.computeIfAbsent(Json.text(doc, "path"), key -> new ArrayList<>()).addAll(chunks(doc));
+        for (ObjectNode doc : documents) if (!Json.text(doc, "path").startsWith("@")) paths.computeIfAbsent(Json.text(doc, "path"), key -> new ArrayList<>()).addAll(chunks(doc));
         for (List<ObjectNode> pair : paths.values()) {
             int length = Json.write(pair).length();
             if (!batch.isEmpty() && size + length > 65_000) { batches.add(batch); batch = new ArrayList<>(); size = 2; }

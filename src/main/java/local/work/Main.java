@@ -142,7 +142,7 @@ public final class Main {
                     Object result = switch (path) {
                         case "/api/rooms" -> booking.execute(Json.required(body, "requestId"), body);
                         case "/api/reviews/refresh" -> reviewMonitor.refresh();
-                        case "/api/reviews/request" -> reviews.request(Json.required(body, "url"), body.path("commentId").asLong(), false, body.path("rerun").asBoolean());
+                        case "/api/reviews/request" -> reviews.request(Json.required(body, "url"), body.path("commentId").asLong(), false, body.path("rerun").asBoolean(), body.path("referenceUrls"));
                         case "/api/reviews/edit" -> reviews.edit(body);
                         case "/api/reviews/save" -> reviews.savePending(Json.required(body, "id"));
                         case "/api/chat" -> agent.chat("web", body.path("requestId").asText(UUID.randomUUID().toString()), Json.required(body, "text"));
