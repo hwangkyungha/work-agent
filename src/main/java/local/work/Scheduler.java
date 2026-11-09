@@ -2,10 +2,11 @@ package local.work;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.*;
+import java.util.Locale;
 import java.util.concurrent.*;
 
 final class Scheduler implements AutoCloseable {
-    @FunctionalInterface interface SessionStart { void run() throws Exception; }
+    @FunctionalInterface interface SessionStart { void run(String engine) throws Exception; }
     @FunctionalInterface interface Notifier { void send(String text) throws Exception; }
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private final WorkService service;
@@ -16,7 +17,7 @@ final class Scheduler implements AutoCloseable {
     private final SessionStart sessionStart;
     private final Notifier notifier;
     Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer) {
-        this(service, reports, slack, config, synchronizer, () -> new CliModel(config).startClaudeSession());
+        this(service, reports, slack, config, synchronizer, engine -> new CliModel(config).startSession(engine));
     }
     Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer, SessionStart sessionStart) {
         this(service, reports, slack, config, synchronizer, sessionStart, slack::notifyOwner);
@@ -31,7 +32,8 @@ final class Scheduler implements AutoCloseable {
     }
     void tick() throws Exception {
         ZonedDateTime now = service.time.now();
-        startSessionIfDue(now);
+        startSessionIfDue(now, "claude", "Claude");
+        startSessionIfDue(now, "codex", "Codex");
         boolean weekday = now.getDayOfWeek().getValue() <= 5;
         if (config.get("AUTO_SYNC", "true").equals("true")) {
             var last = service.store.get("sync", "automatic");
@@ -52,19 +54,19 @@ final class Scheduler implements AutoCloseable {
             }
         }
     }
-    private void startSessionIfDue(ZonedDateTime now) throws Exception {
-        String hour = config.get("CLAUDE_SESSION_TIME", "");
+    private void startSessionIfDue(ZonedDateTime now, String engine, String label) {
+        String hour = config.get(engine.toUpperCase(Locale.ROOT) + "_SESSION_TIME", "");
         if (hour.isBlank()) return;
         LocalTime target = LocalTime.parse(hour);
-        String id = "claude-session:" + now.toLocalDate();
+        String id = engine + "-session:" + now.toLocalDate();
         if (now.toLocalTime().isBefore(target) || Duration.between(target, now.toLocalTime()).toMinutes() >= 60 || service.store.get("scheduled", id) != null) return;
         ObjectNode row = Json.obj("id", id, "at", now.toInstant().toString(), "status", "running");
         service.store.put("scheduled", row);
         String message;
-        try { sessionStart.run(); row.put("status", "complete"); message = "Claude 예약 요청을 완료했습니다. (한국 시간 " + hour + ")"; }
-        catch (Exception e) { row.put("status", "failed"); message = "Claude 예약 요청에 실패했습니다. 로그인 상태와 사용 한도를 확인하세요."; }
+        try { sessionStart.run(engine); row.put("status", "complete"); message = label + " 예약 요청을 완료했습니다. (한국 시간 " + hour + ")"; }
+        catch (Exception e) { row.put("status", "failed"); message = label + " 예약 요청에 실패했습니다. 로그인 상태와 사용 한도를 확인하세요."; }
         service.store.put("scheduled", row);
-        try { slack.notifyOwner(message); row.put("notified", true); }
+        try { notifier.send(message); row.put("notified", true); }
         catch (Exception e) { row.put("notified", false); }
         service.store.put("scheduled", row);
     }

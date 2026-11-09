@@ -61,7 +61,7 @@ AGENT_CALL_NAME=work-agent
 
 만료되는 app-level 토큰(`xoxe.xapp-`)을 사용한다면 `SLACK_REFRESH_TOKEN`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_APP_TOKEN_EXPIRES_AT`도 설정하세요. 만료 시각은 밀리초 단위 Unix 시간입니다. 만료 1시간 전에 토큰을 갱신하며, 갱신된 access/refresh 토큰 쌍은 개인 SQLite 데이터베이스에 함께 저장하여 재시작 후에도 사용합니다. 만료가 없는 `xapp-` 토큰에는 이 설정이 필요 없습니다. 같은 갱신 토큰을 사용하는 다른 봇은 이전 전에 종료해야 합니다. [Slack 공식 안내](https://docs.slack.dev/authentication/using-token-rotation/)
 
-`CLAUDE_SESSION_TIME=06:00`으로 설정하면 주말을 포함해 매일 한국 시간 오전 6시에 로그인한 Claude 계정으로 짧은 질문을 보내고, 성공 여부를 본인 Slack DM으로 알립니다. 비우면 실행하지 않습니다. 일반 업무 처리에 Codex를 사용해도 이 요청은 Claude를 사용합니다. 필요한 경우 `CLAUDE_EXECUTABLE`에 실행 파일 경로를 지정하세요. 도구를 사용하거나 기존 대화 기록을 지우지 않습니다. 실제 사용 한도나 회복 시각을 임의로 변경하는 기능은 아닙니다. 실패해도 반복해서 호출하지 않으며, 예정 시각을 1시간 넘겨 켠 경우에는 그날 요청을 생략합니다.
+`CLAUDE_SESSION_TIME=06:00` 또는 `CODEX_SESSION_TIME=06:00`을 설정하면 주말을 포함해 매일 한국 시간 오전 6시에 해당 CLI에서 임시 세션을 열어 짧은 질문을 보내고, 성공 여부를 본인 Slack DM으로 알립니다. 각 예약은 업무에 사용하는 `AGENT_ENGINE`과 별도로 동작하며, 값을 비우면 꺼집니다. 필요한 경우 `CLAUDE_EXECUTABLE`에 Claude 실행 파일 경로를 지정하세요. 실패하면 그날은 다시 호출하지 않으며, 예정 시각에서 한 시간이 지난 뒤 프로그램을 켜면 그날 요청을 생략합니다.
 
 ### Jira
 

@@ -21,7 +21,7 @@ class BriefingScheduleTest {
         Config config = new Config(temporary.resolve("none"), Map.of("AUTO_SYNC", "false", "CALENDAR_OWNER_NAME", "홍길동", "SLACK_APP_TOKEN", "test", "SLACK_BOT_TOKEN", "test", "SLACK_USER_ID", "test", "FRIDAY_REVIEW_TIME", ""));
         WorkService service = service(now);
         Agent agent = new Agent(service, new Reports(service), p -> Json.object(), k -> Json.object(), "테스트", "테스트야");
-        try (SlackConnection slack = new SlackConnection(config, store, agent); Scheduler scheduler = new Scheduler(service, new Reports(service), slack, config, k -> Json.object(), () -> {}, sent::add)) { scheduler.tick(); }
+        try (SlackConnection slack = new SlackConnection(config, store, agent); Scheduler scheduler = new Scheduler(service, new Reports(service), slack, config, k -> Json.object(), engine -> {}, sent::add)) { scheduler.tick(); }
     }
     @Test void sendsOnceAtNineInKoreaAndNeverOnWeekendsOrLateStartup() throws Exception {
         tick("2026-11-05T23:59:59Z"); assertTrue(sent.isEmpty());
@@ -51,7 +51,7 @@ class BriefingScheduleTest {
         Config config = new Config(temporary.resolve("none"), Map.of("AUTO_SYNC", "false", "SLACK_APP_TOKEN", "test", "SLACK_BOT_TOKEN", "test", "SLACK_USER_ID", "test", "FRIDAY_REVIEW_TIME", ""));
         WorkService service = service("2026-11-06T00:00:00Z");
         Agent agent = new Agent(service, new Reports(service), p -> Json.object(), k -> Json.object(), "테스트", "테스트야");
-        try (SlackConnection slack = new SlackConnection(config, store, agent); Scheduler scheduler = new Scheduler(service, new Reports(service), slack, config, k -> Json.object(), () -> {}, message -> { throw new IOException("offline"); })) {
+        try (SlackConnection slack = new SlackConnection(config, store, agent); Scheduler scheduler = new Scheduler(service, new Reports(service), slack, config, k -> Json.object(), engine -> {}, message -> { throw new IOException("offline"); })) {
             assertThrows(IOException.class, scheduler::tick); assertNull(store.get("scheduled", "morning:2026-11-06"));
         }
         tick("2026-11-06T00:01:00Z"); assertEquals(1, sent.size());

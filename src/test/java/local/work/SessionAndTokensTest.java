@@ -16,21 +16,35 @@ class SessionAndTokensTest {
     @BeforeEach void open() throws Exception {file=temporary.resolve("data.db");store=new Store(file);}
     @AfterEach void close() throws Exception {store.close();}
     Config config(Map<String,String> values) throws Exception {return new Config(temporary.resolve("none"),values);}
-    void tick(String instant, String hour, Scheduler.SessionStart start) throws Exception {
-        Config config=config(Map.of("AUTO_SYNC","false","CLAUDE_SESSION_TIME",hour));
+    void tick(String instant, String claudeHour, String codexHour, Scheduler.SessionStart start) throws Exception {
+        Config config=config(Map.of("AUTO_SYNC","false","CLAUDE_SESSION_TIME",claudeHour,"CODEX_SESSION_TIME",codexHour));
         WorkService service=new WorkService(store,new KoreaTime(Clock.fixed(Instant.parse(instant),ZoneOffset.UTC)),new JiraClient(config));
         Agent agent=new Agent(service,new Reports(service),p->Json.object(),k->Json.object(),"호박","호박아");
         try(SlackConnection slack=new SlackConnection(config,store,agent);Scheduler scheduler=new Scheduler(service,new Reports(service),slack,config,k->Json.object(),start)){scheduler.tick();}
     }
     @Test void sessionRunsOnWeekendsOncePerKoreaDayIncludingAfterRestart() throws Exception {
-        AtomicInteger calls=new AtomicInteger();tick("2026-11-07T20:59:59Z","06:00",calls::incrementAndGet);assertEquals(0,calls.get());
-        tick("2026-11-07T21:00:00Z","06:00",calls::incrementAndGet);tick("2026-11-07T21:30:00Z","06:00",calls::incrementAndGet);assertEquals(1,calls.get());
+        List<String> calls = new ArrayList<>();
+        tick("2026-11-07T20:59:59Z","06:00","06:00",calls::add);
+        assertTrue(calls.isEmpty());
+        tick("2026-11-07T21:00:00Z","06:00","06:00",calls::add);
+        tick("2026-11-07T21:30:00Z","06:00","06:00",calls::add);
+        assertEquals(List.of("claude", "codex"), calls);
         assertEquals("complete",Json.text(store.get("scheduled","claude-session:2026-11-08"),"status"));
+        assertEquals("complete",Json.text(store.get("scheduled","codex-session:2026-11-08"),"status"));
     }
     @Test void failureIsNotMistakenForSuccessOrRetriedEveryTickAndLateStartupSkipsOldRequest() throws Exception {
-        AtomicInteger calls=new AtomicInteger();Scheduler.SessionStart fail=()->{calls.incrementAndGet();throw new IllegalStateException("synthetic failure");};
-        tick("2026-11-08T21:00:00Z","06:00",fail);tick("2026-11-08T21:01:00Z","06:00",fail);assertEquals(1,calls.get());assertEquals("failed",Json.text(store.get("scheduled","claude-session:2026-11-09"),"status"));
-        tick("2026-11-09T22:00:00Z","06:00",fail);tick("2026-11-10T21:00:00Z","",fail);assertEquals(1,calls.get());
+        List<String> calls = new ArrayList<>();
+        Scheduler.SessionStart start = engine -> {
+            calls.add(engine);
+            if (engine.equals("claude")) throw new IllegalStateException("synthetic failure");
+        };
+        tick("2026-11-08T21:00:00Z","06:00","06:00",start);
+        tick("2026-11-08T21:01:00Z","06:00","06:00",start);
+        assertEquals("failed",Json.text(store.get("scheduled","claude-session:2026-11-09"),"status"));
+        assertEquals("complete",Json.text(store.get("scheduled","codex-session:2026-11-09"),"status"));
+        tick("2026-11-09T22:00:00Z","06:00","06:00",start);
+        tick("2026-11-10T21:00:00Z","","",start);
+        assertEquals(List.of("claude", "codex"), calls);
     }
     Config rotating() throws Exception {return config(Map.of("SLACK_APP_TOKEN","xoxe.xapp-test-old","SLACK_REFRESH_TOKEN","refresh-old","SLACK_CLIENT_ID","test-id","SLACK_CLIENT_SECRET","test-secret"));}
     SlackTokens.Refresh response(AtomicInteger calls){return body->{int n=calls.incrementAndGet();return Json.obj("token_type","app_level","access_token","xoxe.xapp-test-"+n,"refresh_token","refresh-"+n,"expires_in",43200);};}

@@ -23,13 +23,18 @@ final class CliModel implements Agent.Model {
     JsonNode review(String prompt) throws Exception {
         return complete(prompt, config.get("AGENT_ENGINE", "codex"), config.get("AGENT_EXECUTABLE", ""), config.get("AGENT_MODEL", ""), config.number("REVIEW_TIMEOUT_SECONDS", 600), "review-schema.json");
     }
-    void startClaudeSession() throws Exception {
-        JsonNode result = complete("1+1? reply에는 숫자 문자열 2만 넣고 actions는 빈 배열로 출력하세요.", "claude", config.get("CLAUDE_EXECUTABLE", ""), "", 60, "action-schema.json");
-        if (!Json.text(result, "reply").trim().equals("2") || !result.path("actions").isEmpty()) throw new IllegalStateException("Claude 예약 요청의 응답을 확인하지 못했습니다.");
+    void startSession(String engine) throws Exception {
+        String executable = switch (engine) {
+            case "claude" -> config.get("CLAUDE_EXECUTABLE", "");
+            case "codex" -> config.get("AGENT_ENGINE", "codex").equals("codex") ? config.get("AGENT_EXECUTABLE", "") : "";
+            default -> throw new IllegalArgumentException("예약 요청을 지원하지 않는 CLI입니다.");
+        };
+        JsonNode result = complete("1+1? reply에는 숫자 문자열 2만 넣고 actions는 빈 배열로 출력하세요.", engine, executable, "", 60, "action-schema.json");
+        if (!Json.text(result, "reply").trim().equals("2") || !result.path("actions").isArray() || !result.path("actions").isEmpty()) throw new IllegalStateException("예약 요청의 응답을 확인하지 못했습니다.");
     }
     private JsonNode complete(String prompt, String engine, String executable, String model, int timeout, String schemaName) throws Exception {
         if (engine.equals("off")) throw new IllegalStateException("자연어 처리가 꺼져 있습니다. AGENT_ENGINE을 codex 또는 claude로 설정하세요.");
-        Path schema = directory.resolve(schemaName);
+        Path schema = Files.createTempFile(directory, "schema-", ".json");
         try (var in = CliModel.class.getResourceAsStream("/" + schemaName)) { Files.write(schema, Objects.requireNonNull(in).readAllBytes()); }
         Path output = Files.createTempFile(directory, "response-", ".json");
         Path stderr = Files.createTempFile(directory, "cli-", ".log");
@@ -75,7 +80,7 @@ final class CliModel implements Agent.Model {
             return result;
         } finally {
             if (process != null && process.isAlive()) { process.descendants().forEach(ProcessHandle::destroyForcibly); process.destroyForcibly(); }
-            Files.deleteIfExists(output); Files.deleteIfExists(stderr);
+            Files.deleteIfExists(output); Files.deleteIfExists(stderr); Files.deleteIfExists(schema);
         }
     }
     static IllegalStateException failure(String engine, int exit, String diagnostic) {
