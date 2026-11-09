@@ -14,6 +14,17 @@ class BriefingScheduleTest {
     List<String> sent = new ArrayList<>();
     @BeforeEach void open() throws Exception { store = new Store(temporary.resolve("test.db")); }
     @AfterEach void close() throws Exception { store.close(); }
+    @Test void draftResultsRunAtSevenThirtyKoreaTimeAndDoNotRepeatAfterRestartIncludingWeekends() throws Exception {
+        Config config=new Config(temporary.resolve("none"),Map.of("AUTO_SYNC","false","BRIEFING_TIME","","FRIDAY_REVIEW_TIME","","SLACK_APP_TOKEN","test","SLACK_BOT_TOKEN","test","SLACK_USER_ID","test"));
+        List<LocalDate> dates=new ArrayList<>();
+        for(String instant:List.of("2026-11-07T22:29:59Z","2026-11-07T22:30:00Z","2026-11-07T22:31:00Z")) {
+            WorkService service=new WorkService(store,new KoreaTime(Clock.fixed(Instant.parse(instant),ZoneOffset.UTC)),new JiraClient(config));
+            Agent agent=new Agent(service,new Reports(service),p->Json.object(),k->Json.object(),"테스트","테스트야");
+            try(SlackConnection slack=new SlackConnection(config,store,agent);Scheduler scheduler=new Scheduler(service,new Reports(service),slack,config,k->Json.object(),engine->{},sent::add,date->{dates.add(date);return "draft PR 정리";})) {scheduler.tick();}
+        }
+        assertEquals(List.of(LocalDate.of(2026,11,8)),dates);assertEquals(List.of("draft PR 정리"),sent);
+        assertNotNull(store.get("scheduled","draft-results:2026-11-08"));
+    }
     WorkService service(String now) throws Exception {
         return new WorkService(store, new KoreaTime(Clock.fixed(Instant.parse(now), ZoneOffset.UTC)), new JiraClient(new Config(temporary.resolve("none"), Map.of())));
     }

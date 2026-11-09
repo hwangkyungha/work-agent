@@ -16,6 +16,19 @@ class PlanningTest {
     WorkService at(String now) throws Exception {return new WorkService(store,new KoreaTime(Clock.fixed(Instant.parse(now),ZoneOffset.UTC)),new JiraClient(new Config(temporary.resolve("none"),Map.of())));}
     String add(String title){return Json.text(service.task(Json.obj("title",title)),"id");}
     List<String> ids(){return service.planned(service.time.today()).stream().map(t->Json.text(t,"id")).toList();}
+    @Test void bulkTodayAdditionPreservesExistingOrderAndRejectsInvalidSelectionAtomically() throws Exception {
+        String first=add("기존 업무"), second=add("추가 업무"), done=add("완료 업무");
+        service.plan(Json.obj("taskIds",List.of(first),"sort","due"));
+        service.changeStatus(Json.obj("id",done,"status","done"));
+        assertThrows(IllegalArgumentException.class,()->service.planItems(Json.obj("taskIds",List.of(second,done))));
+        assertEquals(List.of(first),ids());
+        assertEquals(1,service.planItems(Json.obj("taskIds",List.of(first,second,second))).path("added").asInt());
+        assertEquals(List.of(first,second),ids());
+        assertEquals("due",Json.text(service.currentPlan(service.time.today()),"sort"));
+        int version=service.currentPlan(service.time.today()).path("version").asInt();
+        assertEquals(0,service.planItems(Json.obj("taskIds",List.of(second))).path("added").asInt());
+        assertEquals(version,service.currentPlan(service.time.today()).path("version").asInt());
+    }
     @Test void newDayStartsEmptyAndLeavesThePreviousPlanUnchanged() throws Exception {
         String carry=add("이어 할 일"),done=add("끝낸 일"),hidden=add("숨긴 일");
         service.plan(Json.obj("taskIds",List.of(carry,done,hidden),"sort","manual"));

@@ -142,6 +142,10 @@ small,.hint { font-size:12px; color:var(--muted); line-height:1.8; }
 .followup-row:first-child,.job-row:first-child { padding-top:0; }
 .followup-row:last-child,.job-row:last-child,.observation:last-child { border-bottom:0; }
 .followup-row p,.job-row p,.observation p { font-size:13px; line-height:1.8; margin:8px 0; overflow-wrap:anywhere; }
+.draft-result-heading { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.draft-result-heading .tag { flex-shrink:0; }
+.draft-next-task { margin-top:16px; padding-left:12px; border-left:2px solid var(--line); }
+.result-subtitle { margin-top:20px; }
 .followup-row small,.job-row small,.observation small { display:block; margin-bottom:8px; }
 .schedule-row { display:grid; grid-template-columns:48px 1fr; gap:12px; padding:12px 0; line-height:1.8; }
 .schedule-row+.schedule-row { border-top:1px solid var(--line); }

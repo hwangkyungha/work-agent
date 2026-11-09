@@ -25,6 +25,7 @@ class WebUiTest {
     List<JsonNode> savedWorklogs = new ArrayList<>(); boolean worklogSaveFails;
     List<JsonNode> favoriteUpdates = new ArrayList<>(); int worklogSyncCalls; boolean worklogSyncFails;
     List<ObjectNode> reviewJobs = new ArrayList<>(); List<JsonNode> reviewRequests = new ArrayList<>(); int reviewRefreshes, pendingSaves;
+    List<String> acceptedFollowups=new ArrayList<>();
     static final String ORIGIN = "http://127.0.0.1:18765";
     ObjectNode task(String id, String key, String title) { return Json.obj("id", id, "jiraKey", key, "title", title, "status", "todo", "important", false, "urgent", false, "product", "개발", "due", "", "hidden", false, "createdAt", "2026-11-06T00:00:00Z"); }
     @BeforeEach void open() {
@@ -72,6 +73,23 @@ class WebUiTest {
                     JsonNode payload = Json.read(route.request().postData()); planUpdates.add(payload);
                     ArrayNode plan = Json.MAPPER.createArrayNode(); for (JsonNode id : payload.path("taskIds")) for (JsonNode task : state.path("tasks")) if (id.asText().equals(Json.text(task, "id"))) plan.add(task);
                     state.set("plan", plan); state.put("planSort", Json.text(payload, "sort")); state.put("planVersion", state.path("planVersion").asInt() + 1);
+                }
+                case "/api/plan/items" -> {
+                    JsonNode payload=Json.read(route.request().postData());planUpdates.add(payload);
+                    ArrayNode plan=(ArrayNode)state.path("plan");int before=plan.size();
+                    for(JsonNode id:payload.path("taskIds")) for(JsonNode task:state.path("tasks")) if(id.asText().equals(Json.text(task,"id")) && plan.findValuesAsText("id").stream().noneMatch(value->value.equals(id.asText()))) plan.add(task);
+                    content=Json.write(Json.obj("added",plan.size()-before));
+                }
+                case "/api/followups/accept" -> {
+                    String id=Json.required(Json.read(route.request().postData()),"id");acceptedFollowups.add(id);
+                    for(JsonNode row:state.path("draftDigest").path("prs")) {
+                        if(id.equals(Json.text(row.path("reviewSuggestion"),"id")))((ObjectNode)row.path("reviewSuggestion")).put("acceptedTaskId","accepted");
+                        for(JsonNode suggestion:row.path("suggestions"))if(id.equals(Json.text(suggestion,"id")))((ObjectNode)suggestion).put("acceptedTaskId","accepted");
+                    }
+                }
+                case "/api/draft-results/reviewed" -> {
+                    JsonNode input=Json.read(route.request().postData());
+                    for(JsonNode row:state.path("draftDigest").path("prs"))if(Json.text(row,"id").equals(Json.text(input,"id")))((ObjectNode)row).put("reviewed",input.path("reviewed").asBoolean());
                 }
                 case "/api/worklogs" -> {
                     JsonNode payload = Json.read(route.request().postData()); savedWorklogs.add(payload);
@@ -332,5 +350,26 @@ class WebUiTest {
         String output = System.getProperty("work.ui.review.screenshots", "");
         if (!output.isBlank()) { Path directory = Path.of(output); Files.createDirectories(directory); page.screenshot(new Page.ScreenshotOptions().setPath(directory.resolve("work-agent-pr-reviews.png")).setFullPage(true)); }
         page.setViewportSize(390, 844); assertTrue((Boolean) page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"));
+    }
+    @Test void selectedTasksCanBeAddedToTodayInOneRequest() {
+        page.locator("[data-view='plan']").click();
+        page.locator("#select-all-tasks").check();
+        assertFalse(page.locator("#bulk-today").isDisabled());
+        page.locator("#bulk-today").click();
+        page.waitForCondition(()->planUpdates.size()==1 && state.path("plan").size()==2);
+        assertEquals(1,planUpdates.getFirst().path("taskIds").size());
+        assertEquals("jira:CT-42",planUpdates.getFirst().path("taskIds").get(0).asText());
+        assertEquals("local",state.path("plan").get(0).path("id").asText());
+    }
+    @Test void draftResultsAndProposalsShareOneSectionAndRequireExplicitSelection() {
+        state.set("draftDigest",Json.obj("generatedAt","2026-11-05T22:30:00Z","from","2026-11-04T15:00:00Z","until","2026-11-05T22:30:00Z","errors",List.of(),"prs",List.of(Json.obj("id","draft","number",105,"title","CT-42 CI 구현","url","https://bitbucket.org/team/repo/pull-requests/105","summary","PR 설명 요약","reviewed",false,"reviewSuggestion",Json.obj("id","review-draft"),"suggestions",List.of(Json.obj("id","followup-draft","title","배포 문서 작성","reason","PR에 남은 작업으로 기록돼 있습니다."))))));
+        page.reload();page.getByRole(AriaRole.HEADING,new Page.GetByRoleOptions().setName("작업 결과와 다음 할 일").setExact(true)).waitFor();
+        assertEquals(0,page.getByRole(AriaRole.HEADING,new Page.GetByRoleOptions().setName("후속 작업 제안").setExact(true)).count());
+        assertTrue(acceptedFollowups.isEmpty());
+        page.locator("[data-accept-followup='review-draft']").click();
+        page.waitForCondition(()->acceptedFollowups.size()==1&&page.locator("[data-accept-followup='review-draft']").isDisabled());
+        assertEquals(List.of("review-draft"),acceptedFollowups);
+        page.locator("[data-draft-reviewed='draft']").click();
+        page.waitForCondition(()->page.locator("[data-draft-reviewed='draft']").textContent().equals("검토 대기로"));
     }
 }

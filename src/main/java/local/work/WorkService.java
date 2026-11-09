@@ -211,6 +211,21 @@ final class WorkService {
         ObjectNode row = store.get("plan", date.toString());
         return row == null ? Json.obj("date", date.toString(), "taskIds", List.of(), "sort", "manual", "version", 0) : row;
     }
+    synchronized ObjectNode planItems(JsonNode input) {
+        if (!input.path("taskIds").isArray()) throw new IllegalArgumentException("오늘 추가할 업무를 선택하세요.");
+        LocalDate date=LocalDate.parse(day(input));
+        Set<String> selected=new LinkedHashSet<>();
+        for(JsonNode value:input.path("taskIds")) {
+            ObjectNode task=requiredTask(value.asText());
+            if(task.path("hidden").asBoolean() || status(Json.text(task,"status")).equals("done")) throw new IllegalArgumentException("숨기거나 완료한 업무는 오늘 할 일에 추가할 수 없습니다.");
+            selected.add(value.asText());
+        }
+        ObjectNode current=currentPlan(date);
+        Set<String> ids=new LinkedHashSet<>(); current.path("taskIds").forEach(id->ids.add(id.asText()));
+        int before=ids.size(); ids.addAll(selected);
+        ObjectNode saved=ids.size()==before ? current : plan(Json.obj("date",date.toString(),"taskIds",ids,"sort",current.path("sort").asText("manual")));
+        return Json.obj("added",ids.size()-before,"plan",saved);
+    }
     ObjectNode dailyNote(JsonNode input) {
         String date = day(input);
         ObjectNode old = store.get("daily", date);
@@ -273,8 +288,16 @@ final class WorkService {
         ObjectNode result = task(Json.obj("id", id, "title", Json.required(suggestion, "title"), "today", true, "date", day(input)));
         result.put("sourceTaskId", Json.text(suggestion, "sourceTaskId"));
         result.put("followupReason", Json.text(suggestion, "reason")); store.put("task", result);
+        if(suggestion.hasNonNull("sourceDraftResultId")) {result.put("sourceDraftResultId",Json.text(suggestion,"sourceDraftResultId")).put("sourcePrUrl",Json.text(suggestion,"sourcePrUrl"));store.put("task",result);}
         suggestion.put("acceptedTaskId", Json.text(result, "id")); store.put("followup", suggestion);
         return result;
+    }
+    ObjectNode reviewDraftResult(JsonNode input) {
+        synchronized(store) {
+            ObjectNode row=store.get("draftResult",Json.required(input,"id"));
+            if(row==null)throw new IllegalArgumentException("검토할 draft PR을 찾지 못했습니다.");
+            row.put("reviewed",input.path("reviewed").asBoolean(true));stamp(row);return store.put("draftResult",row);
+        }
     }
     List<ObjectNode> todayGroups(LocalDate day) {
         Set<String> selected = new HashSet<>();
@@ -300,6 +323,7 @@ final class WorkService {
         return Json.obj("date", date.toString(), "timezone", KoreaTime.ZONE.toString(), "now", time.now().toString(),
                 "tasks", tasks(), "plan", planned(date), "planSaved", store.get("plan", date.toString()) != null, "planVersion", plan.path("version").asInt(), "planSort", plan.path("sort").asText("manual"), "yesterdayCompleted", completed(date.minusDays(1)),
                 "hiddenTasks", allTasks().stream().filter(n -> n.path("hidden").asBoolean()).toList(), "todayGroups", todayGroups(date),
+                "draftDigest", DraftResults.state(this,date),
                 "activities", activities(monday.minusDays(7), monday.plusDays(6)), "meetings", meetings(date),
                 "activityGroups", new ActivitySummary(store).group(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> Json.text(n, "date").equals(date.toString()) && !n.hasNonNull("acceptedTaskId")).toList(),
                 "worklogs", store.list("worklog").stream().filter(n -> Json.text(n, "date").compareTo(monday.toString()) >= 0 && Json.text(n, "date").compareTo(monday.plusDays(6).toString()) <= 0).toList(),

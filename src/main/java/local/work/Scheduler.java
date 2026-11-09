@@ -10,6 +10,7 @@ final class Scheduler implements AutoCloseable {
     private static final int BRIEFING_REFRESH_MINUTES = 5;
     @FunctionalInterface interface SessionStart { void run(String engine) throws Exception; }
     @FunctionalInterface interface Notifier { void send(String text) throws Exception; }
+    @FunctionalInterface interface DraftBriefing { String prepare(LocalDate date) throws Exception; }
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private final WorkService service;
     private final Reports reports;
@@ -18,6 +19,7 @@ final class Scheduler implements AutoCloseable {
     private final Agent.Synchronizer synchronizer;
     private final SessionStart sessionStart;
     private final Notifier notifier;
+    private final DraftBriefing draftBriefing;
     Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer) {
         this(service, reports, slack, config, synchronizer, engine -> new CliModel(config).startSession(engine));
     }
@@ -25,9 +27,13 @@ final class Scheduler implements AutoCloseable {
         this(service, reports, slack, config, synchronizer, sessionStart, slack::notifyOwner);
     }
     Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer, SessionStart sessionStart, Notifier notifier) {
+        this(service,reports,slack,config,synchronizer,sessionStart,notifier,null);
+    }
+    Scheduler(WorkService service, Reports reports, SlackConnection slack, Config config, Agent.Synchronizer synchronizer, SessionStart sessionStart, Notifier notifier,DraftBriefing draftBriefing) {
         this.service = service; this.reports = reports; this.slack = slack; this.config = config; this.synchronizer = synchronizer;
         this.sessionStart = sessionStart;
         this.notifier = notifier;
+        this.draftBriefing=draftBriefing;
     }
     void start() {
         executor.scheduleWithFixedDelay(() -> { try { tick(); } catch (Exception e) { System.err.println("예약 작업을 완료하지 못했습니다: " + SlackConnection.friendly(e)); } }, 5, 30, TimeUnit.SECONDS);
@@ -36,6 +42,13 @@ final class Scheduler implements AutoCloseable {
         ZonedDateTime now = service.time.now();
         startSessionIfDue(now, "claude", "Claude");
         startSessionIfDue(now, "codex", "Codex");
+        if(slack.configured() && draftBriefing!=null) {
+            String key="draft-results:"+now.toLocalDate(),hour=config.get("DRAFT_REVIEW_TIME","07:30");
+            if(due(key,hour,now)) {
+                String message=draftBriefing.prepare(now.toLocalDate());
+                if(message!=null) {notifier.send(message);service.store.put("scheduled",Json.obj("id",key,"at",now.toInstant().toString()));}
+            }
+        }
         boolean weekday = now.getDayOfWeek().getValue() <= 5;
         boolean automatic = config.get("AUTO_SYNC", "true").equals("true");
         if (automatic) syncIfDue("cli", SYNC_INTERVAL_MINUTES, now.toInstant());

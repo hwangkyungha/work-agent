@@ -78,7 +78,8 @@ public final class Main {
         Agent agent = new Agent(service, reports, cli, sync, config.agentName(), config.agentCallName(), booking, reviews, reviewMonitor);
         SlackConnection slack = new SlackConnection(config, store, agent);
         slackTarget[0] = slack;
-        Scheduler scheduler = new Scheduler(service, reports, slack, config, sync);
+        DraftResults draftResults=new DraftResults(service,bitbucket,cli,config);
+        Scheduler scheduler = new Scheduler(service, reports, slack, config, sync,cli::startSession,slack::notifyOwner,date->bitbucket.configured()?draftResults.report(date):null);
         int port = portOverride == null ? config.number("PORT", 8765) : portOverride;
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         String token = config.has("WORK_AGENT_TOKEN") ? config.get("WORK_AGENT_TOKEN", "") : UUID.randomUUID().toString() + UUID.randomUUID();
@@ -157,7 +158,10 @@ public final class Main {
                         case "/api/plan" -> service.plan(body);
                         case "/api/plan/item" -> service.planItem(body);
                         case "/api/followups" -> agent.suggestFollowups(date);
+                        case "/api/plan/items" -> service.planItems(body);
                         case "/api/followups/accept" -> service.acceptFollowup(body);
+                        case "/api/draft-results/refresh" -> draftResults.generate(date,true);
+                        case "/api/draft-results/reviewed" -> service.reviewDraftResult(body);
                         case "/api/meetings" -> service.meeting(body);
                         case "/api/daily" -> service.dailyNote(body);
                         case "/api/worklogs" -> service.saveWorklog(body);
