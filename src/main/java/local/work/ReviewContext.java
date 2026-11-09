@@ -139,9 +139,64 @@ final class ReviewContext {
         int line = evidence.path("line").asInt(); String quote = Json.text(evidence, "quote");
         if (content == null || line < 1 || quote.isBlank()) return false;
         String[] lines = content.split("\n", -1), quoted = quote.replace("\r\n", "\n").split("\n", -1);
-        if (line + quoted.length - 1 > lines.length) return false;
+        if (line > lines.length || quoted.length > lines.length - line + 1) return false;
         for (int offset = 0; offset < quoted.length; offset++) if (!lines[line - 1 + offset].strip().equals(quoted[offset].strip())) return false;
         return true;
+    }
+    List<ObjectNode> replyExcerpts(JsonNode evidence, Set<String> related, String question, String reply) {
+        Map<String, NavigableMap<Integer, String>> excerpts = new LinkedHashMap<>();
+        StringBuilder termsSource = new StringBuilder(question);
+        for (JsonNode citation : evidence) {
+            if (!validEvidence(citation)) continue;
+            String key = Json.text(citation, "side") + ":" + Json.text(citation, "path");
+            String quote = Json.text(citation, "quote");
+            int line = citation.path("line").asInt();
+            addExcerpt(excerpts, key, files.get(key).split("\n", -1), line - 8, line + quote.split("\n", -1).length + 7);
+            termsSource.append('\n').append(quote);
+        }
+        Set<String> terms = new LinkedHashSet<>();
+        Matcher words = Pattern.compile("[\\p{L}\\p{N}_]{4,}").matcher(termsSource.toString().toLowerCase(Locale.ROOT));
+        while (words.find() && terms.size() < 40) terms.add(words.group());
+        for (String path : related) {
+            String key = "new:" + path;
+            String[] lines = files.get(key).split("\n", -1);
+            int bestLine = 1, bestScore = 0;
+            for (int i = 0; i < lines.length; i++) {
+                String text = lines[i].toLowerCase(Locale.ROOT);
+                int score = 0;
+                for (String term : terms) if (text.contains(term)) score++;
+                if (score > bestScore) { bestLine = i + 1; bestScore = score; }
+            }
+            addExcerpt(excerpts, key, lines, bestLine - 8, bestLine + 8);
+        }
+        List<String> calls = Pattern.compile("`([A-Za-z_][A-Za-z0-9_]{3,})`").matcher(reply).results()
+                .map(match -> match.group(1) + "(").distinct().limit(8).toList();
+        int callers = 0;
+        for (var file : files.entrySet()) {
+            String key = file.getKey();
+            if (callers >= 2 || calls.isEmpty()) break;
+            if (!key.startsWith("new:") || key.endsWith(".md") || excerpts.containsKey(key)) continue;
+            String[] lines = file.getValue().split("\n", -1);
+            for (int i = 0; i < lines.length; i++) {
+                String line = lines[i];
+                if (calls.stream().noneMatch(line::contains)) continue;
+                addExcerpt(excerpts, key, lines, i - 4, i + 6);
+                callers++;
+                break;
+            }
+        }
+        List<ObjectNode> documents = new ArrayList<>();
+        excerpts.forEach((key, lines) -> {
+            int split = key.indexOf(':');
+            StringBuilder content = new StringBuilder();
+            lines.forEach((number, line) -> content.append(number).append(": ").append(line).append('\n'));
+            documents.add(Json.obj("side", key.substring(0, split), "path", key.substring(split + 1), "content", content.toString()));
+        });
+        return documents;
+    }
+    private static void addExcerpt(Map<String, NavigableMap<Integer, String>> excerpts, String key, String[] lines, int from, int to) {
+        NavigableMap<Integer, String> selected = excerpts.computeIfAbsent(key, unused -> new TreeMap<>());
+        for (int line = Math.max(1, from); line <= Math.min(lines.length, to); line++) selected.put(line, lines[line - 1]);
     }
     List<List<ObjectNode>> batches() {
         List<List<ObjectNode>> batches = new ArrayList<>(); List<ObjectNode> batch = new ArrayList<>(); int size = 2;

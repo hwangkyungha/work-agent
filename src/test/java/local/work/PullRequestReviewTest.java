@@ -97,7 +97,7 @@ class PullRequestReviewTest {
     @Test void repliesOnlyToOthersOnOwnPrAndRechecksConversationBeforeSaving() throws Exception {
         api.author = "owner"; api.comments.add(Json.obj("id", 7, "created_on", "2026-11-06T00:00:00Z", "user", Json.obj("uuid", "other"), "content", Json.obj("raw", "왜 null을 반환하나요?")));
         AtomicInteger calls = new AtomicInteger(); reviews = new PullRequestReview(service, api, prompt -> { calls.incrementAndGet(); ObjectNode response = result(List.of()); response.put("reply", "현재 코드는 null을 반환합니다. 입력값을 반환하도록 수정해야 합니다.").put("replyConfidence", "high"); response.set("replyEvidence", Json.MAPPER.valueToTree(List.of(evidence()))); return response; });
-        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 7, false)); assertEquals(2, calls.get()); assertFalse(Json.text(row, "reply").isBlank());
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1", 7, false)); assertEquals(3, calls.get()); assertFalse(Json.text(row, "reply").isBlank());
         assertEquals("fact", Json.text(row, "replyKind"));
         api.comments.add(Json.obj("id", 8, "parent", Json.obj("id", 7), "created_on", "2026-11-06T01:00:00Z", "user", Json.obj("uuid", "owner")));
         assertEquals("stale", Json.text(reviews.savePending(Json.required(row, "id")), "status")); assertEquals(0, api.writes);
@@ -119,7 +119,7 @@ class PullRequestReviewTest {
             @Override String source(String repository, String commit, String path) throws Exception {
                 if (path.equals(spec) || path.equals(caller)) {
                     assertEquals("source", commit);
-                    return path.equals(spec) ? specLine : callerLine;
+                    return (path.equals(spec) ? specLine : callerLine) + "\n".repeat(30) + "FAR_UNRELATED_SOURCE";
                 }
                 return super.source(repository, commit, path);
             }
@@ -132,16 +132,20 @@ class PullRequestReviewTest {
             int pass = calls.incrementAndGet();
             if (pass == 1) {
                 assertFalse(prompt.contains(caller));
+                assertFalse(prompt.contains("return null;"));
                 return response;
             }
             if (pass == 2) {
                 assertTrue(prompt.contains(spec));
                 assertTrue(prompt.contains(caller));
+                assertFalse(prompt.contains("return null;"));
+                assertFalse(prompt.contains(specLine));
                 response.set("relatedPaths", Json.MAPPER.valueToTree(List.of(spec, caller, "../secret.md")));
                 return response;
             }
             assertTrue(prompt.contains(specLine));
             assertTrue(prompt.contains(callerLine));
+            assertEquals(pass == 3, prompt.contains("FAR_UNRELATED_SOURCE"));
             assertTrue(prompt.contains("채택 여부에 직접 답했는지") == (pass == 4));
             response.set("replyEvidence", Json.MAPPER.valueToTree(List.of(
                     Json.obj("path", spec, "side", "new", "line", 1, "quote", specLine),
@@ -228,5 +232,13 @@ class PullRequestReviewTest {
         ObjectNode quote = evidence().put("quote", "return null;\nnext();"); assertTrue(context.validEvidence(quote));
         quote.put("quote", "return null;\ninvented();"); assertFalse(context.validEvidence(quote));
         quote.put("quote", "return null;\nnext();\nafterEnd();"); assertFalse(context.validEvidence(quote));
+    }
+    @Test void replyVerificationIncludesAnUncitedCallerWithoutItsWholeFile() throws Exception {
+        ReviewContext context = new ReviewContext(api, BitbucketClient.PullRequest.parse("https://bitbucket.org/team/repo/pull-requests/1"));
+        context.files.put("new:install.go", "return checkConnection(ctx)\n" + "\n".repeat(30) + "FAR_UNRELATED_SOURCE");
+        String excerpts = Json.write(context.replyExcerpts(Json.MAPPER.valueToTree(List.of(evidence())),
+                Set.of(), "변경이 설치에도 적용되나요?", "설치는 `checkConnection`을 호출합니다."));
+        assertTrue(excerpts.contains("return checkConnection(ctx)"));
+        assertFalse(excerpts.contains("FAR_UNRELATED_SOURCE"));
     }
 }

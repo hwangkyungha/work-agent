@@ -8,6 +8,7 @@ import java.nio.file.*;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 class WorkflowTest {
@@ -187,6 +188,24 @@ class WorkflowTest {
         assertTrue(prompt.get().contains("너의 이름(JSON 문자열): \"호박\""));
         assertTrue(prompt.get().endsWith("현재 사용자 요청:\n오늘 계획을 정리해 줘."));
         assertEquals("호박아, 오늘 계획을 정리해 줘.",Json.text(store.list("message").getFirst(),"text"));
+    }
+    @Test void shortRequestsOmitUnrelatedStateAndFindAnExplicitHiddenTask() throws Exception {
+        store.put("task", Json.obj("id", "jira:CT-424", "jiraKey", "CT-424", "title", "찾아야 할 업무", "status", "todo", "hidden", true));
+        store.put("task", Json.obj("id", "unrelated", "title", "UNRELATED_TASK", "status", "todo"));
+        store.put("issue", Json.obj("id", "CT-999", "title", "UNRELATED_JIRA_RECORD"));
+        AtomicReference<String> prompt = new AtomicReference<>();
+        Agent agent = new Agent(service, new Reports(service), text -> {
+            prompt.set(text);
+            return Json.obj("reply", "확인했습니다.", "actions", List.of());
+        }, kind -> Json.object(), "호박", "호박아");
+        agent.chat("web", "short-question", "안녕");
+        assertFalse(prompt.get().contains("찾아야 할 업무"));
+        assertFalse(prompt.get().contains("UNRELATED_TASK"));
+        agent.chat("web", "hidden-question", "CT-424 다시 표시해 줘.");
+        assertTrue(prompt.get().contains("jira:CT-424"));
+        assertTrue(prompt.get().contains("찾아야 할 업무"));
+        assertFalse(prompt.get().contains("UNRELATED_TASK"));
+        assertFalse(prompt.get().contains("UNRELATED_JIRA_RECORD"));
     }
     @Test void ordinaryWordStartingWithNameIsNotTreatedAsAnAddress() throws Exception {
         var prompt=new java.util.concurrent.atomic.AtomicReference<String>();
