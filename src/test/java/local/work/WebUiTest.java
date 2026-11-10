@@ -28,11 +28,13 @@ class WebUiTest {
     List<String> acceptedFollowups=new ArrayList<>();
     List<JsonNode> workDayUpdates=new ArrayList<>(),addedPastWork=new ArrayList<>();
     List<ObjectNode> pastWorkCandidates=new ArrayList<>();
+    List<String> configuredWorkTypes=Config.DEFAULT_WORK_TYPES;
+    Map<String,List<ObjectNode>> otherWorkDays=new HashMap<>();
     List<JsonNode> workspaceUpdates=new ArrayList<>(),referenceUpdates=new ArrayList<>();
     static final String ORIGIN = "http://127.0.0.1:18765";
     ObjectNode task(String id, String key, String title) { return Json.obj("id", id, "jiraKey", key, "title", title, "status", "todo", "important", false, "urgent", false, "product", "개발", "due", "", "hidden", false, "createdAt", "2026-11-06T00:00:00Z"); }
     @BeforeEach void open() {
-        state = Json.obj("date", "2026-11-06", "tasks", List.of(task("local", "", "한글 검색 확인"), task("jira:CT-42", "CT-42", "CI 보고서 검토")), "hiddenTasks", List.of(),
+        state = Json.obj("date", "2026-11-06", "todayWork", List.of(), "tasks", List.of(task("local", "", "한글 검색 확인"), task("jira:CT-42", "CT-42", "CI 보고서 검토")), "hiddenTasks", List.of(),
                 "plan", List.of(task("local", "", "한글 검색 확인")), "planSaved", true, "planSort", "manual", "planVersion", 1,
                 "jobs", List.of(), "meetings", List.of(), "yesterdayCompleted", List.of(), "followups", List.of(), "todayGroups", List.of(), "sync", List.of(Json.obj("id","worklogs:2026-11-02","at",Instant.now().toString(),"ok",true)), "dailyNote", "", "dailyDetails", Json.object(), "worklogs", List.of(), "activityGroups", List.of(), "registeredWorklogs", List.of(), "worklogFavorites", List.of(), "recentWorklogIssues", List.of());
         playwright = Playwright.create(new Playwright.CreateOptions().setEnv(Map.of("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")));
@@ -47,7 +49,7 @@ class WebUiTest {
                     type = path.equals("/") ? "text/html; charset=utf-8" : path.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8";
                 }
                 case "/api/state" -> content = Json.write(state);
-                case "/api/settings" -> content = Json.write(Json.obj("agentName", "호박", "agentCallName", "호박아", "slackConnected", true, "jiraConfigured", true, "engine", "codex"));
+                case "/api/settings" -> content = Json.write(Json.obj("workTypes",configuredWorkTypes,"agentName", "호박", "agentCallName", "호박아", "slackConnected", true, "jiraConfigured", true, "engine", "codex"));
                 case "/api/reviews" -> content = Json.write(Json.obj("configured", true, "automatic", true, "jobs", reviewJobs, "warnings", List.of(), "workspaces", List.of("team"), "repositoryCount", 48));
                 case "/api/reviews/refresh" -> reviewRefreshes++;
                 case "/api/reviews/workspace" -> workspaceUpdates.add(Json.read(route.request().postData()));
@@ -92,9 +94,12 @@ class WebUiTest {
                     if(source==null)for(JsonNode task:state.path("tasks"))if(Json.text(task,"id").equals(Json.text(body,"taskId")))source=Json.obj("workId",Json.text(task,"id"),"taskId",Json.text(task,"id"),"title",Json.text(task,"title"),"jiraKey",Json.text(task,"jiraKey"));
                     if(source==null)source=Json.obj("workId","activity:manual","title",Json.text(body,"title"));
                     ObjectNode row=source.deepCopy();row.put("date",Json.text(body,"date")).put("outcome",Json.text(body,"outcome")).put("confirmed",true).put("observed",true);
-                    if(!state.has("previousWork"))state.set("previousWork",Json.MAPPER.createArrayNode());((ArrayNode)state.path("previousWork")).add(row);
+                    String field=Json.text(body,"date").equals(Json.text(state,"date"))?"todayWork":"previousWork";if(!state.has(field))state.set(field,Json.MAPPER.createArrayNode());((ArrayNode)state.path(field)).add(row);
                 }
-                case "/api/work-days" -> { JsonNode body=Json.read(route.request().postData());workDayUpdates.add(body);for(JsonNode row:state.path("previousWork"))if(Json.text(row,"workId").equals(Json.text(body,"workId")))((ObjectNode)row).put("outcome",Json.text(body,"outcome")); }
+                case "/api/work-days" -> {
+                    if(route.request().method().equals("GET")) content=Json.write(fixtureWorkDay(URI.create(route.request().url()).getQuery().replace("date=","")));
+                    else {JsonNode body=Json.read(route.request().postData());workDayUpdates.add(body);for(JsonNode row:fixtureWorkDay(Json.text(body,"date")))if(Json.text(row,"workId").equals(Json.text(body,"workId")))((ObjectNode)row).put("outcome",Json.text(body,"outcome"));}
+                }
                 case "/api/followups/dismiss" -> { String id=Json.required(Json.read(route.request().postData()),"id");ArrayNode remaining=Json.MAPPER.createArrayNode();for(JsonNode row:state.path("followups"))if(!id.equals(Json.text(row,"id")))remaining.add(row);state.set("followups",remaining); }
                 case "/api/followups/accept" -> {
                     String id=Json.required(Json.read(route.request().postData()),"id");acceptedFollowups.add(id);
@@ -314,7 +319,7 @@ class WebUiTest {
         page.reload();page.locator("[data-view='worklog']").click();
         page.locator("#favorite-issue-key").fill("WOR-1517");page.locator("#worklog-favorite-form [type='submit']").click();
         page.locator("[data-add-log-issue='WOR-1517']").waitFor();page.locator("[data-add-log-issue='WOR-1517']").click();page.locator(".log-duration").fill("2h");
-        page.locator("[data-add-log-issue='WOR-1431']").click();page.locator("[data-add-log-issue='WOR-1431']").click();
+        assertFalse((Boolean)page.locator(".recent-log-issues").evaluate("el=>el.open"));page.locator(".recent-log-issues>summary").click();page.locator("[data-add-log-issue='WOR-1431']").click();page.locator("[data-add-log-issue='WOR-1431']").click();
         assertEquals(2,page.locator(".log-key").count());assertEquals(2,state.path("tasks").size());
         page.locator("[data-log-favorite='WOR-1517']").click();page.waitForCondition(()->favoriteUpdates.size()==2);
         assertFalse(favoriteUpdates.get(1).path("favorite").asBoolean());assertEquals("2h",page.locator(".log-duration").first().inputValue());
@@ -403,11 +408,20 @@ class WebUiTest {
         page.locator("[data-draft-reviewed='draft']").click();
         page.waitForCondition(()->page.locator("[data-draft-reviewed='draft']").textContent().equals("다시 검토 대기로"));
     }
+    List<JsonNode> fixtureWorkDay(String date) {
+        if(date.equals(Json.text(state,"date"))){List<JsonNode> rows=new ArrayList<>();state.path("todayWork").forEach(rows::add);return rows;}
+        if(date.equals(Json.text(state,"previousWorkDate"))){List<JsonNode> rows=new ArrayList<>();state.path("previousWork").forEach(rows::add);return rows;}
+        return new ArrayList<>(otherWorkDays.getOrDefault(date,List.of()));
+    }
+    void openPreviousReview() {
+        page.locator(".work-reconciliation>.review-summary").click();
+        page.locator("[data-review-day='"+Json.text(state,"previousWorkDate")+"']").click();
+    }
     @Test void yesterdayStartsWithPlannedWorkAndAddsSelectedCompletedWorkWithoutChangingJira() throws Exception {
         state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","local","taskId","local","title","계획만 한 업무","planned",true,"inInitialPlan",true,"inFinalPlan",true,"observed",false,"outcome","unconfirmed"),Json.obj("workId","jira:CT-42","taskId","jira:CT-42","title","두번째 계획","planned",true,"inInitialPlan",true,"inFinalPlan",true,"observed",false,"outcome","unconfirmed"))));
         pastWorkCandidates.add(Json.obj("workId","jira:CT2612-518","taskId","jira:CT2612-518","title","LCOV 옵션 추가","jiraKey","CT2612-518","issueUrl","https://example.atlassian.net/browse/CT2612-518","evidence",Json.obj("messageCount",42)));
         ((ArrayNode)state.path("tasks")).add(task("jira:CT2612-518","CT2612-518","LCOV 옵션 추가"));
-        page.reload();page.locator(".work-reconciliation").waitFor();
+        page.reload();openPreviousReview();
         assertEquals(2,page.locator(".work-day-row").count());assertFalse(page.locator(".work-reconciliation").textContent().contains("LCOV 옵션 추가"));
         page.locator("[data-work-outcome='local']").selectOption("not-started");page.waitForCondition(()->workDayUpdates.size()==1);
         page.locator("#add-previous-work").click();page.locator("[data-choose-past-work='jira:CT2612-518']").waitFor();
@@ -420,7 +434,7 @@ class WebUiTest {
         String screenshots=System.getProperty("work.ui.workflow.screenshots","");if(!screenshots.isBlank()){Path output=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve("workflow-desktop.png")).setFullPage(true));page.setViewportSize(390,844);assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth <= innerWidth"));page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve("workflow-mobile.png")).setFullPage(true));}
     }
     @Test void handwrittenPastWorkAndExistingTasksCanBeAddedWithoutCreatingATodayTask() {
-        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.createArrayNode());page.reload();
+        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.createArrayNode());page.reload();openPreviousReview();
         page.locator("#add-previous-work").click();page.locator("#past-work-task").selectOption("jira:CT-42");page.locator("#past-work-outcome").selectOption("done");page.locator("#past-work-form [type='submit']").click();page.waitForCondition(()->addedPastWork.size()==1);
         assertEquals("jira:CT-42",Json.text(addedPastWork.getFirst(),"taskId"));
         page.locator("#add-previous-work").click();page.locator("#past-work-title").fill("기록이 없는 고객 미팅");page.locator("#past-work-outcome").selectOption("done");page.locator("#past-work-form [type='submit']").click();page.waitForCondition(()->addedPastWork.size()==2);
@@ -432,7 +446,7 @@ class WebUiTest {
     }
     @Test void aPreviouslyCheckedSessionPrefillsTheSuggestedExistingTaskWhenLinking() {
         state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","session:claude:legacy","title","CT-42 이전 작업명","jiraKey","CT-42","suggestedTaskId","jira:CT-42","outcome","progress","confirmed",true))));
-        page.reload();page.locator("[data-link-work='session:claude:legacy']").click();assertEquals("jira:CT-42",page.locator("#link-task").inputValue());
+        page.reload();openPreviousReview();page.locator("[data-link-work='session:claude:legacy']").click();assertEquals("jira:CT-42",page.locator("#link-task").inputValue());
     }
     @Test void unlinkedActualWorkCanBeSavedAndNewActivityCanBeAddedWithoutLosingEnteredTime() {
         state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","workId","activity:first","title","Jira 발급 전 설계 논의","jiraKey",""))));
@@ -453,7 +467,7 @@ class WebUiTest {
     @Test void longTaskOptionsCannotOverflowTheLinkingDialogAndSearchUsesFullWidthControls() throws Exception {
         ((ArrayNode)state.path("tasks")).add(task("long","CT-99","긴 업무 제목 "+"VeryLongUnbrokenIssueTitle".repeat(25)));
         state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","session:claude:overflow","title","기존 업무 연결","outcome","progress"))));
-        page.reload();page.locator("[data-link-work='session:claude:overflow']").click();
+        page.reload();openPreviousReview();page.locator("[data-link-work='session:claude:overflow']").click();
         assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));
         for(int width:List.of(390,660)){page.setViewportSize(width,844);assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));}
         String screenshots=System.getProperty("work.ui.fixes.screenshots","");if(!screenshots.isBlank()){Path output=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve("link-dialog.png")));}
@@ -495,4 +509,38 @@ class WebUiTest {
         assertEquals(3,page.locator("#worklog-rows .worklog-input-row").count());assertEquals("2h",page.locator(".log-duration").first().inputValue());assertFalse(page.locator("#worklog-rows").textContent().contains("하네스 자동 실행"));
         assertEquals("WOR-1517",page.locator(".log-key").nth(1).inputValue());assertEquals("CT-9",page.locator(".log-key").nth(2).inputValue());
     }
+    @Test void todayIsVisibleFirstAndActualWorkCanBeEditedForTodayPreviousAndAnyDate() throws Exception {
+        state.put("previousWorkDate","2026-11-05");
+        state.set("todayWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","local","taskId","local","title","오늘 수행","planned",true,"outcome","unconfirmed"))));
+        state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","local","taskId","local","title","어제 수행","planned",true,"outcome","progress"))));
+        otherWorkDays.put("2026-11-04",List.of(Json.obj("workId","older","title","날짜 지정 업무","outcome","progress")));
+        page.reload();assertFalse((Boolean)page.locator(".work-reconciliation").evaluate("el=>el.open"));
+        assertTrue(page.locator("#today-list").boundingBox().y<page.locator(".work-reconciliation").boundingBox().y);
+        assertTrue(page.locator("#today-list .today-task").first().boundingBox().y<700);
+        page.setViewportSize(390,844);assertTrue(page.locator("#today-list .today-task").first().boundingBox().y<844);assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth<=innerWidth"));
+        page.setViewportSize(1440,1000);page.locator(".review-summary").click();
+        page.locator("[data-work-outcome='local']").selectOption("done");page.waitForCondition(()->workDayUpdates.size()==1);
+        assertEquals("2026-11-06",Json.text(workDayUpdates.getFirst(),"date"));
+        assertTrue((Boolean)page.locator(".work-reconciliation").evaluate("el=>el.open"));
+        page.locator("[data-review-day='2026-11-05']").click();assertEquals("progress",page.locator("[data-work-outcome='local']").inputValue());
+        page.locator("#work-review-date").fill("2026-11-04");page.locator("[data-work-outcome='older']").selectOption("done");page.waitForCondition(()->workDayUpdates.size()==2);
+        assertEquals("2026-11-04",Json.text(workDayUpdates.get(1),"date"));assertEquals("done",page.locator("[data-work-outcome='older']").inputValue());assertTrue(statusUpdates.isEmpty());
+        String output=System.getProperty("work.ui.layout.screenshots","");if(!output.isBlank()){Path dir=Files.createDirectories(Path.of(output));page.locator("[data-review-day='2026-11-06']").click();page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("today-desktop.png")).setFullPage(true));page.setViewportSize(390,844);page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("today-mobile.png")).setFullPage(true));}
+    }
+    @Test void recentIssuesStartCollapsedAndWorklogDayReviewKeepsTypedHours() {
+        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","jira:CT-42","taskId","jira:CT-42","title","어제 업무","outcome","progress"))));
+        state.set("recentWorklogIssues",Json.MAPPER.valueToTree(List.of(Json.obj("jiraKey","WOR-1517","title","정기 회의"))));
+        page.reload();page.locator("[data-view='worklog']").click();assertFalse((Boolean)page.locator(".recent-log-issues").evaluate("el=>el.open"));
+        page.locator("[data-log-day='2026-11-05']").click();page.locator("#add-worklog").click();page.locator(".log-key").fill("WOR-1517");page.locator(".log-duration").fill("2h");
+        page.locator(".work-reconciliation>.review-summary").click();page.locator("[data-work-outcome='jira:CT-42']").selectOption("done");page.waitForCondition(()->workDayUpdates.size()==1);
+        assertEquals("2026-11-05",Json.text(workDayUpdates.getFirst(),"date"));assertEquals("2h",page.locator(".log-duration").inputValue());assertEquals("WOR-1517",page.locator(".log-key").inputValue());
+    }
+    @Test void configuredTypesAreSharedByEditingBulkChangesAndFiltersAndLegacyValuesSurvive() {
+        configuredWorkTypes=List.of("회의","버그 수정","사용자 분류");((ObjectNode)state.path("tasks").get(0)).put("workType","이전 분류");page.reload();
+        page.locator("#today-list [data-edit-task='local']").click();assertEquals("이전 분류",page.locator("#field-workType").inputValue());
+        assertEquals(1,page.locator("#field-workType option[value='']").count());assertTrue(page.locator("#field-workType").textContent().contains("사용자 분류"));page.locator("#close-modal").click();
+        page.locator("[data-view='plan']").click();page.locator("#work-type-filter").selectOption("이전 분류");assertEquals(1,page.locator(".selectable-task").count());
+        page.locator("[data-select-task='local']").check();page.locator("#bulk-group").click();page.locator("#bulk-work-type").selectOption("버그 수정");page.locator("#group-form [type='submit']").click();page.waitForCondition(()->groupUpdates.size()==1);assertEquals("버그 수정",Json.text(groupUpdates.getFirst(),"workType"));
+    }
+
 }

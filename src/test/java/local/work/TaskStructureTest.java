@@ -18,6 +18,20 @@ class TaskStructureTest {
     }
     @AfterEach void close() throws Exception { store.close(); }
     String id(ObjectNode task) { return Json.text(task, "id"); }
+    @Test void configuredTypesApplyToNewAndBulkTasksWhileOldValuesRemainEditable() throws Exception {
+        Config configured = new Config(temporary.resolve("none"), Map.of("WORK_TYPES", "회의, 버그 수정,회의,,사용자 분류"));
+        assertEquals(List.of("회의", "버그 수정", "사용자 분류"), configured.workTypes());
+        String existing = id(service.task(Json.obj("title", "기존 업무", "workType", "기능")));
+        WorkService changed = new WorkService(store, service.time, jira, configured.workTypes());
+        assertEquals("기능", Json.text(changed.task(Json.obj("id", existing, "title", "제목 수정", "workType", "기능")), "workType"));
+        assertThrows(IllegalArgumentException.class, () -> changed.task(Json.obj("title", "새 업무", "workType", "기능")));
+        String meeting = id(changed.task(Json.obj("title", "미팅", "workType", "회의")));
+        changed.groupTasks(Json.obj("taskIds", List.of(existing, meeting), "workType", "버그 수정"));
+        assertEquals("버그 수정", Json.text(store.get("task", existing), "workType"));
+        Config empty = new Config(temporary.resolve("none"), Map.of("WORK_TYPES", ""));
+        assertTrue(empty.workTypes().isEmpty());
+        assertTrue(new Config(temporary.resolve("none"), Map.of()).workTypes().containsAll(List.of("회의", "버그 수정")));
+    }
     @Test void bulkClassificationCanChangeTypeWithoutClearingDifferentGroupsAndRejectsInvalidBatches() {
         String first=id(service.task(Json.obj("title","첫 업무","workGroup","첫 묶음","workType","기능"))),second=id(service.task(Json.obj("title","둘째 업무","workGroup","둘째 묶음","workType","운영")));
         service.groupTasks(Json.obj("taskIds",List.of(first,second),"workType","품질·성능"));

@@ -44,6 +44,7 @@ final class AgentContext {
             context.set("tasks", Json.MAPPER.valueToTree(candidates.stream().limit(24).map(row -> fields(row, TASK_FIELDS)).toList()));
             context.put("matchingTaskCount", candidates.size());
         }
+        if (query.matches("(?s).*(성격|분류).*")) context.set("workTypes", Json.MAPPER.valueToTree(service.workTypes()));
         if (planning) {
             context.set("plan", Json.MAPPER.valueToTree(service.planned(day).stream().map(row -> fields(row, TASK_FIELDS)).toList()));
             if (query.matches("(?s).*(추천|후보|우선순위).*")) {

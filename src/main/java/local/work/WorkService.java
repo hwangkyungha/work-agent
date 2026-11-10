@@ -8,12 +8,15 @@ import java.util.regex.Pattern;
 
 final class WorkService {
     static final Pattern ISSUE = Pattern.compile("[A-Z][A-Z0-9_]*-[0-9]+");
-    private static final Set<String> WORK_TYPES=Set.of("", "기능", "품질·성능", "고객지원", "운영", "조사·설계", "기타");
+    private final List<String> workTypes;
     final Store store;
     final KoreaTime time;
     final JiraClient jira;
 
-    WorkService(Store store, KoreaTime time, JiraClient jira) { this.store = store; this.time = time; this.jira = jira; }
+    WorkService(Store store, KoreaTime time, JiraClient jira) { this(store, time, jira, Config.DEFAULT_WORK_TYPES); }
+    WorkService(Store store, KoreaTime time, JiraClient jira, List<String> workTypes) { this.store = store; this.time = time; this.jira = jira; this.workTypes = List.copyOf(workTypes); }
+    List<String> workTypes() { return workTypes; }
+    private boolean validWorkType(String value) { return value.isBlank() || workTypes.contains(value); }
     private String day(JsonNode value) {
         String date = Json.text(value, "date");
         return date.isBlank() ? time.today().toString() : LocalDate.parse(date).toString();
@@ -32,7 +35,7 @@ final class WorkService {
         if (!id.isBlank()) row.put("id", id);
         if (existing != null && !Json.text(existing, "jiraKey").isBlank() && input.hasNonNull("status") && !status(Json.text(existing, "status")).equals(status(Json.text(input, "status")))) throw new IllegalArgumentException("Jira 업무 상태는 상태 변경 메뉴에서 변경하세요.");
         for (String key : List.of("title", "product", "workType", "due", "status", "important", "urgent", "jiraKey", "hidden", "workGroup", "predecessorIds")) if (input.hasNonNull(key)) row.set(key, input.get(key));
-        if (!WORK_TYPES.contains(Json.text(row, "workType"))) throw new IllegalArgumentException("업무 성격을 확인하세요.");
+        if (!validWorkType(Json.text(row, "workType")) && (existing == null || !Json.text(existing, "workType").equals(Json.text(row, "workType")))) throw new IllegalArgumentException("업무 성격을 확인하세요.");
         Json.required(row, "title");
         row.put("jiraKey", issue(Json.text(row, "jiraKey")));
         row.put("status", status(Json.text(row, "status")));
@@ -128,7 +131,7 @@ final class WorkService {
         if (!input.has("workGroup") && !input.has("workType")) throw new IllegalArgumentException("변경할 업무 묶음이나 성격을 지정하세요.");
         String name = Json.text(input, "workGroup").trim();
         String type=Json.text(input,"workType");
-        if(input.has("workType") && !WORK_TYPES.contains(type))throw new IllegalArgumentException("업무 성격을 확인하세요.");
+        if(input.has("workType") && !validWorkType(type))throw new IllegalArgumentException("업무 성격을 확인하세요.");
         List<ObjectNode> rows = new ArrayList<>();
         for (JsonNode id : ids) {
             ObjectNode row = requiredTask(id.asText()).deepCopy();
@@ -389,7 +392,7 @@ final class WorkService {
                 "tasks", tasks(), "plan", planned(date), "planSaved", store.get("plan", date.toString()) != null, "planVersion", plan.path("version").asInt(), "planSort", plan.path("sort").asText("manual"), "yesterdayCompleted", completed(date.minusDays(1)),
                 "hiddenTasks", allTasks().stream().filter(n -> n.path("hidden").asBoolean()).toList(), "todayGroups", todayGroups(date),
                 "draftDigest", DraftResults.state(this,date),
-                "previousWorkDate", previous.toString(), "previousWork", ledger.reviewRows(previous), "carryover", ledger.carryover(date),
+                "todayWork", ledger.reviewRows(date), "previousWorkDate", previous.toString(), "previousWork", ledger.reviewRows(previous), "carryover", ledger.carryover(date),
                 "worklogCandidates", java.util.stream.IntStream.range(0, 7).boxed().flatMap(i -> ledger.worklogCandidates(monday.plusDays(i)).stream()).toList(),
                 "activities", activities(monday.minusDays(7), monday.plusDays(6)), "meetings", meetings(date),
                 "activityGroups", ledger.worklogEvidence(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> (Json.text(n,"kind").equals("followup") || Json.text(n, "date").equals(date.toString())) && !n.hasNonNull("acceptedTaskId") && !n.path("dismissed").asBoolean()).toList(),

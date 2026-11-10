@@ -16,6 +16,16 @@ class WorkLedgerTest {
         service = new WorkService(store, new KoreaTime(Clock.fixed(Instant.parse("2026-11-09T00:00:00Z"), ZoneOffset.UTC)), new JiraClient(new Config(temporary.resolve("none"), Map.of())));
     }
     @AfterEach void close() throws Exception { store.close(); }
+    @Test void todaysActualWorkFeedsTheSameDaysWorklogAndBecomesPreviousWorkTomorrow() {
+        String id = Json.text(service.task(Json.obj("title", "당일 업무")), "id");
+        service.plan(Json.obj("date", "2026-11-09", "taskIds", List.of(id)));
+        WorkLedger ledger = new WorkLedger(service);
+        assertEquals("unconfirmed", Json.text(service.state(LocalDate.of(2026,11,9)).path("todayWork").get(0), "outcome"));
+        ledger.record(Json.obj("date", "2026-11-09", "workId", id, "outcome", "done"));
+        assertEquals(1, ledger.worklogCandidates(LocalDate.of(2026,11,9)).size());
+        assertEquals("done", Json.text(service.state(LocalDate.of(2026,11,10)).path("previousWork").get(0), "outcome"));
+        assertEquals("todo", Json.text(store.get("task", id), "status"));
+    }
     @Test void aPlanIsNotEvidenceOfPerformedWorkAndFridayWorkSurvivesTheWeekend() {
         ObjectNode task = service.task(Json.obj("title", "오류 재현")); String id = Json.text(task, "id");
         service.plan(Json.obj("date", "2026-11-06", "taskIds", List.of(id)));

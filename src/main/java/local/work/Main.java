@@ -55,7 +55,7 @@ public final class Main {
         }
         GroupwareBooking booking = new GroupwareBooking(config, time);
         Store store = new Store(config.data().resolve("work-agent.db"));
-        WorkService service = new WorkService(store, time, new JiraClient(config));
+        WorkService service = new WorkService(store, time, new JiraClient(config), config.workTypes());
         new ActivityLinks(store).repair();
         new SessionCatalog(store).refresh();
         Reports reports = new Reports(service);
@@ -122,11 +122,12 @@ public final class Main {
                     switch (path) {
                         case "/api/state" -> json(exchange, 200, service.state(date));
                         case "/api/work-days/candidates" -> json(exchange, 200, new WorkLedger(service).activityCandidates(date));
+                        case "/api/work-days" -> json(exchange, 200, new WorkLedger(service).reviewRows(date));
                         case "/api/team" -> json(exchange, 200, service.team());
                         case "/api/reviews" -> json(exchange, 200, reviewMonitor.state());
                         case "/api/tasks/transitions" -> json(exchange, 200, service.transitions(query.getOrDefault("id", "")));
                         case "/api/messages" -> json(exchange, 200, store.list("message").stream().filter(n -> Json.text(n, "conversation").equals("web")).toList());
-                        case "/api/settings" -> json(exchange, 200, Json.obj("agentName", config.agentName(), "agentCallName", config.agentCallName(), "engine", config.get("AGENT_ENGINE", "codex"), "slackConfigured", slack.configured(), "slackConnected", slack.connected(), "slackError", slack.lastError(), "jiraConfigured", service.jira.configured(), "calendarConfigured", calendar.configured(), "briefingTime", config.get("BRIEFING_TIME", "09:00"), "fridayTime", config.get("FRIDAY_REVIEW_TIME", "16:30"), "claudeSessionTime", config.get("CLAUDE_SESSION_TIME", ""), "claudeSession", store.get("scheduled", "claude-session:" + time.today()), "codexSessionTime", config.get("CODEX_SESSION_TIME", ""), "codexSession", store.get("scheduled", "codex-session:" + time.today()), "timezone", "Asia/Seoul"));
+                        case "/api/settings" -> json(exchange, 200, Json.obj("workTypes", config.workTypes(), "agentName", config.agentName(), "agentCallName", config.agentCallName(), "engine", config.get("AGENT_ENGINE", "codex"), "slackConfigured", slack.configured(), "slackConnected", slack.connected(), "slackError", slack.lastError(), "jiraConfigured", service.jira.configured(), "calendarConfigured", calendar.configured(), "briefingTime", config.get("BRIEFING_TIME", "09:00"), "fridayTime", config.get("FRIDAY_REVIEW_TIME", "16:30"), "claudeSessionTime", config.get("CLAUDE_SESSION_TIME", ""), "claudeSession", store.get("scheduled", "claude-session:" + time.today()), "codexSessionTime", config.get("CODEX_SESSION_TIME", ""), "codexSession", store.get("scheduled", "codex-session:" + time.today()), "timezone", "Asia/Seoul"));
                         case "/api/evidence" -> {
                             ObjectNode activity = store.get("activity", query.getOrDefault("id", ""));
                             ObjectNode evidence = activity == null ? null : store.get("evidence", Json.text(activity, "evidenceId"));

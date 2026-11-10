@@ -382,3 +382,42 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 .bulk-work-type{margin-top:24px}.external-review-sources{margin:8px 0 20px}.external-review-sources .field{margin-top:12px}
 .worklog-task-title{font-weight:600;overflow-wrap:anywhere}.worklog-input-row>div{min-width:0}.worklog-input-row>.worklog-time{align-self:end}.worklog-input-row>.icon-button{align-self:end;margin-top:0;margin-bottom:3px}
 #review-repositories small{overflow-wrap:anywhere}.task-filter-fields{flex-wrap:wrap}
+
+/* 오늘의 목록을 먼저 읽고, 필요한 날짜의 수행 기록만 펼친다. */
+.today-column { display:grid; gap:24px; min-width:0; }
+.today-sheet { border-top:3px solid var(--blue); }
+.today-candidates { margin-top:0; border-top:0; padding-top:16px; }
+.work-reconciliation { margin:0; }
+.review-summary { display:flex; align-items:center; gap:12px; padding:20px 24px; cursor:pointer; list-style:none; }
+.review-summary::-webkit-details-marker { display:none; }
+.review-summary::before { content:'›'; color:var(--muted); font-size:20px; line-height:1; transition:transform .15s ease; }
+.work-reconciliation[open]>.review-summary::before { transform:rotate(90deg); }
+.work-reconciliation[open]>.review-summary { border-bottom:1px solid var(--line); }
+.review-summary>span:first-of-type { flex:1; min-width:0; }
+.review-summary strong { display:block; font-size:15px; font-weight:600; }
+.review-summary small { display:block; margin-top:4px; color:var(--muted); font-size:12px; }
+.review-summary-action { color:var(--blue); font-size:12px; white-space:nowrap; }
+.review-summary:hover { background:#fafbfa; }
+.review-summary:focus-visible { outline:2px solid var(--blue); outline-offset:-3px; }
+.review-date-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
+.review-date-toolbar label { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
+.review-date-toolbar input { min-width:0; max-width:100%; font:inherit; color:var(--ink); padding:8px; border:1px solid var(--line); border-radius:6px; background:#fff; }
+.review-intro { display:flex; align-items:center; gap:16px; padding-bottom:8px; }
+.review-intro .hint { flex:1; margin:0; }
+.review-intro .button { flex-shrink:0; }
+.work-day-row { gap:16px; padding:16px 0; align-items:flex-start; }
+.work-day-row h3 { margin-bottom:4px; line-height:1.6; overflow-wrap:anywhere; }
+.work-day-row small { display:block; font-size:12px; line-height:1.7; }
+.work-day-actions { padding-top:2px; }
+.work-day-actions select { width:116px; min-height:36px; padding:8px; }
+.work-evidence { margin-top:8px; }
+.work-evidence>summary { color:var(--muted); font-size:12px; cursor:pointer; }
+.work-evidence .activity-group { margin-top:12px; }
+.review-empty { padding:16px 0 0; }
+@media(max-width:800px) {
+  .today-column { gap:20px; }
+  .review-summary { padding:16px; }
+  .review-intro { align-items:flex-start; flex-direction:column; gap:12px; }
+  .review-date-toolbar { align-items:flex-start; }
+  .work-day-row { gap:12px; }
+}
