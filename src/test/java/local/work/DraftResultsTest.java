@@ -37,14 +37,14 @@ class DraftResultsTest {
     @AfterEach void close()throws Exception{store.close();}
     ObjectNode pr(int id,String created){return Json.obj("id",id,"title","CT-"+id+" 기능 구현","description","다음 단계에서 배포 문서 작성이 필요합니다.","state","OPEN","draft",true,"created_on",created,"author",Json.obj("uuid","owner"),"source",Json.obj("commit",Json.obj("hash","head"+id),"branch",Json.obj("name","feature/CT-"+id)));}
     DraftResults results(){return new DraftResults(service,api,prompt->{calls.incrementAndGet();return Json.obj("reply","PR 설명에 따르면 구현을 마쳤습니다.","actions",List.of(Json.obj("type","task","payload",Json.write(Json.obj("title","배포 문서 작성","reason","PR 설명에 다음 단계로 적혀 있습니다.")))));},config);}
-    @Test void collectsOnlyOwnOpenDraftsInTheKoreanOvernightWindowAndCachesProposals()throws Exception {
+    @Test void collectsAllOwnOpenDraftsIncludingOldWorkAndCachesProposals()throws Exception {
         api.prs.addAll(List.of(pr(1,"2026-11-08T15:00:00Z"),pr(2,"2026-11-09T16:00:00Z"),pr(3,"2026-11-09T22:30:00Z"),pr(4,"2026-11-08T14:59:59Z"),pr(5,"2026-11-09T22:30:00.001Z"),pr(6,"2026-11-09T12:00:00Z").put("draft",false),pr(7,"2026-11-09T12:00:00Z").put("state","MERGED")));
         ObjectNode other=pr(8,"2026-11-09T12:00:00Z");other.set("author",Json.obj("uuid","other"));api.prs.add(other);
         DraftResults results=results();LocalDate date=service.time.today();ObjectNode digest=results.generate(date,false);
-        assertEquals(3,digest.path("prs").size());assertEquals(3,calls.get());assertTrue(service.planned(date).isEmpty());
-        assertEquals("2026-11-08T15:00:00Z",Json.text(digest,"from"));
-        results().generate(date,false);results.generate(date,true);assertEquals(3,calls.get());
-        ((ObjectNode)api.prs.get(0).path("source").path("commit")).put("hash","changed-head");results.generate(date,true);assertEquals(4,calls.get());
+        assertEquals(4,digest.path("prs").size());assertEquals(4,calls.get());assertTrue(service.planned(date).isEmpty());
+        assertTrue(digest.path("allOpenDrafts").asBoolean());
+        results().generate(date,false);results.generate(date,true);assertEquals(4,calls.get());
+        ((ObjectNode)api.prs.get(0).path("source").path("commit")).put("hash","changed-head");results.generate(date,true);assertEquals(5,calls.get());
     }
     @Test void acceptedReviewTaskIsLocalAndDoesNotReopenItsJiraIssue()throws Exception {
         api.prs.add(pr(1,"2026-11-09T20:00:00Z"));
@@ -92,5 +92,38 @@ class DraftResultsTest {
             ObjectNode row=(ObjectNode)result.get(5,TimeUnit.SECONDS).path("prs").get(0);
             assertTrue(row.path("reviewed").asBoolean());assertEquals("새 요약",Json.text(row,"summary"));
         }
+    }
+    @Test void fridayDraftRemainsOnMondayAndReviewedHeadOnlyReturnsWhenChanged() throws Exception {
+        service=new WorkService(store,new KoreaTime(Clock.fixed(Instant.parse("2026-11-06T00:00:00Z"),ZoneOffset.UTC)),new JiraClient(config));
+        api.prs.add(pr(1,"2026-11-05T23:00:00Z"));
+        ObjectNode friday=results().generate(service.time.today(),true);String id=Json.text(friday.path("prs").get(0),"id");
+        service=new WorkService(store,new KoreaTime(Clock.fixed(Instant.parse("2026-11-08T23:00:00Z"),ZoneOffset.UTC)),new JiraClient(config));
+        assertEquals(id,Json.text(DraftResults.state(service,service.time.today()).path("prs").get(0),"id"));
+        assertTrue(results().report(service.time.today()).contains("CT-1 기능 구현"));assertEquals(1,calls.get());
+        service.reviewDraftResult(Json.obj("id",id));assertFalse(results().report(service.time.today()).contains("CT-1 기능 구현"));
+        ((ObjectNode)api.prs.getFirst().path("source").path("commit")).put("hash","new-head");
+        ObjectNode updated=results().generate(service.time.today(),true);assertEquals(1,updated.path("prs").size());assertFalse(updated.path("prs").get(0).path("reviewed").asBoolean());assertEquals(2,calls.get());
+        api.prs.clear();assertTrue(results().generate(service.time.today(),true).path("prs").isEmpty());
+    }
+    @Test void temporaryQueryFailureKeepsPreviouslyKnownUnreviewedDrafts() throws Exception {
+        api.prs.add(pr(1,"2026-11-05T23:00:00Z"));results().generate(service.time.today(),true);api.fail=true;
+        ObjectNode failed=results().generate(service.time.today(),true);assertEquals(1,failed.path("prs").size());assertFalse(failed.path("errors").isEmpty());
+    }
+    @Test void reviewedResultsKeepFollowupsAndNewHeadsDoNotDuplicateAcceptedFollowupWork() throws Exception {
+        api.prs.add(pr(1,"2026-11-05T23:00:00Z"));ObjectNode first=results().generate(service.time.today(),true);
+        String reviewId=Json.text(first.path("prs").get(0),"reviewSuggestionId"),resultId=Json.text(first.path("prs").get(0),"id"),followupId=Json.text(first.path("prs").get(0).path("suggestions").get(0),"id");
+        String taskId=Json.text(service.acceptFollowup(Json.obj("id",reviewId)),"id");
+        service.reviewDraftResult(Json.obj("id",resultId));assertEquals("done",Json.text(store.get("task",taskId),"status"));
+        assertTrue(results().report(service.time.today()).contains("배포 문서 작성"));
+        String followupTask=Json.text(service.acceptFollowup(Json.obj("id",followupId)),"id");
+        ((ObjectNode)api.prs.getFirst().path("source").path("commit")).put("hash","new-head");
+        ObjectNode next=results().generate(service.time.today(),true);assertEquals(followupId,Json.text(next.path("prs").get(0).path("suggestions").get(0),"id"));
+        assertEquals(followupTask,Json.text(next.path("prs").get(0).path("suggestions").get(0),"acceptedTaskId"));
+    }
+    @Test void excludedFollowupsStayExcludedWhenThePrHeadChanges() throws Exception {
+        api.prs.add(pr(1,"2026-11-05T23:00:00Z"));ObjectNode first=results().generate(service.time.today(),true);
+        service.dismissFollowup(Json.obj("id",Json.text(first.path("prs").get(0).path("suggestions").get(0),"id")));
+        ((ObjectNode)api.prs.getFirst().path("source").path("commit")).put("hash","new-head");
+        assertTrue(results().generate(service.time.today(),true).path("prs").get(0).path("suggestions").isEmpty());
     }
 }

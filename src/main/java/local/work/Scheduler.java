@@ -43,10 +43,12 @@ final class Scheduler implements AutoCloseable {
         startSessionIfDue(now, "claude", "Claude");
         startSessionIfDue(now, "codex", "Codex");
         if(slack.configured() && draftBriefing!=null) {
-            String key="draft-results:"+now.toLocalDate(),hour=config.get("DRAFT_REVIEW_TIME","07:30");
+            String key="draft-results:"+now.toLocalDate(),hour=config.get("DRAFT_REVIEW_TIME","08:00");
             if(due(key,hour,now)) {
+                sync("cli");
+                if(service.jira.configured())sync("jira");
                 String message=draftBriefing.prepare(now.toLocalDate());
-                if(message!=null) {notifier.send(message);service.store.put("scheduled",Json.obj("id",key,"at",now.toInstant().toString()));}
+                if(message!=null) {notifier.send(reports.preparation(now.toLocalDate())+message);service.store.put("scheduled",Json.obj("id",key,"at",now.toInstant().toString()));}
             }
         }
         boolean weekday = now.getDayOfWeek().getValue() <= 5;
