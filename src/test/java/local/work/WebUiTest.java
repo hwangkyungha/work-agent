@@ -26,6 +26,7 @@ class WebUiTest {
     List<JsonNode> favoriteUpdates = new ArrayList<>(); int worklogSyncCalls; boolean worklogSyncFails;
     List<ObjectNode> reviewJobs = new ArrayList<>(); List<JsonNode> reviewRequests = new ArrayList<>(); int reviewRefreshes, pendingSaves;
     List<String> acceptedFollowups=new ArrayList<>();
+    List<JsonNode> workDayUpdates=new ArrayList<>();
     static final String ORIGIN = "http://127.0.0.1:18765";
     ObjectNode task(String id, String key, String title) { return Json.obj("id", id, "jiraKey", key, "title", title, "status", "todo", "important", false, "urgent", false, "product", "개발", "due", "", "hidden", false, "createdAt", "2026-11-06T00:00:00Z"); }
     @BeforeEach void open() {
@@ -80,8 +81,11 @@ class WebUiTest {
                     for(JsonNode id:payload.path("taskIds")) for(JsonNode task:state.path("tasks")) if(id.asText().equals(Json.text(task,"id")) && plan.findValuesAsText("id").stream().noneMatch(value->value.equals(id.asText()))) plan.add(task);
                     content=Json.write(Json.obj("added",plan.size()-before));
                 }
+                case "/api/work-days" -> { JsonNode body=Json.read(route.request().postData());workDayUpdates.add(body);for(JsonNode row:state.path("previousWork"))if(Json.text(row,"workId").equals(Json.text(body,"workId")))((ObjectNode)row).put("outcome",Json.text(body,"outcome")); }
+                case "/api/followups/dismiss" -> { String id=Json.required(Json.read(route.request().postData()),"id");ArrayNode remaining=Json.MAPPER.createArrayNode();for(JsonNode row:state.path("followups"))if(!id.equals(Json.text(row,"id")))remaining.add(row);state.set("followups",remaining); }
                 case "/api/followups/accept" -> {
                     String id=Json.required(Json.read(route.request().postData()),"id");acceptedFollowups.add(id);
+                    ObjectNode accepted=task("accepted","","Draft PR 검토");((ArrayNode)state.path("tasks")).add(accepted);((ArrayNode)state.path("plan")).add(accepted);
                     for(JsonNode row:state.path("draftDigest").path("prs")) {
                         if(id.equals(Json.text(row.path("reviewSuggestion"),"id")))((ObjectNode)row.path("reviewSuggestion")).put("acceptedTaskId","accepted");
                         for(JsonNode suggestion:row.path("suggestions"))if(id.equals(Json.text(suggestion,"id")))((ObjectNode)suggestion).put("acceptedTaskId","accepted");
@@ -97,7 +101,7 @@ class WebUiTest {
                     ArrayNode items = Json.MAPPER.createArrayNode(); long seconds = 0;
                     for (JsonNode item : payload.path("items")) {
                         String duration = Json.text(item, "duration"); int value = duration.isBlank() ? 0 : WorkDuration.seconds(duration); seconds += value;
-                        items.add(Json.obj("jiraKey", Json.text(item, "jiraKey"), "seconds", value, "comment", Json.text(item, "comment"), "marker", "saved-" + Json.text(item, "jiraKey"), "state", "draft"));
+                        items.add(Json.obj("jiraKey", Json.text(item, "jiraKey"), "seconds", value, "comment", Json.text(item, "comment"), "workId", Json.text(item,"workId"), "taskId", Json.text(item,"taskId"), "title", Json.text(item,"title"), "marker", "saved-" + Json.text(item, "jiraKey"), "state", "draft"));
                     }
                     ArrayNode days = Json.MAPPER.createArrayNode(); for (JsonNode day : state.path("worklogs")) if (!Json.text(day, "date").equals(Json.text(payload, "date"))) days.add(day);
                     ObjectNode saved = Json.obj("date", Json.text(payload, "date"), "items", items, "totalSeconds", seconds); days.add(saved); state.set("worklogs", days); content = Json.write(saved);
@@ -384,6 +388,31 @@ class WebUiTest {
         page.waitForCondition(()->acceptedFollowups.size()==1&&page.locator("[data-accept-followup='review-draft']").isDisabled());
         assertEquals(List.of("review-draft"),acceptedFollowups);
         page.locator("[data-draft-reviewed='draft']").click();
-        page.waitForCondition(()->page.locator("[data-draft-reviewed='draft']").textContent().equals("검토 대기로"));
+        page.waitForCondition(()->page.locator("[data-draft-reviewed='draft']").textContent().equals("다시 검토 대기로"));
+    }
+    @Test void yesterdayPlanAndActualWorkAreDistinguishedWithoutChangingJiraStatus() throws Exception {
+        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","local","taskId","local","title","계획만 한 업무","planned",true,"inInitialPlan",true,"inFinalPlan",true,"observed",false,"outcome","unconfirmed"),Json.obj("workId","session:codex:extra","title","갑자기 요청된 지원","planned",false,"observed",true,"outcome","unconfirmed"))));
+        page.reload();page.locator(".work-reconciliation").waitFor();
+        assertTrue(page.locator(".work-reconciliation").textContent().contains("활동 근거 미확인"));assertTrue(page.locator(".work-reconciliation").textContent().contains("계획 밖 활동"));
+        page.locator(".work-reconciliation [data-open='activity']").click();assertEquals("2026-11-05",page.locator("#record-form [name='date']").inputValue());page.locator("#close-modal").click();
+        page.locator("[data-work-outcome='local']").selectOption("not-started");page.waitForCondition(()->workDayUpdates.size()==1);
+        assertEquals("2026-11-05",Json.text(workDayUpdates.getFirst(),"date"));assertTrue(statusUpdates.isEmpty());
+        String screenshots=System.getProperty("work.ui.workflow.screenshots","");if(!screenshots.isBlank()){Path output=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve("workflow-desktop.png")).setFullPage(true));page.setViewportSize(390,844);assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth <= innerWidth"));page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve("workflow-mobile.png")).setFullPage(true));}
+    }
+    @Test void unlinkedActualWorkCanBeSavedAndNewActivityCanBeAddedWithoutLosingEnteredTime() {
+        state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","workId","activity:first","title","Jira 발급 전 설계 논의","jiraKey",""))));
+        page.reload();page.locator("[data-view='worklog']").click();assertEquals("",page.locator(".log-key").inputValue());
+        assertTrue(page.locator(".worklog-task-title").textContent().contains("설계 논의"));page.locator(".log-duration").fill("2h");
+        page.locator("#worklog-form [type='submit']").click();page.waitForCondition(()->!savedWorklogs.isEmpty());
+        assertEquals("activity:first",Json.text(savedWorklogs.getFirst().path("items").get(0),"workId"));
+        ((ArrayNode)state.path("worklogCandidates")).add(Json.obj("date","2026-11-06","workId","activity:second","title","추가 고객 지원","jiraKey",""));
+        page.reload();page.locator("[data-view='worklog']").click();page.locator("[data-add-worklog-work='activity:second']").click();
+        assertEquals(2,page.locator("#worklog-rows .worklog-input-row").count());assertEquals("2h",page.locator(".log-duration").first().inputValue());
+        assertTrue(page.locator("#post-worklog").isDisabled());
+    }
+    @Test void followupsRemainAfterPrReviewAndCanBeExcludedFromTheCombinedSection() {
+        state.set("followups",Json.MAPPER.valueToTree(List.of(Json.obj("id","remaining","kind","followup","sourceDraftResultId","reviewed-pr","sourcePrUrl","https://bitbucket.org/team/repo/pull-requests/1","title","검토 뒤 남은 배포 문서","reason","PR에서 다음 작업으로 확인했습니다."))));
+        page.reload();page.locator("[data-accept-followup='remaining']").waitFor();assertTrue(page.locator(".side-stack").textContent().contains("남은 후속 작업"));
+        page.locator("[data-dismiss-followup='remaining']").click();page.waitForCondition(()->page.locator("[data-accept-followup='remaining']").count()==0);
     }
 }
