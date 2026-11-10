@@ -28,9 +28,18 @@ final class WorkService {
         return key;
     }
     synchronized ObjectNode task(JsonNode input) {
-        String id = Json.text(input, "id");
+        TaskIdentity identity = new TaskIdentity(store);
+        String id = identity.resolve(Json.text(input, "id"));
         ObjectNode existing = id.isBlank() ? null : store.get("task", id);
         if (!id.isBlank() && existing == null && !id.startsWith("request:")) throw new IllegalArgumentException("수정할 업무를 찾지 못했습니다.");
+        String requestedKey = issue(Json.text(input, "jiraKey"));
+        if (existing == null && !requestedKey.isBlank()) {
+            ObjectNode linked = identity.forKey(requestedKey);
+            if (linked != null) {
+                if (input.path("today").asBoolean()) planItem(Json.obj("date",day(input),"id",Json.text(linked,"id"),"included",true));
+                return linked;
+            }
+        }
         ObjectNode row = existing == null ? Json.obj("status", "todo", "important", false, "urgent", false, "hidden", false, "product", "미분류", "jiraKey", "", "due", "", "createdAt", time.instant().toString()) : existing.deepCopy();
         if (!id.isBlank()) row.put("id", id);
         if (existing != null && !Json.text(existing, "jiraKey").isBlank() && input.hasNonNull("status") && !status(Json.text(existing, "status")).equals(status(Json.text(input, "status")))) throw new IllegalArgumentException("Jira 업무 상태는 상태 변경 메뉴에서 변경하세요.");
@@ -53,13 +62,18 @@ final class WorkService {
             if (existing == null && !input.hasNonNull("urgent")) row.put("urgent", !date.isAfter(time.today().plusDays(1)));
         }
         if (Json.text(row, "id").isBlank()) row.put("id", UUID.randomUUID().toString());
-        TaskStructure.validate(row, store.list("task"));
         stamp(row);
         ObjectNode saved = saveTask(row);
         if (input.path("today").asBoolean()) planItem(Json.obj("date", day(input), "id", Json.text(saved, "id"), "included", true));
         return saved;
     }
     synchronized ObjectNode saveTask(ObjectNode row) {
+        ObjectNode[] result = new ObjectNode[1];
+        store.transaction(() -> result[0] = saveUniqueTask(new TaskIdentity(store).merge(row)));
+        return result[0];
+    }
+    private ObjectNode saveUniqueTask(ObjectNode row) {
+        TaskStructure.validate(row,store.list("task"));
         ObjectNode old = store.get("task", Json.text(row, "id"));
         String next = status(Json.text(row, "status"));
         if (old != null && !status(Json.text(old, "status")).equals(next)) {
@@ -108,7 +122,7 @@ final class WorkService {
         return jira.updateTask(this, task, current);
     }
     private ObjectNode requiredTask(String id) {
-        ObjectNode task = store.get("task", id);
+        ObjectNode task = store.get("task", new TaskIdentity(store).resolve(id));
         if (task == null) throw new IllegalArgumentException("업무를 찾지 못했습니다.");
         return task;
     }
@@ -179,7 +193,7 @@ final class WorkService {
                 "occurredAt", occurred.isBlank() ? LocalDate.parse(date).atTime(time.now().toLocalTime()).atZone(KoreaTime.ZONE).toInstant().toString() : KoreaTime.parse(occurred).toString());
         if (input.hasNonNull("id")) row.set("id", input.get("id"));
         String taskId = Json.text(input, "taskId");
-        if (!taskId.isBlank()) { ObjectNode task = requiredTask(taskId); row.put("taskId", taskId).put("jiraKey", Json.text(task, "jiraKey")).put("userLinked", true); }
+        if (!taskId.isBlank()) { ObjectNode task = requiredTask(taskId); row.put("taskId", Json.text(task,"id")).put("jiraKey", Json.text(task, "jiraKey")).put("userLinked", true); }
         stamp(row);
         return store.put("activity", row);
     }
@@ -197,8 +211,15 @@ final class WorkService {
     }
     synchronized ObjectNode plan(JsonNode input) {
         String date = day(input);
-        JsonNode ids = input.path("taskIds");
-        if (!ids.isArray()) throw new IllegalArgumentException("오늘 할 업무 목록을 입력하세요.");
+        JsonNode suppliedIds = input.path("taskIds");
+        if (!suppliedIds.isArray()) throw new IllegalArgumentException("오늘 할 업무 목록을 입력하세요.");
+        Set<String> resolvedIds = new LinkedHashSet<>(); TaskIdentity identity = new TaskIdentity(store);
+        Set<String> supplied = new HashSet<>();
+        suppliedIds.forEach(value -> {
+            if (!supplied.add(value.asText())) throw new IllegalArgumentException("계획의 업무 번호를 확인하세요.");
+            resolvedIds.add(identity.resolve(value.asText()));
+        });
+        JsonNode ids = Json.MAPPER.valueToTree(resolvedIds);
         Set<String> seen = new HashSet<>();
         for (JsonNode id : ids) {
             if (store.get("task", id.asText()) == null || !seen.add(id.asText())) throw new IllegalArgumentException("계획의 업무 번호를 확인하세요.");
@@ -242,7 +263,7 @@ final class WorkService {
         for(JsonNode value:input.path("taskIds")) {
             ObjectNode task=requiredTask(value.asText());
             if(task.path("hidden").asBoolean() || status(Json.text(task,"status")).equals("done")) throw new IllegalArgumentException("숨기거나 완료한 업무는 오늘 할 일에 추가할 수 없습니다.");
-            selected.add(value.asText());
+            selected.add(Json.text(task,"id"));
         }
         ObjectNode current=currentPlan(date);
         Set<String> ids=new LinkedHashSet<>(); current.path("taskIds").forEach(id->ids.add(id.asText()));
@@ -340,7 +361,7 @@ final class WorkService {
     }
     synchronized ObjectNode linkWork(JsonNode input) {
         LocalDate date = LocalDate.parse(Json.required(input, "date"));
-        ObjectNode work = new WorkLedger(this).day(date).stream().filter(row -> Json.required(input, "workId").equals(Json.text(row, "workId"))).findFirst().orElseThrow(() -> new IllegalArgumentException("연결할 활동을 찾지 못했습니다."));
+        ObjectNode work = new WorkLedger(this).day(date).stream().filter(row -> new TaskIdentity(store).resolve(Json.required(input, "workId")).equals(Json.text(row, "workId"))).findFirst().orElseThrow(() -> new IllegalArgumentException("연결할 활동을 찾지 못했습니다."));
         ObjectNode task = input.path("create").asBoolean() ? task(Json.obj("title", Json.required(work, "title"), "jiraKey", Json.text(input,"jiraKey"))) : requiredTask(Json.required(input, "taskId"));
         String taskId = Json.text(task, "id");
         store.put("workLink", Json.obj("id", Json.text(work,"workId"), "taskId", taskId));
@@ -392,7 +413,7 @@ final class WorkService {
                 "tasks", tasks(), "plan", planned(date), "planSaved", store.get("plan", date.toString()) != null, "planVersion", plan.path("version").asInt(), "planSort", plan.path("sort").asText("manual"), "yesterdayCompleted", completed(date.minusDays(1)),
                 "hiddenTasks", allTasks().stream().filter(n -> n.path("hidden").asBoolean()).toList(), "todayGroups", todayGroups(date),
                 "draftDigest", DraftResults.state(this,date),
-                "todayWork", ledger.reviewRows(date), "previousWorkDate", previous.toString(), "previousWork", ledger.reviewRows(previous), "carryover", ledger.carryover(date),
+                "taskAliases", store.list("taskAlias"), "taskMergeConflicts", store.list("taskMergeConflict"), "todayWork", ledger.reviewRows(date), "previousWorkDate", previous.toString(), "previousWork", ledger.reviewRows(previous), "carryover", ledger.carryover(date),
                 "worklogCandidates", java.util.stream.IntStream.range(0, 7).boxed().flatMap(i -> ledger.worklogCandidates(monday.plusDays(i)).stream()).toList(),
                 "activities", activities(monday.minusDays(7), monday.plusDays(6)), "meetings", meetings(date),
                 "activityGroups", ledger.worklogEvidence(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> (Json.text(n,"kind").equals("followup") || Json.text(n, "date").equals(date.toString())) && !n.hasNonNull("acceptedTaskId") && !n.path("dismissed").asBoolean()).toList(),
@@ -448,14 +469,14 @@ final class WorkService {
         long total = 0;
         for (JsonNode entry : entries) {
             String key = issue(Json.text(entry, "jiraKey"));
-            String workId = Json.text(entry, "workId");
+            String workId = new TaskIdentity(store).resolve(Json.text(entry, "workId"));
             String title = Json.text(entry, "title");
             if (key.isBlank() && (workId.isBlank() || title.isBlank())) throw new IllegalArgumentException("Jira가 연결되지 않은 기록에는 업무와 제목이 필요합니다.");
             String duration = Json.text(entry, "duration");
             int seconds = duration.isBlank() ? 0 : WorkDuration.seconds(duration);
             String marker = Json.text(entry, "marker");
             JsonNode prior = previous.stream().filter(n -> (!marker.isBlank() && marker.equals(Json.text(n, "marker"))) || (marker.isBlank() && (!key.isBlank() ? key.equals(Json.text(n, "jiraKey")) : workId.equals(Json.text(n, "workId"))))).findFirst().orElse(null);
-            if ((prior == null || !Set.of("posted", "posting", "unknown").contains(Json.text(prior, "state"))) && !keys.add(key.isBlank() ? "work:" + workId : key)) throw new IllegalArgumentException("작성 중인 같은 업무는 한 번만 입력하세요.");
+            if ((prior == null || !Set.of("posted", "posting", "unknown").contains(Json.text(prior, "state"))) && !keys.add(key.isBlank() ? "work:" + workId : key) && !(prior != null && !marker.isBlank())) throw new IllegalArgumentException("작성 중인 같은 업무는 한 번만 입력하세요.");
             String comment = entry.path("comment").asText(prior == null ? "업무 기록" : Json.text(prior, "comment"));
             ObjectNode row;
             if (prior != null && Set.of("posted", "posting", "unknown").contains(Json.text(prior, "state"))) {
@@ -463,7 +484,7 @@ final class WorkService {
                 row = ((ObjectNode) prior).deepCopy();
             } else {
                 row = Json.obj("jiraKey", key, "seconds", seconds, "comment", comment, "marker", prior == null ? (marker.isBlank() ? "work-agent:" + UUID.randomUUID() : marker) : Json.text(prior, "marker"), "state", "draft", "jiraId", "");
-                row.put("workId", workId).put("title", title).put("taskId", Json.text(entry, "taskId"));
+                row.put("workId", workId).put("title", title).put("taskId", new TaskIdentity(store).resolve(Json.text(entry, "taskId")));
             }
             row.remove("percent");
             if (!retained.add(Json.text(row, "marker"))) throw new IllegalArgumentException("같은 워크로그 기록을 두 번 저장할 수 없습니다.");

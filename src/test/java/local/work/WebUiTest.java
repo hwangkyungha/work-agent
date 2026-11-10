@@ -579,4 +579,15 @@ class WebUiTest {
         page.locator("#reset-past-work").click();assertEquals("",page.locator("#past-work-task").inputValue());assertEquals("직접 입력 또는 선택한 작업 기록",page.locator("#past-work-task-search").inputValue());
     }
 
+    @Test void mergedTaskAliasesKeepBrowserDraftHoursAndShowConflictsForReview() {
+        state.set("taskAliases",Json.MAPPER.valueToTree(List.of(Json.obj("id","jira:CT-42","taskId","local"))));
+        state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","workId","local","taskId","local","title","병합한 업무","jiraKey","CT-42"))));
+        page.evaluate("value=>localStorage.setItem('work-agent.worklog-editor:2026-11-06',JSON.stringify(value))",List.of(Map.of("workId","jira:CT-42","taskId","jira:CT-42","title","기존 초안","jiraKey","CT-42","duration","2h 30m","marker","original-marker")));
+        state.set("taskMergeConflicts",Json.MAPPER.valueToTree(List.of(Json.obj("jiraKey","CT-77","message","CT-77의 업무 묶음 설정이 다릅니다. 확인 후 연결하세요."))));
+        page.reload();page.locator("[data-view='worklog']").click();assertEquals("2h 30m",page.locator(".log-duration").inputValue());assertEquals("local",page.locator(".worklog-input-row[data-work-id]").getAttribute("data-work-id"));
+        assertEquals(0,page.locator("[data-add-worklog-work='local']").count());page.locator("#worklog-form [type='submit']").click();page.waitForCondition(()->savedWorklogs.size()==1);
+        assertEquals("local",Json.text(savedWorklogs.getFirst().path("items").get(0),"taskId"));assertEquals("original-marker",Json.text(savedWorklogs.getFirst().path("items").get(0),"marker"));
+        page.locator("[data-view='plan']").click();assertTrue(page.getByRole(AriaRole.ALERT).textContent().contains("CT-77"));
+    }
+
 }

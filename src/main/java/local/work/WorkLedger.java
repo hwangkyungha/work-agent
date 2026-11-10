@@ -143,7 +143,8 @@ final class WorkLedger {
         synchronized(service) {
             LocalDate date=LocalDate.parse(Json.required(input,"date"));
             String outcome=input.path("outcome").asText("progress");validateOutcome(outcome);
-            String workId=Json.text(input,"workId"),taskId=Json.text(input,"taskId");
+            TaskIdentity identity=new TaskIdentity(service.store);
+            String workId=identity.resolve(Json.text(input,"workId")),taskId=identity.resolve(Json.text(input,"taskId"));
             ObjectNode task=taskId.isBlank()?null:service.store.get("task",taskId);
             if(!taskId.isBlank() && task==null)throw new IllegalArgumentException("수행한 업무를 찾지 못했습니다.");
             ObjectNode existing=day(date).stream().filter(row->(!workId.isBlank() && workId.equals(Json.text(row,"workId"))) || workId.isBlank() && !taskId.isBlank() && taskId.equals(Json.text(row,"taskId"))).findFirst().orElse(null);
@@ -170,7 +171,7 @@ final class WorkLedger {
     }
     private ObjectNode recordLocked(JsonNode input) {
         LocalDate date = LocalDate.parse(Json.required(input, "date"));
-        String workId = Json.required(input, "workId"), outcome = Json.required(input, "outcome");
+        String workId = new TaskIdentity(service.store).resolve(Json.required(input, "workId")), outcome = Json.required(input, "outcome");
         validateOutcome(outcome);
         ObjectNode current = day(date).stream().filter(row -> workId.equals(Json.text(row, "workId"))).findFirst().orElseThrow(() -> new IllegalArgumentException("수행 내용을 찾지 못했습니다."));
         ObjectNode row = Json.obj("id", date + ":" + workId, "date", date.toString(), "workId", workId, "taskId", Json.text(current, "taskId"), "title", Json.text(current, "title"), "jiraKey", Json.text(current, "jiraKey"),

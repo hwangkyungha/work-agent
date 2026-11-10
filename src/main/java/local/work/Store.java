@@ -8,9 +8,11 @@ import java.util.*;
 /** A single local owner, with durable records and an external-event inbox. */
 final class Store implements AutoCloseable {
     private final Connection connection;
+    private final Path file;
     private long revision;
     synchronized long revision() { return revision; }
     Store(Path file) throws Exception {
+        this.file = file.toAbsolutePath();
         Files.createDirectories(file.toAbsolutePath().getParent());
         connection = DriverManager.getConnection("jdbc:sqlite:" + file.toAbsolutePath());
         try (Statement s = connection.createStatement()) {
@@ -58,11 +60,27 @@ final class Store implements AutoCloseable {
     }
     synchronized void transaction(Runnable work) {
         try {
+            if (!connection.getAutoCommit()) { work.run(); return; }
             connection.setAutoCommit(false);
             try { work.run(); connection.commit(); }
             catch (RuntimeException e) { connection.rollback(); throw e; }
             finally { connection.setAutoCommit(true); }
         } catch (SQLException e) { throw new IllegalStateException("저장 중 문제가 발생했습니다.", e); }
+    }
+    synchronized void enforceUniqueTaskKeys() {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS task_jira_key ON records(json_extract(payload,'$.jiraKey')) WHERE kind='task' AND coalesce(json_extract(payload,'$.jiraKey'),'')<>''");
+        } catch (SQLException e) { throw new IllegalStateException("같은 Jira 이슈의 업무를 중복 저장할 수 없습니다.", e); }
+    }
+    synchronized Path backupTaskMerge() {
+        Path backup = file.getParent().resolve("backups").resolve("before-task-merge-" + UUID.randomUUID() + ".db");
+        try {
+            Files.createDirectories(backup.getParent());
+            try (PreparedStatement statement = connection.prepareStatement("VACUUM INTO ?")) {
+                statement.setString(1,backup.toString()); statement.execute();
+            }
+            return backup;
+        } catch (Exception e) { throw new IllegalStateException("중복 업무 정리 전 백업을 만들지 못했습니다. 기존 기록은 변경하지 않았습니다.",e); }
     }
     synchronized boolean enqueue(String id, ObjectNode payload) {
         try (PreparedStatement p = connection.prepareStatement("INSERT OR IGNORE INTO inbox VALUES(?,?,'pending')")) {

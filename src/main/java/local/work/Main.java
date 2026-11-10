@@ -56,6 +56,7 @@ public final class Main {
         GroupwareBooking booking = new GroupwareBooking(config, time);
         Store store = new Store(config.data().resolve("work-agent.db"));
         WorkService service = new WorkService(store, time, new JiraClient(config), config.workTypes());
+        new TaskIdentity(store).repair();
         new ActivityLinks(store).repair();
         new SessionCatalog(store).refresh();
         Reports reports = new Reports(service);

@@ -107,8 +107,11 @@ class JiraClient {
     }
     ObjectNode updateTask(WorkService service, ObjectNode task, ObjectNode issue) {
         synchronized (service) {
-        ObjectNode latest = service.store.get("task", Json.text(task, "id"));
-        if (latest != null) task = latest;
+        ObjectNode latest = service.store.get("task", new TaskIdentity(service.store).resolve(Json.text(task, "id")));
+        if (latest != null && !Json.text(latest,"jiraKey").equals(Json.text(issue,"id"))) {
+            ObjectNode currentOwner=new TaskIdentity(service.store).forKey(Json.text(issue,"id"));
+            task=currentOwner!=null?currentOwner:Json.obj("id",UUID.randomUUID().toString(),"jiraKey",Json.text(issue,"id"),"important",false,"urgent",false,"hidden",false);
+        } else if (latest != null) task = latest;
         ObjectNode row = task.deepCopy();
         for (String field : List.of("title", "status", "due", "product", "jiraStatus", "jiraStatusId", "issueUrl", "issueType", "jiraParent", "jiraPredecessors")) row.set(field, issue.get(field));
         service.store.put("issue", issue);
@@ -169,7 +172,7 @@ class JiraClient {
         List<ObjectNode> snapshots = new ArrayList<>();
         for (JsonNode issue : issues) {
             ObjectNode row = summarize(issue);
-            ObjectNode existing = service.store.get("task", "jira:" + Json.text(row, "id"));
+            ObjectNode existing = new TaskIdentity(service.store).forKey(Json.text(row,"id"));
             if (Json.text(row, "status").equals("done") && (existing == null || Json.text(existing, "completedAt").isBlank()) && !Json.text(row, "updatedAt").isBlank() && !parseJiraDate(Json.text(row, "updatedAt")).isBefore(service.time.today().minusDays(1))) {
                 Instant latest = null;
                 for (JsonNode change : changelog(Json.text(row, "id"))) for (JsonNode item : change.path("items")) {
@@ -185,8 +188,8 @@ class JiraClient {
             for (ObjectNode row : snapshots) {
                 service.store.put("issue", row);
                 String key = Json.text(row, "id");
-                ObjectNode existing = service.store.list("task").stream().filter(n -> key.equals(Json.text(n, "jiraKey"))).findFirst().orElse(null);
-                if (existing == null) existing = Json.obj("id", "jira:" + key, "jiraKey", key, "important", false, "urgent", false, "hidden", false);
+                ObjectNode existing = new TaskIdentity(service.store).forKey(key);
+                if (existing == null) existing = Json.obj("id", service.store.get("taskAlias","jira:"+key)==null?"jira:"+key:UUID.randomUUID().toString(), "jiraKey", key, "important", false, "urgent", false, "hidden", false);
                 updateTask(service, existing, row);
             }
             service.store.put("sync", Json.obj("id", "jira", "at", service.time.instant().toString(), "count", snapshots.size(), "ok", true));
