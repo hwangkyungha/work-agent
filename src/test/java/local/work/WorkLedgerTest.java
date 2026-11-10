@@ -67,6 +67,92 @@ class WorkLedgerTest {
         store.put("draftResult",Json.obj("id","draft","url","https://bitbucket.org/team/repo/pull-requests/1","title","REQ-12 변경","issueKeys",List.of("REQ-12"),"createdAt","2026-11-06T00:00:00Z"));
         ObjectNode work=new WorkLedger(service).day(LocalDate.of(2026,11,6)).getFirst();
         assertTrue(work.path("performed").asBoolean());assertEquals("REQ-12",Json.text(work,"jiraKey"));
+        assertFalse(new Reports(service).briefing(service.time.today()).contains("Draft PR 작성"));
+        new WorkLedger(service).add(Json.obj("date","2026-11-06","workId",Json.text(work,"workId"),"outcome","progress"));
         assertTrue(new Reports(service).briefing(service.time.today()).contains("Draft PR 작성"));
+    }
+    @Test void reviewStartsWithTheTwoPlannedTasksInsteadOfEveryRecordedSession() {
+        String first=Json.text(service.task(Json.obj("title","계획한 첫 업무")),"id"),second=Json.text(service.task(Json.obj("title","계획한 둘째 업무")),"id");
+        service.plan(Json.obj("date","2026-11-06","taskIds",List.of(first,second)));
+        store.put("session",Json.obj("id","claude:extra","name","계획에 없던 실제 작업"));
+        store.put("evidence",Json.obj("id","extra","date","2026-11-06","source","claude","session","extra","role","assistant","text","작업 결과"));
+        assertEquals(2,service.state(service.time.today()).path("previousWork").size());
+    }
+    @Test void emptySessionTitleFallsBackToTheFirstUserMessageWithoutErasingTheWork() {
+        store.put("session",Json.obj("id","codex:blank","name",""));
+        store.put("evidence",Json.obj("id","question","date","2026-11-06","source","codex","session","blank","role","user","text","설정 파일 형식 변경 검토"));
+        store.put("evidence",Json.obj("id","answer","date","2026-11-06","source","codex","session","blank","role","assistant","text","검토했습니다."));
+        assertEquals("설정 파일 형식 변경 검토",Json.text(new WorkLedger(service).day(LocalDate.of(2026,11,6)).getFirst(),"title"));
+    }
+    @Test void workCompletedYesterdayDoesNotReappearAsAnInProgressSuggestion() {
+        ObjectNode task=service.task(Json.obj("title","어제 완료한 업무","jiraKey","CT2612-518"));String id=Json.text(task,"id");
+        task.put("status","in-progress");store.put("task",task);
+        store.put("evidence",Json.obj("id","worked","date","2026-11-06","source","claude","session","finished","role","assistant","text","수정했습니다.","issueKeys",List.of("CT2612-518")));
+        new WorkLedger(service).record(Json.obj("date","2026-11-06","workId",id,"outcome","done"));
+        assertTrue(service.todayGroups(service.time.today()).stream().flatMap(group->java.util.stream.StreamSupport.stream(group.path("tasks").spliterator(),false)).noneMatch(row->id.equals(Json.text(row,"id"))));
+        assertEquals("in-progress",Json.text(store.get("task",id),"status"));
+    }
+    @Test void unfinishedWorkIsSuggestedMostRecentlyWorkedFirst() {
+        String older=Json.text(service.task(Json.obj("title","먼저 작업한 업무")),"id"),newer=Json.text(service.task(Json.obj("title","최근 작업한 업무")),"id");
+        service.plan(Json.obj("date","2026-11-05","taskIds",List.of(older)));service.plan(Json.obj("date","2026-11-06","taskIds",List.of(newer)));
+        assertEquals(List.of(newer,older),new WorkLedger(service).carryover(service.time.today()).stream().map(row->Json.text(row,"taskId")).toList());
+    }
+    @Test void optionalActivityCandidatesAreOrderedByConversationCountAndAppearOnlyAfterSelection() {
+        for(String session:List.of("small","large")) {
+            store.put("session",Json.obj("id","claude:"+session,"name",session+" 실제 작업"));
+            for(int i=0;i<(session.equals("large")?6:2);i++)store.put("evidence",Json.obj("id",session+i,"date","2026-11-06","source","claude","session",session,"role",i%2==0?"user":"assistant","text","작업 논의"));
+        }
+        WorkLedger ledger=new WorkLedger(service);LocalDate day=LocalDate.of(2026,11,6);
+        assertTrue(ledger.reviewRows(day).isEmpty());assertEquals("large 실제 작업",Json.text(ledger.activityCandidates(day).getFirst(),"title"));
+        String id=Json.text(ledger.activityCandidates(day).getFirst(),"workId");
+        ledger.add(Json.obj("date",day.toString(),"workId",id,"outcome","done"));
+        assertEquals(1,ledger.reviewRows(day).size());assertEquals("done",Json.text(ledger.reviewRows(day).getFirst(),"outcome"));assertEquals(1,ledger.activityCandidates(day).size());
+        assertTrue(service.planned(service.time.today()).isEmpty());assertTrue(service.tasks().isEmpty());
+    }
+    @Test void yesterdayCanIncludeAnExistingJiraTaskOrAHandwrittenCompletedActivityWithoutChangingJiraOrToday() {
+        String id=Json.text(service.task(Json.obj("title","LCOV 옵션 추가","jiraKey","CT2612-518")),"id");
+        WorkLedger ledger=new WorkLedger(service);LocalDate day=LocalDate.of(2026,11,6);
+        ledger.add(Json.obj("date",day.toString(),"taskId",id,"outcome","done"));
+        ledger.add(Json.obj("date",day.toString(),"title","팀 회의","outcome","done"));
+        assertEquals(2,ledger.reviewRows(day).size());assertEquals(1,service.tasks().size());assertEquals("todo",Json.text(store.get("task",id),"status"));assertTrue(service.planned(service.time.today()).isEmpty());
+        assertEquals(2,ledger.worklogCandidates(day).size());
+    }
+    @Test void codexTitleImportDoesNotOverwriteAUsefulFallbackWithAnEmptyNativeTitle() throws Exception {
+        Path file=temporary.resolve("codex.sqlite");
+        try(var connection=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);var query=connection.createStatement()) {
+            query.execute("CREATE TABLE threads(id TEXT,title TEXT,cwd TEXT,updated_at INTEGER,has_user_event INTEGER)");query.execute("INSERT INTO threads VALUES('s','','D:/Git/lct',0,1)");
+        }
+        store.put("session",Json.obj("id","codex:s","name","기존에 확인한 작업명"));
+        new SessionCatalog(store).codexTitles(file);
+        assertEquals("기존에 확인한 작업명",Json.text(store.get("session","codex:s"),"name"));
+    }
+    @Test void recentProgressUsesTheLatestMessageTimeAndShowsTheKoreanWorkDate() {
+        for(String key:List.of("CT-1","CT-2")) {
+            ObjectNode task=service.task(Json.obj("title",key+" 업무","jiraKey",key));task.put("status","in-progress");store.put("task",task);
+            store.put("evidence",Json.obj("id",key,"date","2026-11-06","source","codex","session",key,"role","assistant","text","작업했습니다.","issueKeys",List.of(key),"occurredAt",key.equals("CT-1")?"2026-11-05T15:20:00Z":"2026-11-05T18:20:00Z"));
+        }
+        var tasks=service.todayGroups(service.time.today()).getFirst().path("tasks");
+        assertEquals("CT-2",Json.text(tasks.get(0),"jiraKey"));assertEquals("2026-11-06",Json.text(tasks.get(0),"lastWorkedDate"));
+    }
+    @Test void aSessionTitleIdentifiesTheExistingTaskEvenWhenOtherIssuesAreMentionedInTheConversation() {
+        String id=Json.text(service.task(Json.obj("title","LCOV 옵션 추가","jiraKey","CT2612-518")),"id");
+        service.task(Json.obj("title","대화 중 참고한 별도 업무","jiraKey","CT2612-486"));
+        store.put("session",Json.obj("id","claude:lcov","name","CT2612-518 LCOV 옵션 추가"));
+        store.put("evidence",Json.obj("id","conversation","date","2026-11-06","source","claude","session","lcov","role","assistant","text","작업 결과","issueKeys",List.of("CT2612-518","CT2612-486")));
+        WorkLedger ledger=new WorkLedger(service);LocalDate day=LocalDate.of(2026,11,6);
+        ObjectNode candidate=ledger.activityCandidates(day).getFirst();
+        assertEquals(id,Json.text(candidate,"taskId"));assertEquals("CT2612-518",Json.text(candidate,"jiraKey"));assertTrue(ledger.reviewRows(day).isEmpty());
+        ledger.add(Json.obj("date",day.toString(),"workId",Json.text(candidate,"workId"),"taskId",id,"outcome","done"));
+        assertEquals(id,Json.text(ledger.reviewRows(day).getFirst(),"taskId"));assertTrue(ledger.activityCandidates(day).isEmpty());
+    }
+    @Test void legacySessionChecksKeepConfirmedWorkButNotUnconfirmedRowsAndRecognizeCompletedIssueTitles() {
+        String task=Json.text(service.task(Json.obj("title","LCOV 옵션 추가","jiraKey","CT2612-518","important",true)),"id");
+        store.put("workDay",Json.obj("id","legacy-progress","date","2026-11-06","workId","session:claude:old","taskId","","title","CT2612-518 이전 작업명","outcome","progress"));
+        store.put("workDay",Json.obj("id","legacy-unconfirmed","date","2026-11-06","workId","session:claude:unchecked","taskId","","title","아직 확인하지 않은 세션","outcome","unconfirmed"));
+        WorkLedger ledger=new WorkLedger(service);LocalDate day=LocalDate.of(2026,11,6);
+        assertEquals(1,ledger.reviewRows(day).size());assertEquals(task,Json.text(ledger.reviewRows(day).getFirst(),"suggestedTaskId"));
+        ledger.record(Json.obj("date",day.toString(),"workId","session:claude:old","outcome","done"));
+        assertTrue(ledger.finishedTasks(service.time.today()).contains(task));
+        assertTrue(service.todayGroups(service.time.today()).stream().flatMap(group->java.util.stream.StreamSupport.stream(group.path("tasks").spliterator(),false)).noneMatch(row->task.equals(Json.text(row,"id"))));
     }
 }

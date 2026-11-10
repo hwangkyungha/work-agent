@@ -35,7 +35,7 @@ final class Reports {
     String preparation(LocalDate date) {
         LocalDate previous = previousWorkDate(date);
         StringBuilder text = new StringBuilder(date + " 오늘 업무 준비 (한국 시간)\n\n" + previous + " 계획과 실제\n");
-        for (ObjectNode row : new WorkLedger(service).day(previous)) {
+        for (ObjectNode row : new WorkLedger(service).reviewRows(previous)) {
             text.append("- ").append(workTitle(Json.text(row, "jiraKey"), Json.text(row, "title"))).append(" · ")
                     .append(row.path("planned").asBoolean() ? "계획한 업무" : "계획 밖 활동").append(" · ")
                     .append(row.path("performed").asBoolean() ? "수행 내용 있음" : "수행 여부 확인 필요").append('\n');
@@ -98,7 +98,7 @@ final class Reports {
     static String stateLabel(String state) { return switch (state) { case "posted" -> "등록 완료"; case "posting", "unknown" -> "결과 확인 필요"; case "failed" -> "등록 실패"; default -> "초안"; }; }
     private void appendPreviousWork(StringBuilder text, LocalDate date) {
         LinkedHashSet<String> lines = new LinkedHashSet<>();
-        for (ObjectNode work : new WorkLedger(service).day(date)) if (work.path("performed").asBoolean()) {
+        for (ObjectNode work : new WorkLedger(service).reviewRows(date)) if (work.path("performed").asBoolean()) {
             String title = Json.text(work, "title");
             if (title.equals("이름 없는 세션") || title.isBlank()) continue;
             lines.add(workTitle(Json.text(work, "jiraKey"), title));

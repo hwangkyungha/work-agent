@@ -49,6 +49,7 @@ class DailyBriefingTest {
         session("claude", "named", "CTS-3");
         store.put("issue", Json.obj("id", "CTS-3", "title", ""));
         store.put("session", Json.obj("id", "claude:named", "name", "CTS-3 설정 오류 수정"));
+        for(String key:List.of("CTS-2","CTS-3"))new WorkLedger(service).add(Json.obj("date","2026-11-05","workId","jira:"+key,"outcome","progress"));
         session("codex", "unlinked", "");
         new WorkLedger(service).record(Json.obj("date","2026-11-05","workId",Json.text(manual,"id"),"outcome","progress"));
         service.activity(Json.obj("date", "2026-11-05", "title", "에이전트가 작성한 상세 수행 결과", "source", "claude", "session", "no-title"));
@@ -71,6 +72,7 @@ class DailyBriefingTest {
         store.put("issue", Json.obj("id", "CTS-99", "title", "자동 평가에서만 언급된 실제 이슈"));
         store.put("evidence", Json.obj("id", "automated", "date", "2026-11-05", "source", "claude", "session", "judge", "cwd", "D:\\Git\\lct\\.ct-verify\\baseline\\llm_judge", "role", "assistant", "text", "CTS-99 평가", "issueKeys", List.of("CTS-99")));
         store.put("issue", Json.obj("id", "CTS-2", "title", "실제 진행한 업무")); session("codex", "actual", "CTS-2");
+        new WorkLedger(service).add(Json.obj("date","2026-11-05","workId","jira:CTS-2","outcome","progress"));
         String text = reports.briefing(service.time.today());
         assertFalse(text.contains("REQ-001")); assertFalse(text.contains("REQ-002")); assertFalse(text.contains("CTS-99"));
         assertTrue(text.contains("CTS-2 실제 진행한 업무"));

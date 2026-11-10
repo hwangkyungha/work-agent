@@ -24,10 +24,10 @@ final class AgentContext {
         ObjectNode context = Json.obj("date", day.toString());
         if (query.matches("(?s).*(계획|한 일|수행|활동|워크로그|로그워크|worklog|브리핑|데일리|이어|진행하지|못한).*") ) {
             WorkLedger ledger=new WorkLedger(service);
-            context.set("actualWork",Json.MAPPER.valueToTree(ledger.day(day).stream().limit(24).map(row->fields(row,"date","workId","taskId","title","jiraKey","planned","observed","performed","outcome","note")).toList()));
+            context.set("actualWork",Json.MAPPER.valueToTree(ledger.reviewRows(day).stream().limit(24).map(row->fields(row,"date","workId","taskId","title","jiraKey","planned","observed","performed","outcome","note")).toList()));
             if (planningRequest(query) && day.equals(service.time.today())) {
                 LocalDate previous=new Reports(service).previousWorkDate(day);
-                context.set("previousWork",Json.MAPPER.valueToTree(ledger.day(previous).stream().limit(24).map(row->fields(row,"date","workId","taskId","title","jiraKey","planned","observed","performed","outcome","note")).toList()));
+                context.set("previousWork",Json.MAPPER.valueToTree(ledger.reviewRows(previous).stream().limit(24).map(row->fields(row,"date","workId","taskId","title","jiraKey","planned","observed","performed","outcome","note")).toList()));
             }
             if(planningRequest(query))context.set("carryover",Json.MAPPER.valueToTree(ledger.carryover(day).stream().limit(12).map(row->fields(row,"date","workId","taskId","title","jiraKey","reason")).toList()));
         }

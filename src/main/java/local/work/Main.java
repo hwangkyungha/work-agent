@@ -121,6 +121,7 @@ public final class Main {
                 if (method.equals("GET")) {
                     switch (path) {
                         case "/api/state" -> json(exchange, 200, service.state(date));
+                        case "/api/work-days/candidates" -> json(exchange, 200, new WorkLedger(service).activityCandidates(date));
                         case "/api/team" -> json(exchange, 200, service.team());
                         case "/api/reviews" -> json(exchange, 200, reviewMonitor.state());
                         case "/api/tasks/transitions" -> json(exchange, 200, service.transitions(query.getOrDefault("id", "")));
@@ -171,6 +172,7 @@ public final class Main {
                         case "/api/tasks/group" -> service.groupTasks(body);
                         case "/api/activities" -> service.activity(body);
                         case "/api/work-days" -> new WorkLedger(service).record(body);
+                        case "/api/work-days/add" -> new WorkLedger(service).add(body);
                         case "/api/work-links" -> service.linkWork(body);
                         case "/api/plan" -> service.plan(body);
                         case "/api/plan/item" -> service.planItem(body);

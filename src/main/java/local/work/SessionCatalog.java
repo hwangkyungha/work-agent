@@ -23,7 +23,7 @@ final class SessionCatalog {
             String at = Json.text(row,"occurredAt");
             if (at.compareTo(Json.text(saved,"updatedAt")) > 0) saved.put("updatedAt",at);
             if (Json.text(saved,"name").isBlank() && Json.text(row,"role").equals("user")) {
-                String title = Json.text(row,"text").lines().findFirst().orElse("");
+                String title = Json.text(row,"text").lines().map(String::trim).filter(line->!line.isBlank()).findFirst().orElse("");
                 saved.put("name",title.substring(0,Math.min(120,title.length())));
             }
         }
@@ -38,7 +38,8 @@ final class SessionCatalog {
                 String id="codex:"+rows.getString("id");ObjectNode old=store.get("session",id);
                 // Only enrich sessions already collected by the transcript importer.
                 if(old==null)continue;
-                old.put("source","codex").put("session",rows.getString("id")).put("name",rows.getString("title")).put("cwd",rows.getString("cwd"));
+                old.put("source","codex").put("session",rows.getString("id")).put("cwd",rows.getString("cwd"));
+                String title=rows.getString("title");if(title!=null && !title.isBlank())old.put("name",title);
                 store.put("session",old);
             }
         }

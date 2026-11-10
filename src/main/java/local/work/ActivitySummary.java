@@ -39,7 +39,7 @@ final class ActivitySummary {
             if (link != null && Json.text(row, "taskId").isBlank()) row.put("taskId", Json.text(link, "taskId"));
         }
         Map<String, String> names = new HashMap<>(), issues = new HashMap<>(), assigned = new HashMap<>(), taskIds = new HashMap<>();
-        for (ObjectNode session : store.list("session")) names.put(Json.text(session, "id"), Json.text(session, "name"));
+        for (ObjectNode session : store.list("session")) if (!Json.text(session,"name").isBlank()) names.put(Json.text(session, "id"), Json.text(session, "name"));
         for (ObjectNode row : evidence) if (Json.text(row, "role").equals("user")) names.putIfAbsent(session(row), shortText(Json.text(row, "text")));
         for (ObjectNode row : store.list("issue")) issues.put(Json.text(row, "id"), Json.text(row, "title"));
         for (String kind : List.of("jiraWorklog", "worklogFavorite")) for (ObjectNode row : store.list(kind)) if (!Json.text(row,"jiraKey").isBlank()) issues.putIfAbsent(Json.text(row,"jiraKey"),Json.text(row,"title"));
@@ -63,6 +63,8 @@ final class ActivitySummary {
             String groupKey = Json.text(row, "date") + ":" + workId;
             ObjectNode group = groups.computeIfAbsent(groupKey, k -> make(row, key, names, issues));
             group.put("workId", workId).put("taskId", taskId);
+            if (Json.text(row,"source").equals("manual")) group.put("userRecorded",true);
+            latest(group,row);
             group.put("activityCount", group.path("activityCount").asInt() + 1);
             if (Json.text(group, "summary").isBlank()) group.put("summary", shortText(Json.text(row, "title")));
         }
@@ -75,12 +77,13 @@ final class ActivitySummary {
             String groupKey = Json.text(row, "date") + ":" + workId;
             ObjectNode group = groups.computeIfAbsent(groupKey, k -> make(row, chosen, names, issues));
             group.put("workId", workId).put("taskId", taskId);
+            latest(group,row);
             String role = Json.text(row, "role");
             group.put("messageCount", group.path("messageCount").asInt() + 1);
             String counter = role.equals("user") ? "userMessages" : "assistantMessages";
             group.put(counter, group.path(counter).asInt() + 1);
             Map<String, ObjectNode> perSession = sessions.computeIfAbsent(groupKey, k -> new LinkedHashMap<>());
-            ObjectNode item = perSession.computeIfAbsent(session(row), k -> Json.obj("id", k, "source", Json.text(row, "source"), "name", names.getOrDefault(k, "이름 없는 세션"), "messageCount", 0));
+            ObjectNode item = perSession.computeIfAbsent(session(row), k -> Json.obj("id", k, "source", Json.text(row, "source"), "name", names.getOrDefault(k, "제목을 확인할 수 없는 세션"), "messageCount", 0));
             item.put("messageCount", item.path("messageCount").asInt() + 1);
         }
         groups.forEach((key, group) -> {
@@ -90,6 +93,10 @@ final class ActivitySummary {
             if (task != null) group.put("title", Json.text(task, "title"));
         });
         return groups.values().stream().sorted(Comparator.comparing(n -> Json.text(n, "date"))).toList();
+    }
+    private static void latest(ObjectNode group,JsonNode row) {
+        String at=Json.text(row,"occurredAt");
+        if(!at.isBlank() && at.compareTo(Json.text(group,"lastActivityAt"))>0)group.put("lastActivityAt",at);
     }
     private static ObjectNode make(JsonNode row, String key, Map<String, String> names, Map<String, String> issues) {
         String title = issues.getOrDefault(key, "");

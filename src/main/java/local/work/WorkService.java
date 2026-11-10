@@ -361,11 +361,12 @@ final class WorkService {
         for (ObjectNode task : planned(day)) selected.add(Json.text(task, "id"));
         Map<String, String> recentKeys = new HashMap<>();
         for (ObjectNode group : new ActivitySummary(store).group(day.minusDays(3), day.minusDays(1))) {
-            if (!Json.text(group, "jiraKey").isBlank() && group.path("sessionCount").asInt() > 0 && group.path("assistantMessages").asInt() > 0) recentKeys.merge(Json.text(group, "jiraKey"), Json.text(group, "date"), (a, b) -> a.compareTo(b) >= 0 ? a : b);
+            if (!Json.text(group, "jiraKey").isBlank() && group.path("sessionCount").asInt() > 0 && group.path("assistantMessages").asInt() > 0) recentKeys.merge(Json.text(group, "jiraKey"), Json.text(group,"lastActivityAt").isBlank()?Json.text(group, "date"):Json.text(group,"lastActivityAt"), (a, b) -> a.compareTo(b) >= 0 ? a : b);
         }
-        List<ObjectNode> candidates = tasks().stream().filter(t -> !Json.text(t, "status").equals("done") && !selected.contains(Json.text(t, "id"))).toList();
+        Set<String> finished=new WorkLedger(this).finishedTasks(day);
+        List<ObjectNode> candidates = tasks().stream().filter(t -> !Json.text(t, "status").equals("done") && !selected.contains(Json.text(t, "id")) && !finished.contains(Json.text(t,"id"))).toList();
         List<ObjectNode> recent = candidates.stream().filter(t -> Json.text(t, "status").equals("in-progress") && recentKeys.containsKey(Json.text(t, "jiraKey")))
-                .sorted(Comparator.comparing((ObjectNode t) -> recentKeys.get(Json.text(t, "jiraKey"))).reversed()).toList();
+                .sorted(Comparator.comparing((ObjectNode t) -> recentKeys.get(Json.text(t, "jiraKey"))).reversed()).map(t->{ObjectNode row=t.deepCopy();String at=recentKeys.get(Json.text(t,"jiraKey"));row.put("lastWorkedAt",at).put("lastWorkedDate",at.length()==10?at:KoreaTime.dateOf(at).toString());return row;}).toList();
         List<ObjectNode> due = candidates.stream().filter(t -> !Json.text(t, "due").isBlank() && Json.text(t, "due").compareTo(day.toString()) >= 0 && Json.text(t, "due").compareTo(day.plusDays(7).toString()) <= 0)
                 .sorted(Comparator.comparing(t -> Json.text(t, "due"))).toList();
         List<ObjectNode> priority = candidates.stream().filter(t -> t.path("important").asBoolean() || t.path("urgent").asBoolean()).toList();
@@ -383,7 +384,7 @@ final class WorkService {
                 "tasks", tasks(), "plan", planned(date), "planSaved", store.get("plan", date.toString()) != null, "planVersion", plan.path("version").asInt(), "planSort", plan.path("sort").asText("manual"), "yesterdayCompleted", completed(date.minusDays(1)),
                 "hiddenTasks", allTasks().stream().filter(n -> n.path("hidden").asBoolean()).toList(), "todayGroups", todayGroups(date),
                 "draftDigest", DraftResults.state(this,date),
-                "previousWorkDate", previous.toString(), "previousWork", ledger.day(previous), "carryover", ledger.carryover(date),
+                "previousWorkDate", previous.toString(), "previousWork", ledger.reviewRows(previous), "carryover", ledger.carryover(date),
                 "worklogCandidates", java.util.stream.IntStream.range(0, 7).boxed().flatMap(i -> ledger.worklogCandidates(monday.plusDays(i)).stream()).toList(),
                 "activities", activities(monday.minusDays(7), monday.plusDays(6)), "meetings", meetings(date),
                 "activityGroups", new ActivitySummary(store).group(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> (Json.text(n,"kind").equals("followup") || Json.text(n, "date").equals(date.toString())) && !n.hasNonNull("acceptedTaskId") && !n.path("dismissed").asBoolean()).toList(),

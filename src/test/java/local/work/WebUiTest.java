@@ -26,7 +26,8 @@ class WebUiTest {
     List<JsonNode> favoriteUpdates = new ArrayList<>(); int worklogSyncCalls; boolean worklogSyncFails;
     List<ObjectNode> reviewJobs = new ArrayList<>(); List<JsonNode> reviewRequests = new ArrayList<>(); int reviewRefreshes, pendingSaves;
     List<String> acceptedFollowups=new ArrayList<>();
-    List<JsonNode> workDayUpdates=new ArrayList<>();
+    List<JsonNode> workDayUpdates=new ArrayList<>(),addedPastWork=new ArrayList<>();
+    List<ObjectNode> pastWorkCandidates=new ArrayList<>();
     static final String ORIGIN = "http://127.0.0.1:18765";
     ObjectNode task(String id, String key, String title) { return Json.obj("id", id, "jiraKey", key, "title", title, "status", "todo", "important", false, "urgent", false, "product", "개발", "due", "", "hidden", false, "createdAt", "2026-11-06T00:00:00Z"); }
     @BeforeEach void open() {
@@ -80,6 +81,15 @@ class WebUiTest {
                     ArrayNode plan=(ArrayNode)state.path("plan");int before=plan.size();
                     for(JsonNode id:payload.path("taskIds")) for(JsonNode task:state.path("tasks")) if(id.asText().equals(Json.text(task,"id")) && plan.findValuesAsText("id").stream().noneMatch(value->value.equals(id.asText()))) plan.add(task);
                     content=Json.write(Json.obj("added",plan.size()-before));
+                }
+                case "/api/work-days/candidates" -> content=Json.write(pastWorkCandidates);
+                case "/api/work-days/add" -> {
+                    JsonNode body=Json.read(route.request().postData());addedPastWork.add(body);
+                    ObjectNode source=pastWorkCandidates.stream().filter(row->Json.text(row,"workId").equals(Json.text(body,"workId"))).findFirst().orElse(null);
+                    if(source==null)for(JsonNode task:state.path("tasks"))if(Json.text(task,"id").equals(Json.text(body,"taskId")))source=Json.obj("workId",Json.text(task,"id"),"taskId",Json.text(task,"id"),"title",Json.text(task,"title"),"jiraKey",Json.text(task,"jiraKey"));
+                    if(source==null)source=Json.obj("workId","activity:manual","title",Json.text(body,"title"));
+                    ObjectNode row=source.deepCopy();row.put("date",Json.text(body,"date")).put("outcome",Json.text(body,"outcome")).put("confirmed",true).put("observed",true);
+                    if(!state.has("previousWork"))state.set("previousWork",Json.MAPPER.createArrayNode());((ArrayNode)state.path("previousWork")).add(row);
                 }
                 case "/api/work-days" -> { JsonNode body=Json.read(route.request().postData());workDayUpdates.add(body);for(JsonNode row:state.path("previousWork"))if(Json.text(row,"workId").equals(Json.text(body,"workId")))((ObjectNode)row).put("outcome",Json.text(body,"outcome")); }
                 case "/api/followups/dismiss" -> { String id=Json.required(Json.read(route.request().postData()),"id");ArrayNode remaining=Json.MAPPER.createArrayNode();for(JsonNode row:state.path("followups"))if(!id.equals(Json.text(row,"id")))remaining.add(row);state.set("followups",remaining); }
@@ -390,14 +400,36 @@ class WebUiTest {
         page.locator("[data-draft-reviewed='draft']").click();
         page.waitForCondition(()->page.locator("[data-draft-reviewed='draft']").textContent().equals("다시 검토 대기로"));
     }
-    @Test void yesterdayPlanAndActualWorkAreDistinguishedWithoutChangingJiraStatus() throws Exception {
-        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","local","taskId","local","title","계획만 한 업무","planned",true,"inInitialPlan",true,"inFinalPlan",true,"observed",false,"outcome","unconfirmed"),Json.obj("workId","session:codex:extra","title","갑자기 요청된 지원","planned",false,"observed",true,"outcome","unconfirmed"))));
+    @Test void yesterdayStartsWithPlannedWorkAndAddsSelectedCompletedWorkWithoutChangingJira() throws Exception {
+        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","local","taskId","local","title","계획만 한 업무","planned",true,"inInitialPlan",true,"inFinalPlan",true,"observed",false,"outcome","unconfirmed"),Json.obj("workId","jira:CT-42","taskId","jira:CT-42","title","두번째 계획","planned",true,"inInitialPlan",true,"inFinalPlan",true,"observed",false,"outcome","unconfirmed"))));
+        pastWorkCandidates.add(Json.obj("workId","jira:CT2612-518","taskId","jira:CT2612-518","title","LCOV 옵션 추가","jiraKey","CT2612-518","issueUrl","https://example.atlassian.net/browse/CT2612-518","evidence",Json.obj("messageCount",42)));
+        ((ArrayNode)state.path("tasks")).add(task("jira:CT2612-518","CT2612-518","LCOV 옵션 추가"));
         page.reload();page.locator(".work-reconciliation").waitFor();
-        assertTrue(page.locator(".work-reconciliation").textContent().contains("활동 근거 미확인"));assertTrue(page.locator(".work-reconciliation").textContent().contains("계획 밖 활동"));
-        page.locator(".work-reconciliation [data-open='activity']").click();assertEquals("2026-11-05",page.locator("#record-form [name='date']").inputValue());page.locator("#close-modal").click();
+        assertEquals(2,page.locator(".work-day-row").count());assertFalse(page.locator(".work-reconciliation").textContent().contains("LCOV 옵션 추가"));
         page.locator("[data-work-outcome='local']").selectOption("not-started");page.waitForCondition(()->workDayUpdates.size()==1);
-        assertEquals("2026-11-05",Json.text(workDayUpdates.getFirst(),"date"));assertTrue(statusUpdates.isEmpty());
+        page.locator("#add-previous-work").click();page.locator("[data-choose-past-work='jira:CT2612-518']").waitFor();
+        assertEquals("https://example.atlassian.net/browse/CT2612-518",page.locator(".past-work-candidate a").getAttribute("href"));
+        page.locator("[data-choose-past-work='jira:CT2612-518']").click();page.locator("#past-work-outcome").selectOption("done");page.locator("#past-work-form [type='submit']").click();
+        page.waitForCondition(()->addedPastWork.size()==1&&page.locator(".work-day-row").count()==3);
+        assertEquals("2026-11-05",Json.text(addedPastWork.getFirst(),"date"));assertEquals("done",page.locator("[data-work-outcome='jira:CT2612-518']").inputValue());assertTrue(statusUpdates.isEmpty());
+        assertFalse(page.locator(".work-reconciliation").textContent().contains("오늘 분량 완료"));
+        assertEquals("https://example.atlassian.net/browse/CT2612-518",page.locator(".work-reconciliation a").getAttribute("href"));
         String screenshots=System.getProperty("work.ui.workflow.screenshots","");if(!screenshots.isBlank()){Path output=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve("workflow-desktop.png")).setFullPage(true));page.setViewportSize(390,844);assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth <= innerWidth"));page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve("workflow-mobile.png")).setFullPage(true));}
+    }
+    @Test void handwrittenPastWorkAndExistingTasksCanBeAddedWithoutCreatingATodayTask() {
+        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.createArrayNode());page.reload();
+        page.locator("#add-previous-work").click();page.locator("#past-work-task").selectOption("jira:CT-42");page.locator("#past-work-outcome").selectOption("done");page.locator("#past-work-form [type='submit']").click();page.waitForCondition(()->addedPastWork.size()==1);
+        assertEquals("jira:CT-42",Json.text(addedPastWork.getFirst(),"taskId"));
+        page.locator("#add-previous-work").click();page.locator("#past-work-title").fill("기록이 없는 고객 미팅");page.locator("#past-work-outcome").selectOption("done");page.locator("#past-work-form [type='submit']").click();page.waitForCondition(()->addedPastWork.size()==2);
+        assertEquals("기록이 없는 고객 미팅",Json.text(addedPastWork.get(1),"title"));assertEquals("",Json.text(addedPastWork.get(1),"taskId"));assertTrue(updates.isEmpty());assertTrue(planUpdates.isEmpty());
+    }
+    @Test void carryoverIncludesJiraLinksAndRecentWorkDate() {
+        state.set("carryover",Json.MAPPER.valueToTree(List.of(Json.obj("taskId","jira:CT-42","title","다시 볼 업무","jiraKey","CT-42","issueUrl","https://example.atlassian.net/browse/CT-42","date","2026-11-05","reason","진행한 업무입니다."))));
+        page.reload();page.locator(".carryover-row a").waitFor();assertEquals("https://example.atlassian.net/browse/CT-42",page.locator(".carryover-row a").getAttribute("href"));assertTrue(page.locator(".carryover-row").textContent().contains("2026-11-05"));
+    }
+    @Test void aPreviouslyCheckedSessionPrefillsTheSuggestedExistingTaskWhenLinking() {
+        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","session:claude:legacy","title","CT-42 이전 작업명","jiraKey","CT-42","suggestedTaskId","jira:CT-42","outcome","progress","confirmed",true))));
+        page.reload();page.locator("[data-link-work='session:claude:legacy']").click();assertEquals("jira:CT-42",page.locator("#link-task").inputValue());
     }
     @Test void unlinkedActualWorkCanBeSavedAndNewActivityCanBeAddedWithoutLosingEnteredTime() {
         state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","workId","activity:first","title","Jira 발급 전 설계 논의","jiraKey",""))));
