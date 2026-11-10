@@ -18,6 +18,7 @@ final class PrQuestion {
     ObjectNode answer(String url, String question, String reviewedCommit) throws Exception {
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(url);
         ReviewContext context = new ReviewContext(api, pr, store, false);
+        PullRequestReview.Model execution = model.forReview(Json.obj("id", UUID.randomUUID().toString(), "url", pr.url(), "kind", "question", "sourceCommit", context.sourceCommit, "destinationCommit", context.destinationCommit), context.metadata);
         String id = TranscriptImporter.hash(pr.url());
         ObjectNode previous = store.get("prQuestions", id);
         List<JsonNode> turns = new ArrayList<>();
@@ -62,14 +63,16 @@ final class PrQuestion {
                 "description", brief(Json.text(context.metadata, "description"), 1800), "commit", context.sourceCommit,
                 "changedPaths", ranked.stream().limit(80).toList(), "review", history))
                 + "\n현재 질문\n" + question;
-        JsonNode response = model.complete(WritingStyle.message(background + excerpts(context, queryTerms)));
+        JsonNode response = execution.complete(WritingStyle.message(background + excerpts(context, queryTerms)));
         boolean added = false;
         int attempted = 0;
         for (JsonNode path : response.path("relatedPaths")) {
             if (++attempted > 4 || context.files.size() >= 10) break;
             added |= context.includeCurrent(api, path.asText());
         }
-        if (added) response = model.complete(WritingStyle.message(background + "\n추가로 읽은 파일까지 반영해 최종 답변을 작성하세요." + excerpts(context, queryTerms)));
+        if (added) response = execution.complete(WritingStyle.message(background + "\n추가로 읽은 파일까지 반영해 최종 답변을 작성하세요." + excerpts(context, queryTerms)));
+        int citations = 0;
+        for (JsonNode citation : response.path("replyEvidence")) if (citations++ < 12 && !context.files.containsKey("new:" + Json.text(citation,"path"))) context.includeCurrent(api, Json.text(citation,"path"));
         if (!context.sameHead(api.pullRequest(pr))) throw new IllegalStateException("답변을 준비하는 동안 PR이 바뀌었습니다. 최신 커밋으로 다시 질문해 주세요.");
         JsonNode evidence = response.path("replyEvidence");
         String reply = Json.text(response, "reply");

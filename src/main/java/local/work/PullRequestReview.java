@@ -10,7 +10,10 @@ import java.util.regex.Pattern;
 final class PullRequestReview implements AutoCloseable {
     static final Pattern PR_LINK = Pattern.compile("https://bitbucket\\.org/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull-requests/[1-9][0-9]*");
     private static final Pattern PR_NUMBER = Pattern.compile("(?i)\\bPR\\s*#?\\s*([1-9][0-9]*)");
-    @FunctionalInterface interface Model { JsonNode complete(String prompt) throws Exception; }
+    @FunctionalInterface interface Model {
+        JsonNode complete(String prompt) throws Exception;
+        default Model forReview(ObjectNode job, JsonNode metadata) throws Exception { return this; }
+    }
     private final WorkService service;
     private final BitbucketClient api;
     private final Model model;
@@ -137,6 +140,8 @@ final class PullRequestReview implements AutoCloseable {
         };
         String title = Json.text(row, "title");
         StringBuilder message = new StringBuilder("PR #" + number + (title.isBlank() ? "" : " · " + title) + "\n" + outcome);
+        if (!Json.text(row,"executionNote").isBlank()) message.append("\n").append(Json.text(row,"executionNote"));
+        if (succeeded(row) && !Json.text(row,"readingGuide").isBlank()) message.append("\n\n검토 안내\n").append(brief(Json.text(row,"readingGuide"),500));
         for (JsonNode finding : row.path("findings")) {
             if (message.length() > 2000) break;
             message.append("\n• ").append(Json.text(finding, "title")).append(" — ").append(brief(Json.text(finding, "impact"), 180));
@@ -150,9 +155,10 @@ final class PullRequestReview implements AutoCloseable {
         ReviewContext context = new ReviewContext(api, pr, service.store, true);
         if (!context.sourceCommit.equals(Json.text(row, "sourceCommit"))) throw new IllegalStateException("PR head가 바뀌었습니다. 다시 요청하세요.");
         row.put("destinationCommit", context.destinationCommit);
+        Model execution = model.forReview(row, context.metadata);
         Set<String> referencePaths = new LinkedHashSet<>();
         for (JsonNode reference : row.path("referenceUrls")) referencePaths.add(context.includeReference(api, reference.asText()));
-        referencePaths.addAll(sources.attach(context, row, model));
+        referencePaths.addAll(sources.attach(context, row, execution));
         List<JsonNode> comments = api.comments(pr);
         String owner = Json.required(api.get("/user"), "uuid");
         long parent = row.path("parentCommentId").asLong();
@@ -162,7 +168,8 @@ final class PullRequestReview implements AutoCloseable {
             JsonNode incoming = comments.stream().filter(comment -> comment.path("id").asLong() == parent && !comment.path("deleted").asBoolean()).findFirst().orElseThrow(() -> new IllegalArgumentException("답변할 댓글을 찾지 못했습니다."));
             if (!Json.text(context.metadata.path("author"), "uuid").equals(owner) || Json.text(incoming.path("user"), "uuid").equals(owner)) throw new IllegalArgumentException("내 PR에 다른 사람이 남긴 댓글에만 답변할 수 있습니다.");
             context.includeCommentFile(api, incoming);
-            JsonNode result = reviewReply(context, comments, incoming);
+            JsonNode result = reviewReply(context, comments, incoming, execution);
+            includeCitations(context, result);
             String kind = Json.text(result, "replyKind");
             row.put("replyKind", kind);
             boolean valid = Set.of("fact", "design").contains(kind) && !Json.text(result, "reply").isBlank()
@@ -206,16 +213,18 @@ final class PullRequestReview implements AutoCloseable {
                         계약이나 방어 코드가 부족해 판단을 못 했다면 위 파일 목록에서 필요한 경로를 relatedPaths에 최대 4개 쓰세요. 후보가 없어도 추가 자료를 요청할 수 있습니다.
                         실현 가능한 경로가 전혀 없는 가정이나 일반적인 위험은 후보로 만들지 마세요. 지적 개수를 채울 필요는 없습니다.
                         """;
-                JsonNode candidates = model.complete(WritingStyle.message(discovery));
+                JsonNode candidates = execution.complete(WritingStyle.message(discovery));
+                includeCitations(context, candidates);
                 Set<String> requested = context.includeRelatedFiles(api, relatedPaths, candidates.path("relatedPaths"));
                 String additional = "";
                 if (!requested.isEmpty()) {
                     String questions = Json.text(candidates, "summary") + Json.write(candidates.path("limitations")) + Json.write(candidates.path("findings"));
                     additional = "\n요청한 추가 자료 발췌(JSON):\n" + Json.write(context.requestedReviewSupport(requested, questions));
-                    candidates = model.complete(WritingStyle.message(discovery + additional
+                    candidates = execution.complete(WritingStyle.message(discovery + additional
                             + "\n앞선 검토(JSON):\n" + Json.write(candidates) + "\n추가 자료로 판단하지 못했던 경로를 다시 확인하고 후보를 결정하세요."));
                 }
-                JsonNode verified = verifyFindings(context, batch, shared + additional, candidates);
+                JsonNode verified = verifyFindings(context, batch, shared + additional, candidates, execution);
+                includeCitations(context, verified);
                 for (JsonNode finding : verified.path("findings")) {
                     boolean candidate = false;
                     for (JsonNode original : candidates.path("findings")) if (Json.text(original, "path").equals(Json.text(finding, "path")) && original.path("line").asInt() == finding.path("line").asInt() && Json.text(original, "side").equals(Json.text(finding, "side"))) candidate = true;
@@ -233,10 +242,12 @@ final class PullRequestReview implements AutoCloseable {
         row.set("findings", Json.MAPPER.valueToTree(accepted)); row.set("limitations", Json.MAPPER.valueToTree(new LinkedHashSet<>(limitations)));
         long fileCount = context.changed.keySet().stream().map(key -> key.substring(key.indexOf(':') + 1)).distinct().count();
         row.put("summary", parent > 0 ? String.join("\n", summaries) : "변경 파일 " + fileCount + "개를 확인했고, 코드 근거와 재검증을 통과한 지적 " + accepted.size() + "개를 남겼습니다.").put("rejectedCount", rejected).put("fileCount", fileCount);
+        row.put("readingGuide", String.join("\n\n", new LinkedHashSet<>(summaries.stream().filter(s -> !s.isBlank()).toList())));
         if (!context.sameSourceHead(api.pullRequest(pr))) row.put("status", "stale"); else row.put("status", "ready");
         save(row);
     }
     private static final String FINDING_RULES = """
+            summary에는 결함 유무와 별개로 PR의 목적, 주요 변경 흐름과 읽을 파일 순서, 확인한 테스트와 실행하지 않은 테스트, 결정이 필요한 설계 사항을 간결하게 설명하세요. 코드로 확인한 사실과 설계 제안 및 미확인 내용을 구분하세요.
             변경으로 생긴 실제 결함을 검토하세요. 기존 문제·취향·일반적 권장은 제외하세요.
             trigger에는 실제로 가능한 호출, 입력값이나 실패 응답을 쓰고 expected에는 명세나 호출자와의 계약상 기대 결과를 쓰세요.
             actual에는 그 조건에서 실행되는 코드 경로와 실제 결과를, reasoning에는 결과에 도달하는 이유와 기존 방어·테스트로 막히지 않는 근거를 쓰세요.
@@ -249,7 +260,13 @@ final class PullRequestReview implements AutoCloseable {
             코드·명세·테스트를 읽은 사실과 직접 실행한 사실을 구분하세요. 실행했다고 지어내지 마세요.
             severity=high 또는 medium에 해당하는 문제를 검토하세요. findings가 없어도 정상입니다. reply는 비우세요.
             """;
-    private JsonNode verifyFindings(ReviewContext context, List<ObjectNode> batch, String shared, JsonNode candidates) throws Exception {
+    private void includeCitations(ReviewContext context, JsonNode result) throws Exception {
+        Set<String> paths = new LinkedHashSet<>();
+        for (JsonNode finding : result.path("findings")) for (JsonNode evidence : finding.path("evidence")) if (Json.text(evidence,"side").equals("new")) paths.add(Json.text(evidence,"path"));
+        for (JsonNode evidence : result.path("replyEvidence")) if (Json.text(evidence,"side").equals("new")) paths.add(Json.text(evidence,"path"));
+        for (String path : paths.stream().limit(12).toList()) if (!context.files.containsKey("new:" + path)) context.includeCurrent(api, path);
+    }
+    private JsonNode verifyFindings(ReviewContext context, List<ObjectNode> batch, String shared, JsonNode candidates, Model execution) throws Exception {
         if (candidates.path("findings").isEmpty()) return candidates;
         String candidateText = Json.write(candidates.path("findings"));
         String prompt = shared + "\n이번 검토 파일(JSON):\n" + Json.write(batch)
@@ -262,7 +279,7 @@ final class PullRequestReview implements AutoCloseable {
                 자료가 부족한 후보는 findings에서 빼고 왜 판단할 수 없는지 limitations에 적으세요.
                 최종 findings에는 confidence=high로 근거가 확인된 기존 후보만 남기세요.
                 """;
-        JsonNode verified = model.complete(WritingStyle.message(prompt));
+        JsonNode verified = execution.complete(WritingStyle.message(prompt));
         List<String> loaded = new ArrayList<>();
         int attempted = 0;
         for (JsonNode selected : verified.path("relatedPaths")) {
@@ -272,13 +289,13 @@ final class PullRequestReview implements AutoCloseable {
             if (missing && context.includeCurrent(api, path)) loaded.add(path);
         }
         if (!loaded.isEmpty()) {
-            verified = model.complete(WritingStyle.message(prompt + "\n추가 근거 발췌(JSON):\n"
+            verified = execution.complete(WritingStyle.message(prompt + "\n추가 근거 발췌(JSON):\n"
                     + Json.write(context.requestedReviewSupport(new LinkedHashSet<>(loaded), Json.write(verified.path("limitations")) + candidateText))
                     + "\n추가 근거로 보류한 후보를 다시 판단하세요. 추가 근거에 없는 사실을 추측하지 마세요."));
         }
         return verified;
     }
-    private JsonNode reviewReply(ReviewContext context, List<JsonNode> comments, JsonNode incoming) throws Exception {
+    private JsonNode reviewReply(ReviewContext context, List<JsonNode> comments, JsonNode incoming, Model execution) throws Exception {
         String background = replyBackground(context, comments, incoming);
         String requirements = """
                 수정이나 테스트를 실행했다고 말하지 마세요. 답할 근거가 부족하면 reply를 비우고 limitations에 부족한 정보를 쓰세요.
@@ -286,7 +303,7 @@ final class PullRequestReview implements AutoCloseable {
                 replyConfidence=high는 답변이 말하는 사실과 제시한 판단을 근거로 뒷받침할 수 있을 때만 사용하세요.
                 findings는 빈 배열로 출력하세요. 관련 파일을 고르는 단계에서만 relatedPaths에 값을 넣으세요.
                 """;
-        JsonNode classification = model.complete(background + """
+        JsonNode classification = execution.complete(background + """
 
                 댓글 유형만 분류하세요. 현재 동작 확인이면 replyKind=fact, 변경 의견이나 선택을 묻는 댓글이면 replyKind=design,
                 답변할 질문이나 제안이 없으면 replyKind=none을 출력하세요. reply, findings, replyEvidence, relatedPaths는 비우세요.
@@ -299,7 +316,7 @@ final class PullRequestReview implements AutoCloseable {
         if (kind.equals("design")) {
             Set<String> paths = context.relatedFileCandidates(api, incoming);
             List<String> changed = context.changed.keySet().stream().filter(key -> key.startsWith("new:")).map(key -> key.substring(4)).toList();
-            JsonNode plan = model.complete(background + "\n변경 파일 경로(JSON):\n" + Json.write(changed)
+            JsonNode plan = execution.complete(background + "\n변경 파일 경로(JSON):\n" + Json.write(changed)
                     + "\n선택 가능한 현재 커밋의 파일 경로(JSON):\n" + Json.write(paths) + """
 
                     댓글의 변경 제안을 판단하려면 어떤 명세와 호출부를 읽어야 하는지 고르세요.
@@ -326,13 +343,13 @@ final class PullRequestReview implements AutoCloseable {
                     """;
         }
         List<ObjectNode> documents = replyDocuments(context, incoming, related, kind.equals("design"));
-        JsonNode candidate = model.complete(WritingStyle.message(background + "\n검토 자료(JSON):\n" + Json.write(documents) + "\n" + requirements + instructions));
+        JsonNode candidate = execution.complete(WritingStyle.message(background + "\n검토 자료(JSON):\n" + Json.write(documents) + "\n" + requirements + instructions));
         if (!Json.text(candidate, "replyKind").equals(kind)) return Json.obj("replyKind", kind);
         if (Json.text(candidate, "reply").isBlank()) return candidate;
         String draft = Json.write(Json.obj("reply", candidate.path("reply"), "replyEvidence", candidate.path("replyEvidence")));
         List<ObjectNode> excerpts = context.replyExcerpts(candidate.path("replyEvidence"), related,
                 Json.text(incoming.path("content"), "raw"), Json.text(candidate, "reply"));
-        JsonNode result = model.complete(WritingStyle.message(background + "\n검증 자료(JSON):\n" + Json.write(excerpts) + "\n" + requirements
+        JsonNode result = execution.complete(WritingStyle.message(background + "\n검증 자료(JSON):\n" + Json.write(excerpts) + "\n" + requirements
                 + "\n검증할 답변(JSON):\n" + draft
                 + "\n답변을 반박하는 검증자 역할입니다. replyKind=" + kind + "를 유지하세요. " + verification
                 + "\n인용과 설명이 일치하는지 확인하세요. 근거로 뒷받침한 답변만 남기고, 고칠 수 없다면 reply를 비우세요."));

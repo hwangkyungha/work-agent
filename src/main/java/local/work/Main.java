@@ -18,16 +18,26 @@ public final class Main {
         Path configFile = Path.of("config.properties");
         Integer portOverride = null;
         String groupwareCommand = "";
+        boolean repairActivities = false;
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--config" -> configFile = Path.of(args[++i]);
                 case "--port" -> portOverride = Integer.parseInt(args[++i]);
+                case "--repair-activity-links" -> repairActivities = true;
                 case "--groupware-setup", "--groupware-login", "--groupware-status", "--calendar-login", "--calendar-status" -> groupwareCommand = args[i];
                 default -> throw new IllegalArgumentException("지원하지 않는 인수: " + args[i]);
             }
         }
         Config config = new Config(configFile);
         KoreaTime time = new KoreaTime(Clock.systemUTC());
+        if (repairActivities) {
+            try (Store records = new Store(config.data().resolve("work-agent.db"))) {
+                int count = new ActivityLinks(records).repair();
+                new SessionCatalog(records).refresh();
+                System.out.println(Json.write(Json.obj("repairedActivities", count, "serverStarted", false)));
+            }
+            return;
+        }
         if (!groupwareCommand.isBlank()) {
             System.setOut(new java.io.PrintStream(System.out, true, StandardCharsets.UTF_8));
             System.setErr(new java.io.PrintStream(System.err, true, StandardCharsets.UTF_8));
@@ -46,6 +56,8 @@ public final class Main {
         GroupwareBooking booking = new GroupwareBooking(config, time);
         Store store = new Store(config.data().resolve("work-agent.db"));
         WorkService service = new WorkService(store, time, new JiraClient(config));
+        new ActivityLinks(store).repair();
+        new SessionCatalog(store).refresh();
         Reports reports = new Reports(service);
         WorklogSync worklogSync = new WorklogSync(service);
         TranscriptImporter importer = new TranscriptImporter(service, config);
@@ -71,7 +83,8 @@ public final class Main {
         };
         CliModel cli = new CliModel(config);
         BitbucketClient bitbucket = new BitbucketClient(config);
-        PullRequestReview reviews = new PullRequestReview(service, bitbucket, cli::review, config.agentName());
+        ProjectReviewModel projectReviews = new ProjectReviewModel(service, cli, config);
+        PullRequestReview reviews = new PullRequestReview(service, bitbucket, projectReviews, config.agentName());
         // The notifier is attached after the Slack connection has been created.
         SlackConnection[] slackTarget = new SlackConnection[1];
         ReviewMonitor reviewMonitor = new ReviewMonitor(service, bitbucket, reviews, config, (text, review) -> slackTarget[0].notifyReview(text, review));
@@ -144,6 +157,8 @@ public final class Main {
                         case "/api/rooms" -> booking.execute(Json.required(body, "requestId"), body);
                         case "/api/reviews/refresh" -> reviewMonitor.refresh();
                         case "/api/reviews/repositories" -> reviews.sources.configure(body);
+                        case "/api/reviews/workspace" -> projectReviews.workspaces.configure(body);
+                        case "/api/reviews/session" -> projectReviews.bind(body);
                         case "/api/reviews/request" -> reviews.request(Json.required(body, "url"), body.path("commentId").asLong(), false, body.path("rerun").asBoolean(), body.path("referenceUrls"), body.path("validation").asBoolean());
                         case "/api/reviews/edit" -> reviews.edit(body);
                         case "/api/reviews/save" -> reviews.savePending(Json.required(body, "id"));
@@ -155,11 +170,14 @@ public final class Main {
                         case "/api/tasks/remove" -> service.removeTasks(body);
                         case "/api/tasks/group" -> service.groupTasks(body);
                         case "/api/activities" -> service.activity(body);
+                        case "/api/work-days" -> new WorkLedger(service).record(body);
+                        case "/api/work-links" -> service.linkWork(body);
                         case "/api/plan" -> service.plan(body);
                         case "/api/plan/item" -> service.planItem(body);
                         case "/api/followups" -> agent.suggestFollowups(date);
                         case "/api/plan/items" -> service.planItems(body);
                         case "/api/followups/accept" -> service.acceptFollowup(body);
+                        case "/api/followups/dismiss" -> service.dismissFollowup(body);
                         case "/api/draft-results/refresh" -> draftResults.generate(date,true);
                         case "/api/draft-results/reviewed" -> service.reviewDraftResult(body);
                         case "/api/meetings" -> service.meeting(body);

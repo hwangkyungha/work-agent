@@ -23,6 +23,11 @@ final class CliModel implements Agent.Model {
     JsonNode review(String prompt) throws Exception {
         return complete(prompt, config.get("AGENT_ENGINE", "codex"), config.get("AGENT_EXECUTABLE", ""), config.get("AGENT_MODEL", ""), config.number("REVIEW_TIMEOUT_SECONDS", 600), "review-schema.json");
     }
+    JsonNode reviewInSession(String prompt, Path workspace, String engine, String session, boolean fork, java.util.function.Consumer<String> saved) throws Exception {
+        String executable = engine.equals(config.get("AGENT_ENGINE", "codex")) ? config.get("AGENT_EXECUTABLE", "") : "";
+        String model = engine.equals(config.get("AGENT_ENGINE", "codex")) ? config.get("AGENT_MODEL", "") : "";
+        return complete(prompt, engine, executable, model, config.number("REVIEW_TIMEOUT_SECONDS", 600), "review-schema.json", workspace, session, fork, saved);
+    }
     void startSession(String engine) throws Exception {
         String executable = switch (engine) {
             case "claude" -> config.get("CLAUDE_EXECUTABLE", "");
@@ -33,11 +38,15 @@ final class CliModel implements Agent.Model {
         if (!Json.text(result, "reply").trim().equals("2") || !result.path("actions").isArray() || !result.path("actions").isEmpty()) throw new IllegalStateException("예약 요청의 응답을 확인하지 못했습니다.");
     }
     private JsonNode complete(String prompt, String engine, String executable, String model, int timeout, String schemaName) throws Exception {
+        return complete(prompt, engine, executable, model, timeout, schemaName, null, "", false, id -> {});
+    }
+    private JsonNode complete(String prompt, String engine, String executable, String model, int timeout, String schemaName, Path workspace, String session, boolean fork, java.util.function.Consumer<String> saved) throws Exception {
         if (engine.equals("off")) throw new IllegalStateException("자연어 처리가 꺼져 있습니다. AGENT_ENGINE을 codex 또는 claude로 설정하세요.");
         Path schema = Files.createTempFile(directory, "schema-", ".json");
         try (var in = CliModel.class.getResourceAsStream("/" + schemaName)) { Files.write(schema, Objects.requireNonNull(in).readAllBytes()); }
         Path output = Files.createTempFile(directory, "response-", ".json");
         Path stderr = Files.createTempFile(directory, "cli-", ".log");
+        Path events = Files.createTempFile(directory, "events-", ".jsonl");
         List<String> command = new ArrayList<>();
         if (engine.equals("claude")) {
             command.add(executable.isBlank() ? "claude" : executable);
@@ -45,21 +54,29 @@ final class CliModel implements Agent.Model {
             // Preserve JSON quotes through Java's Windows native command-line encoding.
             if (System.getProperty("os.name").startsWith("Windows")) schemaArgument = "\"" + schemaArgument.replace("\"", "\\\"") + "\"";
             command.addAll(List.of("-p", "--output-format", "json", "--json-schema", schemaArgument,
-                    "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence"));
+                    "--tools", workspace == null ? "" : "Read,Grep,Glob", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands"));
+            if (workspace == null) command.add("--no-session-persistence");
+            else {
+                command.addAll(List.of("--permission-mode", "dontAsk", "--allowedTools", "Read", "Grep", "Glob"));
+                if (!session.isBlank()) { command.addAll(List.of("--resume", session)); if (fork) command.add("--fork-session"); }
+            }
         } else if (engine.equals("codex")) {
             Path npm = Path.of(System.getenv().getOrDefault("APPDATA", System.getProperty("user.home")), "npm/node_modules/@openai/codex/bin/codex.js");
             if (executable.isBlank() && System.getProperty("os.name").startsWith("Windows") && Files.exists(npm)) command.addAll(List.of("node", npm.toString()));
             else command.add(executable.isBlank() ? "codex" : executable);
-            command.addAll(List.of("exec", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--sandbox", "read-only",
-                    "--disable", "shell_tool", "--disable", "hooks", "--disable", "plugins", "--disable", "memories",
+            command.addAll(List.of("exec", "--skip-git-repo-check", "--ignore-user-config", "--sandbox", "read-only",
+                    "--disable", "hooks", "--disable", "plugins", "--disable", "memories",
                     "-c", "web_search=\"disabled\"", "--output-schema", schema.toString(), "--output-last-message", output.toString(), "--color", "never"));
+            if (workspace == null) command.addAll(List.of("--ephemeral", "--disable", "shell_tool"));
+            else command.addAll(List.of("--json", "--cd", workspace.toString()));
         } else throw new IllegalArgumentException("AGENT_ENGINE은 codex, claude 또는 off여야 합니다.");
         if (!model.isBlank()) command.addAll(List.of("--model", model));
+        if (engine.equals("codex") && workspace != null && !session.isBlank()) command.addAll(List.of(fork ? "fork" : "resume", session));
         if (engine.equals("codex")) command.add("-");
         Process process = null;
         try {
-            ProcessBuilder builder = new ProcessBuilder(command).directory(directory.toFile()).redirectError(stderr.toFile());
-            if (engine.equals("claude")) builder.redirectOutput(output.toFile()); else builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            ProcessBuilder builder = new ProcessBuilder(command).directory((workspace == null ? directory : workspace).toFile()).redirectError(stderr.toFile());
+            if (engine.equals("claude")) builder.redirectOutput(output.toFile()); else if (workspace != null) builder.redirectOutput(events.toFile()); else builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             for (String name : List.of("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "SLACK_REFRESH_TOKEN", "SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET", "REFRESH_TOKEN", "JIRA_TOKEN", "JIRA_API_TOKEN", "BITBUCKET_API_TOKEN", "CALENDAR_ICS_URL", "WORK_AGENT_TOKEN", "ANTHROPIC_API_KEY")) builder.environment().remove(name);
             if (engine.equals("claude")) builder.environment().put("CLAUDE_BOT_SESSION", "1");
             if (config.has("JIRA_TOKEN_ENV")) builder.environment().remove(config.get("JIRA_TOKEN_ENV", ""));
@@ -74,13 +91,16 @@ final class CliModel implements Agent.Model {
             JsonNode result = Json.read(Files.readString(output));
             if (engine.equals("claude")) {
                 if (result.path("is_error").asBoolean()) throw new IllegalStateException("Claude 요청에 실패했습니다. CLI 로그인 상태를 확인하세요.");
+                if (workspace != null && !Json.text(result, "session_id").isBlank()) saved.accept(Json.text(result, "session_id"));
                 if (result.hasNonNull("structured_output")) result = result.get("structured_output");
                 else result = Json.read(Json.required(result, "result"));
+            } else if (workspace != null) {
+                for (String line : Files.readAllLines(events, StandardCharsets.UTF_8)) { JsonNode event = Json.read(line); if (Json.text(event, "type").equals("thread.started")) saved.accept(Json.required(event, "thread_id")); }
             }
             return result;
         } finally {
             if (process != null && process.isAlive()) { process.descendants().forEach(ProcessHandle::destroyForcibly); process.destroyForcibly(); }
-            Files.deleteIfExists(output); Files.deleteIfExists(stderr); Files.deleteIfExists(schema);
+            Files.deleteIfExists(output); Files.deleteIfExists(stderr); Files.deleteIfExists(schema); Files.deleteIfExists(events);
         }
     }
     static IllegalStateException failure(String engine, int exit, String diagnostic) {

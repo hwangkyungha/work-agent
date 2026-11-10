@@ -120,7 +120,11 @@ final class ReviewMonitor implements AutoCloseable {
         if (status == null) status = Json.obj("items", List.of(), "warnings", List.of());
         status.put("scanning", scanning).put("configured", api.configured()).put("automatic", config.get("BITBUCKET_AUTO_REVIEW", "true").equals("true"));
         List<ObjectNode> jobs = service.store.list("prReview"); Collections.reverse(jobs); status.set("jobs", Json.MAPPER.valueToTree(jobs));
-        status.set("repositories", Json.MAPPER.valueToTree(reviews.sources.settings())); return status;
+        status.set("repositories", Json.MAPPER.valueToTree(reviews.sources.settings()));
+        status.set("localRepositories", Json.MAPPER.valueToTree(service.store.list("prRepositoryPath")));
+        status.set("sessionBindings", Json.MAPPER.valueToTree(service.store.list("prSessionBinding")));
+        status.set("sessions", Json.MAPPER.valueToTree(service.store.list("session").stream().filter(row -> !Json.text(row,"session").isBlank()).sorted(Comparator.comparing((ObjectNode row)->Json.text(row,"updatedAt")).reversed()).limit(200).map(row -> Json.obj("id",Json.text(row,"id"),"name",Json.text(row,"name"),"cwd",Json.text(row,"cwd"))).toList()));
+        return status;
     }
     synchronized void notifyCompleted() throws Exception {
         for (ObjectNode row : service.store.list("prReview")) {
