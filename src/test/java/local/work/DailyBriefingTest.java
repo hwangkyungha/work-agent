@@ -37,7 +37,7 @@ class DailyBriefingTest {
         assertTrue(text.contains("팀에 공유할 변경 사항")); assertTrue(text.contains("환경 확인 요청"));
         assertFalse(text.contains("발생한 문제")); assertFalse(text.contains("결정이 필요한 사항"));
     }
-    @Test void previousPlanAndUnplannedIssueSessionsContainTitlesWithoutAgentMessages() {
+    @Test void performedPlannedAndUnplannedWorkContainsTitlesWithoutAgentMessages() {
         ObjectNode planned = service.task(Json.obj("title", "보고서 기능 검토", "jiraKey", "CTS-1"));
         ObjectNode manual = service.task(Json.obj("title", "팀 회의 준비"));
         service.plan(Json.obj("date", "2026-11-05", "taskIds", List.of(Json.text(planned, "id"), Json.text(manual, "id"))));
@@ -50,7 +50,8 @@ class DailyBriefingTest {
         store.put("issue", Json.obj("id", "CTS-3", "title", ""));
         store.put("session", Json.obj("id", "claude:named", "name", "CTS-3 설정 오류 수정"));
         session("codex", "unlinked", "");
-        service.activity(Json.obj("date", "2026-11-05", "title", "에이전트가 작성한 상세 수행 결과"));
+        new WorkLedger(service).record(Json.obj("date","2026-11-05","workId",Json.text(manual,"id"),"outcome","progress"));
+        service.activity(Json.obj("date", "2026-11-05", "title", "에이전트가 작성한 상세 수행 결과", "source", "claude", "session", "no-title"));
         String text = reports.briefing(service.time.today());
         assertTrue(text.contains("- CTS-1 보고서 기능 검토\n- 팀 회의 준비\n- CTS-2 CI 결과 조회 개선\n- CTS-3 설정 오류 수정\n"));
         assertEquals(1, text.split("CTS-1", -1).length - 1);
@@ -58,12 +59,12 @@ class DailyBriefingTest {
         assertFalse(text.contains("상세 수행 결과")); assertFalse(text.contains("긴 대화 원문")); assertFalse(text.contains("이름 없는 세션"));
         assertFalse(text.contains("메시지")); assertFalse(text.contains("세션 개수"));
     }
-    @Test void yesterdayPlanIsUsedEvenWithoutActivityRecords() {
+    @Test void yesterdayPlanWithoutActivityIsNotReportedAsPerformed() {
         service.activity(Json.obj("date", "2026-11-04", "title", "이틀 전 기록"));
         ObjectNode task = service.task(Json.obj("title", "어제 계획한 업무"));
         service.plan(Json.obj("date", "2026-11-05", "taskIds", List.of(Json.text(task, "id"))));
         String text = reports.daily(service.time.today());
-        assertTrue(text.contains("2026-11-05 목요일")); assertTrue(text.contains("어제 계획한 업무")); assertFalse(text.contains("이틀 전 기록"));
+        assertTrue(text.contains("2026-11-05 목요일")); assertFalse(text.contains("어제 계획한 업무")); assertFalse(text.contains("이틀 전 기록"));
     }
     @Test void sampleRequirementKeysAndAutomatedSessionsNeverBecomeBriefingIssues() {
         session("claude", "sample1", "REQ-001"); session("codex", "sample2", "REQ-002");

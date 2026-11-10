@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 final class AgentContext {
     private static final Pattern ISSUE_KEY = Pattern.compile("(?i)\\b[A-Z][A-Z0-9]+-\\d+\\b");
     private static final Pattern DATE = Pattern.compile("\\b\\d{4}-\\d{2}-\\d{2}\\b");
-    private static final String[] TASK_FIELDS = {"id", "title", "jiraKey", "status", "jiraStatus", "due", "important", "urgent", "hidden", "product", "workGroup", "predecessorIds"};
+    private static final String[] TASK_FIELDS = {"id", "title", "jiraKey", "status", "jiraStatus", "due", "important", "urgent", "hidden", "product", "workType", "workGroup", "predecessorIds"};
     private final WorkService service;
 
     AgentContext(WorkService service) { this.service = service; }
@@ -22,6 +22,15 @@ final class AgentContext {
         }
         LocalDate day = requestedDate(request, service.time.today());
         ObjectNode context = Json.obj("date", day.toString());
+        if (query.matches("(?s).*(계획|한 일|수행|활동|워크로그|로그워크|worklog|브리핑|데일리|이어|진행하지|못한).*") ) {
+            WorkLedger ledger=new WorkLedger(service);
+            context.set("actualWork",Json.MAPPER.valueToTree(ledger.day(day).stream().limit(24).map(row->fields(row,"date","workId","taskId","title","jiraKey","planned","observed","performed","outcome","note")).toList()));
+            if (planningRequest(query) && day.equals(service.time.today())) {
+                LocalDate previous=new Reports(service).previousWorkDate(day);
+                context.set("previousWork",Json.MAPPER.valueToTree(ledger.day(previous).stream().limit(24).map(row->fields(row,"date","workId","taskId","title","jiraKey","planned","observed","performed","outcome","note")).toList()));
+            }
+            if(planningRequest(query))context.set("carryover",Json.MAPPER.valueToTree(ledger.carryover(day).stream().limit(12).map(row->fields(row,"date","workId","taskId","title","jiraKey","reason")).toList()));
+        }
         Set<String> issueKeys = new HashSet<>();
         ISSUE_KEY.matcher(query).results().forEach(match -> issueKeys.add(match.group()));
         boolean planning = query.matches("(?s).*(계획|할\\s*일|우선순위|마감|진행\\s*(중|상황)).*");
@@ -92,6 +101,7 @@ final class AgentContext {
                 .filter(entry -> entry.getValue() > 0).sorted(Map.Entry.<ObjectNode, Integer>comparingByValue().reversed())
                 .map(Map.Entry::getKey).toList();
     }
+    private static boolean planningRequest(String query) { return query.matches("(?s).*(계획|추천|이어|브리핑|데일리).*"); }
 
     private static int taskScore(ObjectNode task, String query, Set<String> keys, List<String> terms) {
         String key = Json.text(task, "jiraKey").toLowerCase(Locale.ROOT);

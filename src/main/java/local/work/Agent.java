@@ -159,6 +159,8 @@ final class Agent {
             case "remove_task" -> { result = service.removeTasks(Json.obj("taskIds", List.of(Json.required(p, "id")))); message = result.path("deleted").asInt() > 0 ? "직접 등록한 할 일을 삭제했습니다. 활동 기록과 워크로그는 남습니다." : "Jira 업무를 내 목록에서 숨겼습니다. Jira 상태는 바꾸지 않았습니다."; }
             case "group_tasks" -> { result = service.groupTasks(p); message = "선택한 업무의 묶음을 변경했습니다."; }
             case "activity" -> { result = service.activity(p); message = "활동을 저장했습니다: " + Json.text(result, "title"); }
+            case "work_day" -> { result = new WorkLedger(service).record(p); message = "그날의 수행 상태를 저장했습니다. Jira 상태는 변경하지 않았습니다."; }
+            case "link_work" -> { result = service.linkWork(p); message = "실제 활동을 업무에 연결했습니다: " + Json.text(result,"title"); }
             case "link_activity" -> {
                 result = service.store.get("activity", Json.required(p, "id"));
                 if (result == null) throw new IllegalArgumentException("활동을 찾지 못했습니다.");
@@ -257,7 +259,7 @@ final class Agent {
             단순 대화·질문은 reply만 쓰고 actions=[]로 둔다. 업무 자료는 요청에 맞게 선별되며, 목록이 비어 있거나 일부만 제공되면 전체에 해당 업무가 없다고 단정하지 않는다. 대상이 모호하면 이슈 키나 제목을 묻는다.
             실행 전에 등록했다고 단정하지 말고 reply는 짧게 쓴다. 실제 처리 결과는 프로그램이 덧붙인다.
             사용자에게 업무 추가·수정 요청을 받으면 별도 허락 없이 처리한다. 대상이 모호하면 질문한다.
-            task: {title,product,jiraKey,due,important,urgent,status,today,date}. 수정할 때만 실제 id를 넣는다. 생략된 필드는 보내지 않는다. 오늘 할 일로 추가하라고 하면 today=true와 한국 날짜 date를 넣는다.
+            task: {title,product,workType,jiraKey,due,important,urgent,status,today,date}. 수정할 때만 실제 id를 넣는다. 생략된 필드는 보내지 않는다. 오늘 할 일로 추가하라고 하면 today=true와 한국 날짜 date를 넣는다.
             로컬 status는 todo,in-progress,done. 중요도·긴급도가 언급되지 않으면 임시로 판단한다. 마감이 없으면 due="".
             task_status: {id,status}. 기존 업무의 상태 변경에 사용한다. Jira 연결 업무는 실제 Jira에서 가능한 전환으로 실행한다. 정확한 Jira 상태 이름 또는 todo,in-progress,done을 쓴다. 선택이 여러 개면 사용자가 고르게 한다.
             hide_task: {id,hidden:true}. 관심 없는 업무를 내 목록에서만 숨긴다. 완료 처리나 Jira 삭제로 해석하지 않는다. 다시 표시하려면 hidden:false.
@@ -265,7 +267,9 @@ final class Agent {
             task로 workGroup(업무 묶음 이름), predecessorIds(선행 작업의 실제 task id 목록)를 저장할 수 있다. 이 값은 work-agent 안에서만 사용하며 Jira 관계를 바꾸지 않는다. 순서가 언급되지 않으면 의존관계를 임의로 만들지 않는다. 빈 workGroup은 묶음 해제, 빈 predecessorIds는 선행 작업 해제다.
             group_tasks: {taskIds,workGroup}. 여러 업무를 같은 묶음으로 옮기거나 workGroup=""으로 묶음을 해제한다. 사용자가 지정한 업무만 변경한다.
             우선순위는 긴급+중요, 긴급, 중요, 없음 순서다. hidden 업무는 계획과 브리핑에서 제외한다.
-            activity: {title,date,jiraKey,product}. 실제 수행한 활동만 기록한다. 향후 할 일과 혼동하지 않는다.
+            activity: {title,date,jiraKey,product,taskId}. 실제 수행한 활동만 기록한다. 향후 할 일과 혼동하지 않는다. 기존 업무에 대한 수행이면 실제 taskId로 연결한다.
+            work_day: {date,workId,outcome,note}. 그날의 수행 상태를 저장한다. outcome은 unconfirmed,not-started,progress,done,deferred,cancelled. 이 값은 Jira 상태가 아니다. 계획한 사실만으로 진행했다고 판단하지 않는다.
+            link_work: {date,workId,taskId,create,jiraKey}. 실제 활동을 기존 업무에 연결한다. 새로운 업무로 등록할 때만 create=true와 선택적인 jiraKey를 사용한다. Jira가 없으면 업무 제목과 실제 내부 ID를 그대로 쓰며 REQ-* 같은 가짜 키를 만들지 않는다.
             link_activity: {id,jiraKey}. 여러 도구의 기록이 같은 이슈면 같은 jiraKey에 연결한다.
             meeting: {title,start,end,product,jiraKey}. 종료 시각을 모르면 end="". 회의 시각을 개발 마감으로 바꾸지 않는다.
             meeting은 업무 에이전트 일정만 저장한다. 외부 캘린더에도 썼다고 말하지 않는다.
@@ -278,7 +282,7 @@ final class Agent {
             오늘 계획에서 빼거나 추가하는 요청은 plan_item: {date,id,included:false 또는 true}로 처리한다. 업무 자체나 실제 활동·워크로그를 삭제하지 않는다.
             오늘 할 일은 사용자가 직접 고르거나 오늘 추가하라고 명시한 업무만 넣는다. In Progress·마감·중요도·긴급도 조건이나 전날 계획만으로 자동 추가하지 않는다. 추천 요청은 todayGroups의 후보를 설명하며 사용자 선택 전에는 계획을 수정하지 않는다.
             daily_note: {date,text,problems,help,decisions}. 기존 문구를 보존하며 요청한 내용을 합친다. 추가 공유는 text, 발생한 문제는 problems, 필요한 도움은 help, 결정할 사항은 decisions에 저장한다. 최근 진행한 일과 오늘 할 일은 자동 자료다. 요청하지 않은 항목은 생략하고 사실을 만들지 않는다.
-            worklog: {date,items:[{jiraKey,duration,comment,marker?}]}. 사용자가 정한 시간만 저장한다. duration은 3h,2.5h,2h 30m 형식이다. 비율이나 하루 8시간 조건은 없다.
+            worklog: {date,items:[{jiraKey,workId?,title?,taskId?,duration,comment,marker?}]}. 사용자가 정한 시간만 저장한다. Jira가 없으면 workId와 title을 유지하고 jiraKey는 비워 초안으로 보관한다. Jira 등록 전에는 실제 이슈를 연결해야 한다. duration은 3h,2.5h,2h 30m 형식이다. 비율이나 하루 8시간 조건은 없다.
             기존 날짜의 기록을 수정할 때 기존 항목도 보존하고 marker를 유지한다. 이미 등록한 항목은 바꾸거나 빼지 않는다. 다른 이슈는 추가할 수 있다.
             시간 없이 이슈 목록만 저장하라는 요청이면 duration=""으로 초안을 저장한다. 시간 배분 요청에 시간이 없으면 작업 근거를 보여주고 시간을 물어본다. CLI 메시지 수는 작업량 참고 자료이며 실제 근무 시간으로 바꾸지 않는다.
             post_worklog: {date}. 사용자가 Jira에 실제 등록하라고 분명히 요청한 경우에만 쓴다. 초안 조회·저장을 등록으로 해석하지 않는다.

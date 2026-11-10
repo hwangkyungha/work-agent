@@ -32,6 +32,18 @@ final class Reports {
     String briefing(LocalDate date) {
         return dailyText(date, "데일리 브리핑");
     }
+    String preparation(LocalDate date) {
+        LocalDate previous = previousWorkDate(date);
+        StringBuilder text = new StringBuilder(date + " 오늘 업무 준비 (한국 시간)\n\n" + previous + " 계획과 실제\n");
+        for (ObjectNode row : new WorkLedger(service).day(previous)) {
+            text.append("- ").append(workTitle(Json.text(row, "jiraKey"), Json.text(row, "title"))).append(" · ")
+                    .append(row.path("planned").asBoolean() ? "계획한 업무" : "계획 밖 활동").append(" · ")
+                    .append(row.path("performed").asBoolean() ? "수행 내용 있음" : "수행 여부 확인 필요").append('\n');
+        }
+        text.append("\n이어서 할 일 후보\n");
+        for (ObjectNode row : new WorkLedger(service).carryover(date)) text.append("- ").append(Json.text(row, "title")).append(" · ").append(Json.text(row, "reason")).append('\n');
+        return text.append('\n').toString();
+    }
     LocalDate previousWorkDate(LocalDate date) {
         LocalDate end = date.minusDays(1);
         while (end.getDayOfWeek().getValue() > 5) end = end.minusDays(1);
@@ -40,6 +52,9 @@ final class Reports {
         Set<String> automated = new ActivitySummary(service.store).automatedSessions();
         service.store.list("activity").stream().filter(a -> !automated.contains(ActivitySummary.session(a))).forEach(a -> days.add(LocalDate.parse(Json.required(a, "date"))));
         service.store.list("plan").stream().filter(p -> !p.path("taskIds").isEmpty()).forEach(p -> days.add(LocalDate.parse(Json.required(p, "date"))));
+        service.store.list("workDay").forEach(p -> days.add(LocalDate.parse(Json.required(p, "date"))));
+        service.store.list("evidence").stream().filter(a -> !automated.contains(ActivitySummary.session(a)) && Json.text(a, "role").equals("assistant")).forEach(a -> days.add(LocalDate.parse(Json.required(a, "date"))));
+        service.store.list("draftResult").stream().filter(row -> !Json.text(row,"createdAt").isBlank()).forEach(row -> days.add(KoreaTime.dateOf(Json.text(row,"createdAt"))));
         return days.stream()
                 .filter(day -> !day.isAfter(last) && day.getDayOfWeek().getValue() <= 5).max(Comparator.naturalOrder()).orElse(last);
     }
@@ -49,7 +64,7 @@ final class Reports {
         for (LocalDate day = from; !day.isAfter(to); day = day.plusDays(1)) {
             text.append("\n").append(day).append(' ').append(day.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.KOREAN)).append('\n');
             ObjectNode draft = service.store.get("worklog", day.toString());
-            if (draft != null) for (JsonNode item : draft.path("items")) if (!Json.text(item, "state").equals("posted")) text.append("- ").append(Json.text(item, "jiraKey")).append(" / ").append(item.path("seconds").asLong() == 0 ? "시간 미정" : hours(item.path("seconds").asLong()) + "h").append(" / ").append(stateLabel(Json.text(item, "state"))).append('\n');
+            if (draft != null) for (JsonNode item : draft.path("items")) if (!Json.text(item, "state").equals("posted")) text.append("- ").append(workTitle(Json.text(item, "jiraKey"), Json.text(item, "title"))).append(" / ").append(item.path("seconds").asLong() == 0 ? "시간 미정" : hours(item.path("seconds").asLong()) + "h").append(" / ").append(stateLabel(Json.text(item, "state"))).append('\n');
             List<ObjectNode> registered = service.registeredWorklogs(day, day);
             for (ObjectNode item : registered) text.append("- ").append(Json.text(item, "jiraKey")).append(" / ").append(hours(item.path("seconds").asLong())).append("h / 등록 완료\n");
             for (ObjectNode group : groups) if (day.toString().equals(Json.text(group, "date"))) text.append("- 작업 근거: ").append(Json.text(group, "jiraKey")).append(' ').append(Json.text(group, "title")).append(" / 메시지 ").append(group.path("messageCount").asInt()).append("개 / 세션 ").append(group.path("sessionCount").asInt()).append("개\n");
@@ -83,27 +98,12 @@ final class Reports {
     static String stateLabel(String state) { return switch (state) { case "posted" -> "등록 완료"; case "posting", "unknown" -> "결과 확인 필요"; case "failed" -> "등록 실패"; default -> "초안"; }; }
     private void appendPreviousWork(StringBuilder text, LocalDate date) {
         LinkedHashSet<String> lines = new LinkedHashSet<>();
-        Set<String> plannedKeys = new HashSet<>();
-        for (ObjectNode task : service.planned(date)) {
-            String key = Json.text(task, "jiraKey");
-            plannedKeys.add(key);
-            lines.add(workTitle(key, Json.text(task, "title")));
+        for (ObjectNode work : new WorkLedger(service).day(date)) if (work.path("performed").asBoolean()) {
+            String title = Json.text(work, "title");
+            if (title.equals("이름 없는 세션") || title.isBlank()) continue;
+            lines.add(workTitle(Json.text(work, "jiraKey"), title));
         }
-        for (ObjectNode group : new ActivitySummary(service.store).briefingGroups(date, date)) {
-            String key = Json.text(group, "jiraKey");
-            ObjectNode issue = service.store.get("issue", key);
-            if (key.isBlank() || issue == null || plannedKeys.contains(key) || group.path("sessionCount").asInt() == 0 || group.path("assistantMessages").asInt() == 0) continue;
-            String description = Json.text(issue, "title");
-            if (description.isBlank() || description.equals(key)) {
-                description = "";
-                for (JsonNode session : group.path("sessions")) {
-                    ObjectNode saved = service.store.get("session", Json.text(session, "id"));
-                    if (saved != null && !Json.text(saved, "name").isBlank()) { description = Json.text(saved, "name"); break; }
-                }
-            }
-            lines.add(workTitle(key, description));
-        }
-        if (lines.isEmpty()) text.append("- 계획한 업무나 Jira 이슈와 연결된 작업 세션이 없습니다.\n");
+        if (lines.isEmpty()) text.append("- 확인된 수행 내용이 없습니다. 어제 계획과 실제 활동을 확인해 주세요.\n");
         lines.forEach(line -> text.append("- ").append(line).append('\n'));
     }
     private static String workTitle(String key, String title) {

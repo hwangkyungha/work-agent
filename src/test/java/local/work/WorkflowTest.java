@@ -79,10 +79,19 @@ class WorkflowTest {
         ObjectNode task = service.task(Json.obj("title","수정 결과 검토"));
         service.plan(Json.obj("taskIds",List.of(Json.text(task,"id"))));
         String plain=reports.daily(time.today());
-        assertTrue(plain.contains("진행한 일"));assertFalse(plain.contains("원인을 분석했습니다."));assertTrue(plain.contains("수정 결과 검토"));
+        assertTrue(plain.contains("진행한 일"));assertTrue(plain.contains("원인을 분석했습니다."));assertTrue(plain.contains("수정 결과 검토"));
         assertFalse(plain.contains("도움 요청"));assertFalse(plain.contains("의사결정"));assertFalse(plain.contains("추가 공유"));
         service.dailyNote(Json.obj("text","검증 환경 접근이 필요합니다."));
         assertTrue(reports.daily(time.today()).contains("추가 공유\n검증 환경 접근이 필요합니다."));
+    }
+    @Test void slackCanRecordUnstartedWorkWithoutChangingTaskStatusAndReceivesActualWorkContext() throws Exception {
+        String taskId=Json.text(service.task(Json.obj("title","오류 재현")),"id");
+        service.plan(Json.obj("date","2026-11-03","taskIds",List.of(taskId)));
+        AtomicReference<String> input=new AtomicReference<>();
+        Agent agent=new Agent(service,reports,prompt->{input.set(prompt);return Json.obj("reply","","actions",List.of(Json.obj("type","work_day","payload",Json.write(Json.obj("date","2026-11-03","workId",taskId,"outcome","not-started")))));},kind->Json.object(),"호박","호박아");
+        agent.chat("test","daily-change","어제 계획한 오류 재현은 진행하지 못했어");
+        assertTrue(input.get().contains("actualWork"));assertEquals("not-started",Json.text(new WorkLedger(service).day(LocalDate.of(2026,11,3)).getFirst(),"outcome"));
+        assertEquals("todo",Json.text(store.get("task",taskId),"status"));assertEquals(0,jira.calls);
     }
     @Test void worklogSavesEnteredHoursWithoutFillingEightHours() {
         ObjectNode draft=service.saveWorklog(entries("3h","2h"));
