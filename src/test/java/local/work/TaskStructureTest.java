@@ -18,6 +18,17 @@ class TaskStructureTest {
     }
     @AfterEach void close() throws Exception { store.close(); }
     String id(ObjectNode task) { return Json.text(task, "id"); }
+    @Test void bulkClassificationCanChangeTypeWithoutClearingDifferentGroupsAndRejectsInvalidBatches() {
+        String first=id(service.task(Json.obj("title","첫 업무","workGroup","첫 묶음","workType","기능"))),second=id(service.task(Json.obj("title","둘째 업무","workGroup","둘째 묶음","workType","운영")));
+        service.groupTasks(Json.obj("taskIds",List.of(first,second),"workType","품질·성능"));
+        assertEquals("첫 묶음",Json.text(store.get("task",first),"workGroup"));assertEquals("둘째 묶음",Json.text(store.get("task",second),"workGroup"));
+        for(String task:List.of(first,second))assertEquals("품질·성능",Json.text(store.get("task",task),"workType"));
+        assertThrows(IllegalArgumentException.class,()->service.groupTasks(Json.obj("taskIds",List.of(first,second),"workType","없는 성격","workGroup","잘못된 변경")));
+        assertThrows(IllegalArgumentException.class,()->service.groupTasks(Json.obj("taskIds",List.of(first,"missing"),"workType","운영")));
+        assertEquals("품질·성능",Json.text(store.get("task",first),"workType"));assertEquals("첫 묶음",Json.text(store.get("task",first),"workGroup"));
+        service.groupTasks(Json.obj("taskIds",List.of(first,second),"workGroup","공통 묶음","workType",""));
+        assertEquals("공통 묶음",Json.text(store.get("task",second),"workGroup"));assertEquals("",Json.text(store.get("task",second),"workType"));
+    }
     @Test void localTasksKeepGroupAndPredecessorsWithoutChangingDailyPlan() {
         ObjectNode first = service.task(Json.obj("title", "출력 구조 변경", "workGroup", " CI 리포트 개선 "));
         ObjectNode next = service.task(Json.obj("title", "화면 구현", "workGroup", "CI 리포트 개선", "predecessorIds", List.of(id(first), id(first))));

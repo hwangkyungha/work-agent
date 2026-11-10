@@ -28,6 +28,7 @@ class WebUiTest {
     List<String> acceptedFollowups=new ArrayList<>();
     List<JsonNode> workDayUpdates=new ArrayList<>(),addedPastWork=new ArrayList<>();
     List<ObjectNode> pastWorkCandidates=new ArrayList<>();
+    List<JsonNode> workspaceUpdates=new ArrayList<>(),referenceUpdates=new ArrayList<>();
     static final String ORIGIN = "http://127.0.0.1:18765";
     ObjectNode task(String id, String key, String title) { return Json.obj("id", id, "jiraKey", key, "title", title, "status", "todo", "important", false, "urgent", false, "product", "개발", "due", "", "hidden", false, "createdAt", "2026-11-06T00:00:00Z"); }
     @BeforeEach void open() {
@@ -49,6 +50,8 @@ class WebUiTest {
                 case "/api/settings" -> content = Json.write(Json.obj("agentName", "호박", "agentCallName", "호박아", "slackConnected", true, "jiraConfigured", true, "engine", "codex"));
                 case "/api/reviews" -> content = Json.write(Json.obj("configured", true, "automatic", true, "jobs", reviewJobs, "warnings", List.of(), "workspaces", List.of("team"), "repositoryCount", 48));
                 case "/api/reviews/refresh" -> reviewRefreshes++;
+                case "/api/reviews/workspace" -> workspaceUpdates.add(Json.read(route.request().postData()));
+                case "/api/reviews/repositories" -> referenceUpdates.add(Json.read(route.request().postData()));
                 case "/api/reviews/request" -> reviewRequests.add(Json.read(route.request().postData()));
                 case "/api/reviews/edit" -> {
                     JsonNode payload = Json.read(route.request().postData());
@@ -57,7 +60,7 @@ class WebUiTest {
                 case "/api/reviews/save" -> { pendingSaves++; reviewJobs.getFirst().put("status", "saved"); }
                 case "/api/tasks/group" -> {
                     JsonNode payload = Json.read(route.request().postData()); groupUpdates.add(payload);
-                    for (JsonNode task : state.path("tasks")) for (JsonNode id : payload.path("taskIds")) if (id.asText().equals(Json.text(task, "id"))) ((ObjectNode) task).set("workGroup", payload.get("workGroup"));
+                    for (JsonNode task : state.path("tasks")) for (JsonNode id : payload.path("taskIds")) if (id.asText().equals(Json.text(task, "id"))) {if(payload.has("workGroup"))((ObjectNode)task).set("workGroup",payload.get("workGroup"));if(payload.has("workType"))((ObjectNode)task).set("workType",payload.get("workType"));}
                     refreshPlan(); content = Json.write(Json.obj("count", payload.path("taskIds").size()));
                 }
                 case "/api/tasks" -> {
@@ -446,5 +449,50 @@ class WebUiTest {
         state.set("followups",Json.MAPPER.valueToTree(List.of(Json.obj("id","remaining","kind","followup","sourceDraftResultId","reviewed-pr","sourcePrUrl","https://bitbucket.org/team/repo/pull-requests/1","title","검토 뒤 남은 배포 문서","reason","PR에서 다음 작업으로 확인했습니다."))));
         page.reload();page.locator("[data-accept-followup='remaining']").waitFor();assertTrue(page.locator(".side-stack").textContent().contains("남은 후속 작업"));
         page.locator("[data-dismiss-followup='remaining']").click();page.waitForCondition(()->page.locator("[data-accept-followup='remaining']").count()==0);
+    }
+    @Test void longTaskOptionsCannotOverflowTheLinkingDialogAndSearchUsesFullWidthControls() throws Exception {
+        ((ArrayNode)state.path("tasks")).add(task("long","CT-99","긴 업무 제목 "+"VeryLongUnbrokenIssueTitle".repeat(25)));
+        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","session:claude:overflow","title","기존 업무 연결","outcome","progress"))));
+        page.reload();page.locator("[data-link-work='session:claude:overflow']").click();
+        assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));
+        for(int width:List.of(390,660)){page.setViewportSize(width,844);assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));}
+        String screenshots=System.getProperty("work.ui.fixes.screenshots","");if(!screenshots.isBlank()){Path output=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve("link-dialog.png")));}
+        page.locator("#close-modal").click();page.locator("#add-previous-work").click();
+        assertTrue(page.locator("#past-work-search").boundingBox().height>=38);
+        assertTrue((Boolean)page.locator("#past-work-search").evaluate("el=>el.getBoundingClientRect().width>=el.parentElement.clientWidth*0.9"));
+        if(!screenshots.isBlank())page.screenshot(new Page.ScreenshotOptions().setPath(Path.of(screenshots).resolve("past-work-dialog.png")));
+    }
+    @Test void repositoryConnectionIsPrimaryAndExternalSpecsRemainOptional() {
+        page.locator("[data-view='reviews']").click();
+        page.locator("#review-repository").locator("..").locator("summary").first().click();
+        assertTrue(page.locator("#review-local-path").isVisible());assertFalse(page.locator("#review-repository-sources").isVisible());
+    }
+    @Test void bulkTypeChangePreservesDifferentGroupsAndExplicitGroupRemovalPreservesTypes() {
+        ((ObjectNode)state.path("tasks").get(0)).put("workGroup","첫 묶음");((ObjectNode)state.path("tasks").get(1)).put("workGroup","둘째 묶음");
+        page.reload();page.locator("[data-view='plan']").click();page.locator("#select-all-tasks").check();page.locator("#bulk-group").click();
+        page.locator("#bulk-work-type").selectOption("품질·성능");page.locator("#group-form [type='submit']").click();page.waitForCondition(()->groupUpdates.size()==1);
+        assertEquals("품질·성능",Json.text(groupUpdates.getFirst(),"workType"));assertFalse(groupUpdates.getFirst().has("workGroup"));
+        assertEquals("첫 묶음",Json.text(state.path("tasks").get(0),"workGroup"));
+        page.locator("#bulk-group").click();page.locator("#clear-bulk-group").click();page.locator("#group-form [type='submit']").click();page.waitForCondition(()->groupUpdates.size()==2);
+        assertEquals("",Json.text(groupUpdates.get(1),"workGroup"));assertFalse(groupUpdates.get(1).has("workType"));
+    }
+    @Test void savingALocalRepositoryDoesNotEraseUntouchedExternalReferences() {
+        page.locator("[data-view='reviews']").click();page.locator("#review-repository").locator("..").locator("summary").first().click();
+        page.locator("#review-repository-name").fill("team/repo");page.locator("#review-local-path").fill("D:/Git/repo");page.locator("#review-repository [type='submit']").click();
+        page.waitForCondition(()->workspaceUpdates.size()==1);assertTrue(referenceUpdates.isEmpty());
+        page.locator(".external-review-sources>summary").click();page.locator("#review-repository-sources").fill("https://bitbucket.org/team/specs/src/main/contract.md");page.locator("#review-repository [type='submit']").click();page.waitForCondition(()->referenceUpdates.size()==1);
+        assertEquals(1,workspaceUpdates.size());
+    }
+    @Test void oldUnreviewedEmptySuggestionsAreRemovedWhileTypedTimeManualIssuesAndSavedDraftsSurvive() {
+        ObjectNode saved=Json.obj("workId","session:saved","title","저장한 시간 미정 업무","jiraKey","CT-9","seconds",0,"marker","saved-marker","state","draft");
+        state.set("worklogs",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","items",List.of(saved)))));
+        page.evaluate("value=>localStorage.setItem('work-agent.worklog-editor:2026-11-06',JSON.stringify(value))",List.of(
+                Map.of("workId","session:old-auto","title","하네스 자동 실행","jiraKey","","duration","","marker","auto"),
+                Map.of("workId","session:typed","title","시간을 입력한 업무","jiraKey","","duration","2h","marker","typed"),
+                Map.of("jiraKey","WOR-1517","duration","","marker","manual"),
+                Map.of("workId","session:saved","title","저장한 시간 미정 업무","jiraKey","CT-9","duration","","marker","saved-marker")));
+        page.reload();page.locator("[data-view='worklog']").click();
+        assertEquals(3,page.locator("#worklog-rows .worklog-input-row").count());assertEquals("2h",page.locator(".log-duration").first().inputValue());assertFalse(page.locator("#worklog-rows").textContent().contains("하네스 자동 실행"));
+        assertEquals("WOR-1517",page.locator(".log-key").nth(1).inputValue());assertEquals("CT-9",page.locator(".log-key").nth(2).inputValue());
     }
 }

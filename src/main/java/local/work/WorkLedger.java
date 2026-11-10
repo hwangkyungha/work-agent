@@ -130,7 +130,14 @@ final class WorkLedger {
         return results.stream().sorted(Comparator.comparing((ObjectNode row)->Json.text(row,"date")).reversed().thenComparing(row->Json.text(row,"lastActivityAt"),Comparator.reverseOrder())).toList();
     }
     List<ObjectNode> worklogCandidates(LocalDate date) {
-        return day(date).stream().filter(row -> row.path("performed").asBoolean()).toList();
+        return reviewRows(date).stream().filter(row -> row.path("performed").asBoolean()).toList();
+    }
+    List<ObjectNode> worklogEvidence(LocalDate from,LocalDate until) {
+        List<ObjectNode> groups=new ArrayList<>();
+        for(LocalDate date=from;!date.isAfter(until);date=date.plusDays(1))for(ObjectNode work:worklogCandidates(date))if(work.has("evidence")) {
+            ObjectNode group=((ObjectNode)work.get("evidence")).deepCopy();group.put("title",Json.text(work,"title")).put("jiraKey",Json.text(work,"jiraKey"));groups.add(group);
+        }
+        return groups;
     }
     ObjectNode add(JsonNode input) {
         synchronized(service) {

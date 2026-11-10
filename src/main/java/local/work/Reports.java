@@ -60,7 +60,7 @@ final class Reports {
     }
     String worklog(LocalDate from, LocalDate to) {
         StringBuilder text = new StringBuilder(from + " ~ " + to + " 워크로그\n작업 시간은 3h, 2.5h, 2h 30m 형식으로 입력합니다.\n");
-        List<ObjectNode> groups = new ActivitySummary(service.store).group(from, to);
+        List<ObjectNode> groups = new WorkLedger(service).worklogEvidence(from, to);
         for (LocalDate day = from; !day.isAfter(to); day = day.plusDays(1)) {
             text.append("\n").append(day).append(' ').append(day.getDayOfWeek().getDisplayName(TextStyle.SHORT, Locale.KOREAN)).append('\n');
             ObjectNode draft = service.store.get("worklog", day.toString());

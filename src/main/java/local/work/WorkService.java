@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 
 final class WorkService {
     static final Pattern ISSUE = Pattern.compile("[A-Z][A-Z0-9_]*-[0-9]+");
+    private static final Set<String> WORK_TYPES=Set.of("", "기능", "품질·성능", "고객지원", "운영", "조사·설계", "기타");
     final Store store;
     final KoreaTime time;
     final JiraClient jira;
@@ -31,7 +32,7 @@ final class WorkService {
         if (!id.isBlank()) row.put("id", id);
         if (existing != null && !Json.text(existing, "jiraKey").isBlank() && input.hasNonNull("status") && !status(Json.text(existing, "status")).equals(status(Json.text(input, "status")))) throw new IllegalArgumentException("Jira 업무 상태는 상태 변경 메뉴에서 변경하세요.");
         for (String key : List.of("title", "product", "workType", "due", "status", "important", "urgent", "jiraKey", "hidden", "workGroup", "predecessorIds")) if (input.hasNonNull(key)) row.set(key, input.get(key));
-        if (!Set.of("", "기능", "품질·성능", "고객지원", "운영", "조사·설계", "기타").contains(Json.text(row, "workType"))) throw new IllegalArgumentException("업무 성격을 확인하세요.");
+        if (!WORK_TYPES.contains(Json.text(row, "workType"))) throw new IllegalArgumentException("업무 성격을 확인하세요.");
         Json.required(row, "title");
         row.put("jiraKey", issue(Json.text(row, "jiraKey")));
         row.put("status", status(Json.text(row, "status")));
@@ -124,12 +125,16 @@ final class WorkService {
     synchronized ObjectNode groupTasks(JsonNode input) {
         JsonNode ids = input.path("taskIds");
         if (!ids.isArray() || ids.isEmpty()) throw new IllegalArgumentException("묶을 업무를 선택하세요.");
-        if (!input.has("workGroup")) throw new IllegalArgumentException("업무 묶음 이름을 입력하세요.");
+        if (!input.has("workGroup") && !input.has("workType")) throw new IllegalArgumentException("변경할 업무 묶음이나 성격을 지정하세요.");
         String name = Json.text(input, "workGroup").trim();
+        String type=Json.text(input,"workType");
+        if(input.has("workType") && !WORK_TYPES.contains(type))throw new IllegalArgumentException("업무 성격을 확인하세요.");
         List<ObjectNode> rows = new ArrayList<>();
         for (JsonNode id : ids) {
             ObjectNode row = requiredTask(id.asText()).deepCopy();
-            row.put("workGroup", name); TaskStructure.validate(row, store.list("task")); rows.add(row);
+            if(input.has("workGroup"))row.put("workGroup", name);
+            if(input.has("workType"))row.put("workType",type);
+            TaskStructure.validate(row, store.list("task")); rows.add(row);
         }
         store.transaction(() -> rows.forEach(row -> { stamp(row); store.put("task", row); }));
         return Json.obj("count", rows.size());
@@ -387,7 +392,7 @@ final class WorkService {
                 "previousWorkDate", previous.toString(), "previousWork", ledger.reviewRows(previous), "carryover", ledger.carryover(date),
                 "worklogCandidates", java.util.stream.IntStream.range(0, 7).boxed().flatMap(i -> ledger.worklogCandidates(monday.plusDays(i)).stream()).toList(),
                 "activities", activities(monday.minusDays(7), monday.plusDays(6)), "meetings", meetings(date),
-                "activityGroups", new ActivitySummary(store).group(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> (Json.text(n,"kind").equals("followup") || Json.text(n, "date").equals(date.toString())) && !n.hasNonNull("acceptedTaskId") && !n.path("dismissed").asBoolean()).toList(),
+                "activityGroups", ledger.worklogEvidence(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> (Json.text(n,"kind").equals("followup") || Json.text(n, "date").equals(date.toString())) && !n.hasNonNull("acceptedTaskId") && !n.path("dismissed").asBoolean()).toList(),
                 "worklogs", store.list("worklog").stream().filter(n -> Json.text(n, "date").compareTo(monday.toString()) >= 0 && Json.text(n, "date").compareTo(monday.plusDays(6).toString()) <= 0).toList(),
                 "registeredWorklogs", registeredWorklogs(monday, monday.plusDays(6)), "worklogFavorites", store.list("worklogFavorite"), "recentWorklogIssues", recentWorklogIssues(),
                 "dailyNote", daily == null ? "" : Json.text(daily, "text"), "dailyDetails", daily == null ? Json.object() : daily, "jobs", store.list("job"),

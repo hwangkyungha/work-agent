@@ -8,6 +8,15 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ImportTest {
+    @Test void harnessExecutionsAreSkippedAtImportWhileNormalDevelopmentIsPreserved() throws Exception {
+        Path file=temporary.resolve("harness-run.jsonl");
+        String header=Json.write(Json.obj("type","session_meta","payload",Json.obj("id","automated","cwd","D:/Git/loop-test-harness/runs/run/baseline/work/project")))+"\n";
+        Files.writeString(file,header+codex("assistant","평가 실행 결과","2026-11-03T15:30:00Z"));
+        assertEquals(0,importer.read("codex",file,Instant.EPOCH));assertTrue(store.list("evidence").isEmpty());
+        Path development=temporary.resolve("harness-development.jsonl");
+        Files.writeString(development,Json.write(Json.obj("type","session_meta","payload",Json.obj("id","developer","cwd","D:/Git/loop-test-harness")))+"\n"+codex("assistant","하네스 기능 구현","2026-11-03T15:30:00Z"));
+        assertEquals(1,importer.read("codex",development,Instant.EPOCH));assertEquals(1,store.list("evidence").size());
+    }
     @TempDir Path temporary;
     Store store; WorkService service; TranscriptImporter importer;
     @BeforeEach void open() throws Exception {

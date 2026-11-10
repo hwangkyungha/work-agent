@@ -85,7 +85,7 @@ final class TranscriptImporter {
                 if (Json.text(row, "type").equals("custom-title") && !Json.text(row, "customTitle").isBlank()) {
                     service.store.put("session", Json.obj("id", source + ":" + session, "name", Json.text(row, "customTitle"))); continue;
                 }
-                if (cwd.replace('\\', '/').endsWith("/work-agent/work/agent") || cwd.replace('\\', '/').contains("/review-worktrees/")) continue;
+                if (cwd.replace('\\', '/').endsWith("/work-agent/work/agent") || cwd.replace('\\', '/').contains("/review-worktrees/") || ActivitySummary.automatedPath(cwd)) continue;
                 String timestamp = Json.text(row, "timestamp");
                 if (timestamp.isBlank()) continue;
                 Instant occurred;

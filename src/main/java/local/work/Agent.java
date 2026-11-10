@@ -111,7 +111,7 @@ final class Agent {
                 String evidence = switch (source) {
                     case "none" -> "사용자가 제공한 자료만 사용합니다.";
                     case "daily" -> reports.daily(date);
-                    case "weekly" -> Json.write(Json.obj("from", service.time.monday(date).toString(), "to", date.toString(), "registeredWorklogs", service.registeredWorklogs(service.time.monday(date), date), "activities", new ActivitySummary(service.store).group(service.time.monday(date), date)));
+                    case "weekly" -> Json.write(Json.obj("from", service.time.monday(date).toString(), "to", date.toString(), "registeredWorklogs", service.registeredWorklogs(service.time.monday(date), date), "activities", new WorkLedger(service).worklogEvidence(service.time.monday(date), date)));
                     case "oneonone" -> reports.oneOnOne(Json.required(p, "memberId"));
                     default -> throw new IllegalArgumentException("글에 사용할 자료를 확인하세요.");
                 };
@@ -157,7 +157,7 @@ final class Agent {
             case "task_status" -> { result = service.changeStatus(p); message = "업무 상태를 변경했습니다: " + result.path("jiraStatus").asText(Json.text(result, "status")); }
             case "hide_task" -> { result = service.hideTask(p); message = result.path("hidden").asBoolean() ? "내 목록에서 숨겼습니다. Jira 상태는 바꾸지 않았습니다." : "내 목록에 다시 표시했습니다."; }
             case "remove_task" -> { result = service.removeTasks(Json.obj("taskIds", List.of(Json.required(p, "id")))); message = result.path("deleted").asInt() > 0 ? "직접 등록한 할 일을 삭제했습니다. 활동 기록과 워크로그는 남습니다." : "Jira 업무를 내 목록에서 숨겼습니다. Jira 상태는 바꾸지 않았습니다."; }
-            case "group_tasks" -> { result = service.groupTasks(p); message = "선택한 업무의 묶음을 변경했습니다."; }
+            case "group_tasks" -> { result = service.groupTasks(p); message = "선택한 업무의 분류를 변경했습니다."; }
             case "activity" -> { result = service.activity(p); message = "활동을 저장했습니다: " + Json.text(result, "title"); }
             case "work_day" -> { result = new WorkLedger(service).record(p); message = "그날의 수행 상태를 저장했습니다. Jira 상태는 변경하지 않았습니다."; }
             case "link_work" -> { result = service.linkWork(p); message = "실제 활동을 업무에 연결했습니다: " + Json.text(result,"title"); }
@@ -265,7 +265,7 @@ final class Agent {
             hide_task: {id,hidden:true}. 관심 없는 업무를 내 목록에서만 숨긴다. 완료 처리나 Jira 삭제로 해석하지 않는다. 다시 표시하려면 hidden:false.
             remove_task: {id}. 사용자가 특정 할 일을 삭제하라고 요청하면 사용한다. Jira가 연결된 할 일은 내 목록에서 숨기고, 직접 등록한 할 일은 삭제한다. 활동·워크로그와 실제 Jira 이슈는 삭제하지 않는다. 대상이 모호하면 먼저 물어본다.
             task로 workGroup(업무 묶음 이름), predecessorIds(선행 작업의 실제 task id 목록)를 저장할 수 있다. 이 값은 work-agent 안에서만 사용하며 Jira 관계를 바꾸지 않는다. 순서가 언급되지 않으면 의존관계를 임의로 만들지 않는다. 빈 workGroup은 묶음 해제, 빈 predecessorIds는 선행 작업 해제다.
-            group_tasks: {taskIds,workGroup}. 여러 업무를 같은 묶음으로 옮기거나 workGroup=""으로 묶음을 해제한다. 사용자가 지정한 업무만 변경한다.
+            group_tasks: {taskIds,workGroup?,workType?}. 여러 업무의 묶음이나 업무 성격을 변경한다. 지정하지 않은 필드는 유지하며 workGroup=""은 묶음 해제다. 사용자가 지정한 업무만 변경한다.
             우선순위는 긴급+중요, 긴급, 중요, 없음 순서다. hidden 업무는 계획과 브리핑에서 제외한다.
             activity: {title,date,jiraKey,product,taskId}. 실제 수행한 활동만 기록한다. 향후 할 일과 혼동하지 않는다. 기존 업무에 대한 수행이면 실제 taskId로 연결한다.
             work_day: {date,workId,outcome,note}. 그날의 수행 상태를 저장한다. outcome은 unconfirmed,not-started,progress,done,deferred,cancelled. 이 값은 Jira 상태가 아니다. 계획한 사실만으로 진행했다고 판단하지 않는다.

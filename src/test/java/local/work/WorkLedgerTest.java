@@ -155,4 +155,20 @@ class WorkLedgerTest {
         assertTrue(ledger.finishedTasks(service.time.today()).contains(task));
         assertTrue(service.todayGroups(service.time.today()).stream().flatMap(group->java.util.stream.StreamSupport.stream(group.path("tasks").spliterator(),false)).noneMatch(row->task.equals(Json.text(row,"id"))));
     }
+    @Test void worklogDefaultsToReviewedPerformedWorkInsteadOfEverySession() {
+        LocalDate day=LocalDate.of(2026,11,6);String id=Json.text(service.task(Json.obj("title","확인한 실제 업무")),"id");
+        service.plan(Json.obj("date",day.toString(),"taskIds",List.of(id)));new WorkLedger(service).record(Json.obj("date",day.toString(),"workId",id,"outcome","progress"));
+        for(String name:List.of("unselected","harness")) {
+            store.put("session",Json.obj("id","codex:"+name,"name",name+" 작업 기록"));
+            store.put("evidence",Json.obj("id",name,"date",day.toString(),"source","codex","session",name,"role","assistant","text","실행 결과","cwd",name.equals("harness")?"D:/Git/loop-test-harness/runs/261110-0845-01/baseline/work/runtime/lct-generation-fix":"D:/Git/lct"));
+        }
+        assertEquals(List.of(id),new WorkLedger(service).worklogCandidates(day).stream().map(row->Json.text(row,"workId")).toList());
+        assertTrue(service.state(service.time.today()).path("activityGroups").isEmpty());
+        assertFalse(new Reports(service).worklog(day,day).contains("unselected"));
+    }
+    @Test void harnessRunSessionsAreExcludedButDevelopingTheHarnessItselfIsActualWork() {
+        for(String name:List.of("development","evaluation"))store.put("evidence",Json.obj("id",name,"date","2026-11-06","source","codex","session",name,"role","assistant","text","결과","cwd",name.equals("development")?"D:/Git/loop-test-harness":"D:/Git/loop-test-harness/runs/261110-0845-01/baseline/work/runtime/lct-generation-fix"));
+        var groups=new ActivitySummary(store).group(LocalDate.of(2026,11,6),LocalDate.of(2026,11,6));
+        assertEquals(1,groups.size());assertEquals("codex:development",Json.text(groups.getFirst().path("sessions").get(0),"id"));
+    }
 }

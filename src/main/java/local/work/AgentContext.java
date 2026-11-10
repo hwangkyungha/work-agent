@@ -55,7 +55,7 @@ final class AgentContext {
             }
         }
         if (query.matches("(?s).*(활동|기록|작업 근거|한 일|완료한|끝낸|워크로그|로그워크|worklog).*")) {
-            context.set("activities", Json.MAPPER.valueToTree(service.activities(day.minusDays(7), day).reversed().stream().limit(20)
+            if(!query.matches("(?s).*(워크로그|로그워크|worklog|시간 등록|시간 배분).*"))context.set("activities", Json.MAPPER.valueToTree(service.activities(day.minusDays(7), day).reversed().stream().limit(20)
                     .map(row -> fields(row, "id", "date", "title", "jiraKey", "product")).toList()));
             if (query.matches("(?s).*(한 일|완료한|끝낸).*")) {
                 context.set("completed", Json.MAPPER.valueToTree(service.completed(day).stream().map(row -> fields(row, TASK_FIELDS)).toList()));
@@ -64,6 +64,8 @@ final class AgentContext {
         if (query.matches("(?s).*(워크로그|로그워크|worklog|시간 등록|시간 배분).*")) {
             LocalDate monday = service.time.monday(day);
             context.set("worklogs", Json.MAPPER.valueToTree(service.store.between("worklog", monday.toString(), monday.plusDays(6).toString())));
+            WorkLedger ledger=new WorkLedger(service);
+            context.set("worklogCandidates",Json.MAPPER.valueToTree(java.util.stream.IntStream.range(0,7).boxed().flatMap(i->ledger.worklogCandidates(monday.plusDays(i)).stream()).limit(40).map(row->fields(row,"date","workId","taskId","title","jiraKey","outcome")).toList()));
         }
         if (query.matches("(?s).*(회의|미팅|일정|캘린더).*")) {
             context.set("meetings", Json.MAPPER.valueToTree(service.meetings(day).stream().map(row -> fields(row, "title", "start", "end", "allDay")).toList()));

@@ -22,10 +22,14 @@ final class ActivitySummary {
         Set<String> ids = new HashSet<>();
         for (ObjectNode row : store.list("evidence")) {
             String path = Json.text(row, "cwd").replace('\\', '/');
-            if (path.matches("(?i).*/(?:\\.ct-verify|llm_judge)(?:/.*)?") || Json.text(row, "text").startsWith("당신은 한 실행 결과에서 자신에게 배정된 정성 기준만 판정하는 LLM Judge")) ids.add(session(row));
+            if (automatedPath(path) || Json.text(row, "text").startsWith("당신은 한 실행 결과에서 자신에게 배정된 정성 기준만 판정하는 LLM Judge")) ids.add(session(row));
         }
         automated = ids;
         return ids;
+    }
+    static boolean automatedPath(String directory) {
+        String path=directory.replace('\\','/');
+        return path.matches("(?i).*/(?:\\.ct-verify|llm_judge)(?:/.*)?") || path.matches("(?i).*/(?:loop-test-harness|loop-harness)/runs/[^/]+/(?:baseline|candidate[^/]*)(?:/.*)?");
     }
     static String session(JsonNode row) { return Json.text(row, "source") + ":" + Json.text(row, "session"); }
     private List<ObjectNode> group(LocalDate from, LocalDate to, boolean briefing) {

@@ -52,7 +52,7 @@ final class SessionCatalog {
         String root=repository.toAbsolutePath().normalize().toString().replace('\\','/').toLowerCase(Locale.ROOT);
         return store.list("session").stream().filter(row->{
             String cwd=Json.text(row,"cwd").replace('\\','/').toLowerCase(Locale.ROOT);
-            if (Collections.disjoint(issues,keys(Json.text(row,"name"))) || Json.text(row,"session").isBlank() || cwd.contains("/review-worktrees/") || cwd.contains("/.ct-verify/") || cwd.endsWith("/work/agent")) return false;
+            if (Collections.disjoint(issues,keys(Json.text(row,"name"))) || Json.text(row,"session").isBlank() || cwd.contains("/review-worktrees/") || ActivitySummary.automatedPath(cwd) || cwd.endsWith("/work/agent")) return false;
             if (cwd.equals(root)||cwd.startsWith(root+"/")) return true;
             try { return ReviewWorkspaces.git(Path.of(Json.text(row,"cwd")),"rev-parse","--path-format=absolute","--git-common-dir").trim().equals(ReviewWorkspaces.git(repository,"rev-parse","--path-format=absolute","--git-common-dir").trim()); }
             catch(Exception e) { return false; }

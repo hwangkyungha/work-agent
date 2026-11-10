@@ -370,3 +370,15 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 .work-reconciliation{margin-bottom:24px}.work-reconciliation .sheet-header p{margin:6px 0 0}.work-day-row,.carryover-row{display:flex;justify-content:space-between;gap:20px;padding:16px 0;border-bottom:1px solid var(--line,#dde4df)}.work-day-row:last-child,.carryover-row:last-child{border-bottom:0}.work-day-row>div:first-child{min-width:0;flex:1}.work-day-row h3{font-size:14px;margin:0 0 7px}.work-day-row small{color:var(--muted,#63736c)}.work-day-actions{display:flex;flex-direction:column;align-items:flex-end;gap:8px}.work-day-actions select{max-width:155px;padding:7px 10px;border:1px solid #d7dfda;border-radius:6px;background:#fff;color:inherit;font:inherit;font-size:13px}.carryover-row p{margin:6px 0 0}.carryover-row .button{align-self:center;flex-shrink:0}.worklog-task-title{display:block;font-size:13px;line-height:1.5;margin-bottom:6px}@media(max-width:650px){.work-day-row{flex-direction:column;gap:10px}.work-day-actions{flex-direction:row;align-items:center}.carryover-row{gap:10px}}
 
 .past-work-records{margin-bottom:22px}.past-work-records summary{margin-bottom:12px}.past-work-candidates{max-height:300px;overflow:auto;margin:10px 0}.past-work-candidate{display:flex;gap:14px;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #d7dfda}.past-work-candidate[hidden]{display:none}.past-work-candidate strong{display:block;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.past-work-candidate small,.carryover-row small{display:block;margin-top:5px;font-size:12px;color:#63736c}.past-work-candidate .button{flex-shrink:0}#past-work-form input[readonly]{background:#f5f7f5}#past-work-form .text-button{margin-top:8px}
+
+/* Keep all dialogs within the viewport, including controls outside .field wrappers. */
+#modal-content,#modal-content form,#modal-content .field{min-width:0;max-width:100%;overflow-wrap:anywhere}
+#modal-content input:not([type=checkbox]):not([type=radio]),#modal-content select,#modal-content textarea{display:block;width:100%;min-width:0;max-width:100%;min-height:40px;padding:10px 12px;border:1px solid #d5ddd8;border-radius:8px;background:#fff;color:var(--ink)}
+#modal-content select{white-space:nowrap;text-overflow:ellipsis}
+#modal-content form>label{display:block;font-size:12px;font-weight:500;margin:16px 0 8px}
+#modal-content .form-actions button{max-width:100%}
+.modal-header{align-items:flex-start;gap:16px}.modal-header h2{min-width:0;overflow-wrap:anywhere}.modal-header>button{flex-shrink:0}
+.past-work-candidate>div{min-width:0;flex:1}.past-work-candidates{padding-right:5px}
+.bulk-work-type{margin-top:24px}.external-review-sources{margin:8px 0 20px}.external-review-sources .field{margin-top:12px}
+.worklog-task-title{font-weight:600;overflow-wrap:anywhere}.worklog-input-row>div{min-width:0}.worklog-input-row>.worklog-time{align-self:end}.worklog-input-row>.icon-button{align-self:end;margin-top:0;margin-bottom:3px}
+#review-repositories small{overflow-wrap:anywhere}.task-filter-fields{flex-wrap:wrap}
