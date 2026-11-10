@@ -26,7 +26,7 @@ class WebUiTest {
     List<JsonNode> favoriteUpdates = new ArrayList<>(); int worklogSyncCalls; boolean worklogSyncFails;
     List<ObjectNode> reviewJobs = new ArrayList<>(); List<JsonNode> reviewRequests = new ArrayList<>(); int reviewRefreshes, pendingSaves;
     List<String> acceptedFollowups=new ArrayList<>();
-    List<JsonNode> workDayUpdates=new ArrayList<>(),addedPastWork=new ArrayList<>();
+    List<JsonNode> workDayUpdates=new ArrayList<>(),addedPastWork=new ArrayList<>(),workLinks=new ArrayList<>(),savedActivities=new ArrayList<>();
     List<ObjectNode> pastWorkCandidates=new ArrayList<>();
     List<String> configuredWorkTypes=Config.DEFAULT_WORK_TYPES;
     Map<String,List<ObjectNode>> otherWorkDays=new HashMap<>();
@@ -87,6 +87,8 @@ class WebUiTest {
                     for(JsonNode id:payload.path("taskIds")) for(JsonNode task:state.path("tasks")) if(id.asText().equals(Json.text(task,"id")) && plan.findValuesAsText("id").stream().noneMatch(value->value.equals(id.asText()))) plan.add(task);
                     content=Json.write(Json.obj("added",plan.size()-before));
                 }
+                case "/api/work-links" -> workLinks.add(Json.read(route.request().postData()));
+                case "/api/activities" -> savedActivities.add(Json.read(route.request().postData()));
                 case "/api/work-days/candidates" -> content=Json.write(pastWorkCandidates);
                 case "/api/work-days/add" -> {
                     JsonNode body=Json.read(route.request().postData());addedPastWork.add(body);
@@ -435,7 +437,7 @@ class WebUiTest {
     }
     @Test void handwrittenPastWorkAndExistingTasksCanBeAddedWithoutCreatingATodayTask() {
         state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.createArrayNode());page.reload();openPreviousReview();
-        page.locator("#add-previous-work").click();page.locator("#past-work-task").selectOption("jira:CT-42");page.locator("#past-work-outcome").selectOption("done");page.locator("#past-work-form [type='submit']").click();page.waitForCondition(()->addedPastWork.size()==1);
+        page.locator("#add-previous-work").click();page.locator("#past-work-task-search").fill("CT-42");page.getByRole(AriaRole.OPTION,new Page.GetByRoleOptions().setName("CT-42 CI 보고서 검토").setExact(true)).click();page.locator("#past-work-outcome").selectOption("done");page.locator("#past-work-form [type='submit']").click();page.waitForCondition(()->addedPastWork.size()==1);
         assertEquals("jira:CT-42",Json.text(addedPastWork.getFirst(),"taskId"));
         page.locator("#add-previous-work").click();page.locator("#past-work-title").fill("기록이 없는 고객 미팅");page.locator("#past-work-outcome").selectOption("done");page.locator("#past-work-form [type='submit']").click();page.waitForCondition(()->addedPastWork.size()==2);
         assertEquals("기록이 없는 고객 미팅",Json.text(addedPastWork.get(1),"title"));assertEquals("",Json.text(addedPastWork.get(1),"taskId"));assertTrue(updates.isEmpty());assertTrue(planUpdates.isEmpty());
@@ -467,7 +469,7 @@ class WebUiTest {
     @Test void longTaskOptionsCannotOverflowTheLinkingDialogAndSearchUsesFullWidthControls() throws Exception {
         ((ArrayNode)state.path("tasks")).add(task("long","CT-99","긴 업무 제목 "+"VeryLongUnbrokenIssueTitle".repeat(25)));
         state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","session:claude:overflow","title","기존 업무 연결","outcome","progress"))));
-        page.reload();openPreviousReview();page.locator("[data-link-work='session:claude:overflow']").click();
+        page.reload();openPreviousReview();page.locator("[data-link-work='session:claude:overflow']").click();page.locator("#link-task-search").fill("CT-99");
         assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));
         for(int width:List.of(390,660)){page.setViewportSize(width,844);assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));}
         String screenshots=System.getProperty("work.ui.fixes.screenshots","");if(!screenshots.isBlank()){Path output=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve("link-dialog.png")));}
@@ -541,6 +543,40 @@ class WebUiTest {
         assertEquals(1,page.locator("#field-workType option[value='']").count());assertTrue(page.locator("#field-workType").textContent().contains("사용자 분류"));page.locator("#close-modal").click();
         page.locator("[data-view='plan']").click();page.locator("#work-type-filter").selectOption("이전 분류");assertEquals(1,page.locator(".selectable-task").count());
         page.locator("[data-select-task='local']").check();page.locator("#bulk-group").click();page.locator("#bulk-work-type").selectOption("버그 수정");page.locator("#group-form [type='submit']").click();page.waitForCondition(()->groupUpdates.size()==1);assertEquals("버그 수정",Json.text(groupUpdates.getFirst(),"workType"));
+    }
+
+    @Test void taskSearchSupportsKoreanCompositionKeyboardAndSavingTheActualTaskId() {
+        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.createArrayNode());
+        ((ArrayNode)state.path("tasks")).add(task("duplicate","CT-77","CI 보고서 검토"));page.reload();openPreviousReview();page.locator("#add-previous-work").click();
+        Locator search=page.getByRole(AriaRole.COMBOBOX,new Page.GetByRoleOptions().setName("기존 할 일 선택").setExact(true));
+        search.fill("ct-77");assertEquals(2,page.locator(".task-picker-popup [role=option]").count());search.press("Enter");
+        assertEquals("duplicate",page.locator("#past-work-task").inputValue());assertEquals("CI 보고서 검토",page.locator("#past-work-title").inputValue());assertEquals(0,addedPastWork.size());
+        search.fill("없는 업무");assertTrue(page.locator(".task-picker-empty").isVisible());search.press("Escape");assertTrue(page.locator("#modal").isVisible());assertEquals("CT-77 CI 보고서 검토",search.inputValue());
+        search.evaluate("el=>{el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));el.value='한글';el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true}));el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'한글'}));}");
+        assertTrue(page.getByRole(AriaRole.OPTION,new Page.GetByRoleOptions().setName("한글 검색 확인").setExact(true)).isVisible());assertEquals("한글",search.inputValue());search.press("Enter");assertEquals("local",page.locator("#past-work-task").inputValue());
+        page.locator("#past-work-form [type='submit']").click();page.waitForCondition(()->addedPastWork.size()==1);assertEquals("local",Json.text(addedPastWork.getFirst(),"taskId"));
+    }
+    @Test void linkingSearchPreservesSuggestedTaskAndShowsJiraOnlyForNewWork() throws Exception {
+        state.put("previousWorkDate","2026-11-05");state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","session:source","title","워크플로우 개선 및 intent 구조화","suggestedTaskId","jira:CT-42","outcome","progress"))));
+        ((ArrayNode)state.path("tasks")).add(task("long","CT-99","긴 업무 제목 "+"VeryLongUnbrokenIssueTitle".repeat(18)));page.reload();openPreviousReview();page.locator("[data-link-work='session:source']").click();
+        assertEquals("CT-42 CI 보고서 검토",page.locator("#link-task-search").inputValue());assertFalse(page.locator("#new-linked-task").isVisible());
+        Locator search=page.getByRole(AriaRole.COMBOBOX,new Page.GetByRoleOptions().setName("연결할 업무").setExact(true));search.fill("CT-99");
+        for(int width:List.of(390,660)){page.setViewportSize(width,844);assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));}
+        String output=System.getProperty("work.ui.picker.screenshots","");if(!output.isBlank()){Path dir=Files.createDirectories(Path.of(output));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("task-search.png")));}
+        search.press("Escape");search.click();page.getByRole(AriaRole.OPTION,new Page.GetByRoleOptions().setName("새 업무로 등록 · 활동 제목 사용").setExact(true)).click();assertTrue(page.locator("#link-jira").isVisible());
+        assertTrue(page.locator("#new-linked-task").boundingBox().y>=page.locator(".task-picker-control").boundingBox().y+page.locator(".task-picker-control").boundingBox().height+16);
+        if(!output.isBlank())page.screenshot(new Page.ScreenshotOptions().setPath(Path.of(output).resolve("new-work-link.png")));
+        search.fill("CT-42");search.press("Enter");assertFalse(page.locator("#link-jira").isVisible());page.locator("#work-link-form [type='submit']").click();page.waitForCondition(()->workLinks.size()==1);
+        assertEquals("jira:CT-42",Json.text(workLinks.getFirst(),"taskId"));assertFalse(workLinks.getFirst().path("create").asBoolean());
+    }
+    @Test void activityTaskSearchUsesIssueKeysAndCandidateSelectionKeepsThePickerInSync() {
+        page.evaluate("()=>openForm('activity')");page.locator("#field-title").fill("별도 활동");
+        page.getByRole(AriaRole.COMBOBOX,new Page.GetByRoleOptions().setName("업무에 연결 · 선택 사항")).fill("ct-42");page.getByRole(AriaRole.OPTION,new Page.GetByRoleOptions().setName("CT-42 CI 보고서 검토").setExact(true)).click();
+        page.locator("#record-form [type='submit']").click();page.waitForCondition(()->savedActivities.size()==1);assertEquals("jira:CT-42",Json.text(savedActivities.getFirst(),"taskId"));
+        pastWorkCandidates.add(Json.obj("workId","candidate","taskId","jira:CT-42","title","실제 세션 제목","evidence",Json.obj("messageCount",20)));
+        page.locator(".review-summary").click();page.locator("#add-previous-work").click();page.locator("[data-choose-past-work='candidate']").click();
+        assertEquals("CT-42 CI 보고서 검토",page.locator("#past-work-task-search").inputValue());assertEquals("실제 세션 제목",page.locator("#past-work-title").inputValue());
+        page.locator("#reset-past-work").click();assertEquals("",page.locator("#past-work-task").inputValue());assertEquals("직접 입력 또는 선택한 작업 기록",page.locator("#past-work-task-search").inputValue());
     }
 
 }
