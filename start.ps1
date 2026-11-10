@@ -1,6 +1,9 @@
-param([switch]$Background)
+param([switch]$Background, [switch]$Recovery)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+$taskStopMarker = Join-Path $PSScriptRoot 'work/stopped'
+if ($Recovery -and (Test-Path -LiteralPath $taskStopMarker)) { return }
+if (-not $Recovery -and (Test-Path -LiteralPath $taskStopMarker)) { Remove-Item -LiteralPath $taskStopMarker }
 $taskUserJiraToken = [Environment]::GetEnvironmentVariable('JIRA_API_TOKEN', 'User')
 if (-not [string]::IsNullOrWhiteSpace($taskUserJiraToken)) {
     $env:JIRA_API_TOKEN = $taskUserJiraToken
