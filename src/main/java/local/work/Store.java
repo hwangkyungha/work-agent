@@ -8,6 +8,8 @@ import java.util.*;
 /** A single local owner, with durable records and an external-event inbox. */
 final class Store implements AutoCloseable {
     private final Connection connection;
+    private long revision;
+    synchronized long revision() { return revision; }
     Store(Path file) throws Exception {
         Files.createDirectories(file.toAbsolutePath().getParent());
         connection = DriverManager.getConnection("jdbc:sqlite:" + file.toAbsolutePath());
@@ -36,6 +38,7 @@ final class Store implements AutoCloseable {
         if (Json.text(row, "id").isBlank()) row.put("id", UUID.randomUUID().toString());
         try (PreparedStatement p = connection.prepareStatement("INSERT INTO records(kind,id,payload) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload")) {
             p.setString(1, kind); p.setString(2, row.path("id").asText()); p.setString(3, Json.write(row)); p.executeUpdate();
+            revision++;
             return row;
         } catch (SQLException e) { throw new IllegalStateException("기록을 저장하지 못했습니다.", e); }
     }
@@ -50,6 +53,7 @@ final class Store implements AutoCloseable {
     synchronized void delete(String kind, String id) {
         try (PreparedStatement p = connection.prepareStatement("DELETE FROM records WHERE kind=? AND id=?")) {
             p.setString(1, kind); p.setString(2, id); p.executeUpdate();
+            revision++;
         } catch (SQLException e) { throw new IllegalStateException(e); }
     }
     synchronized void transaction(Runnable work) {

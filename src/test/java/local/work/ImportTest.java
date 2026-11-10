@@ -27,7 +27,8 @@ class ImportTest {
         assertEquals(1,importer.read("codex",file,Instant.EPOCH));assertEquals(1,store.list("activity").size());
         assertEquals(0,importer.read("codex",file,Instant.EPOCH));
     }
-    @Test void sessionMessagesBecomeOneActivityPerKoreaDayAndKeepIssueFromUser() throws Exception {
+    @Test void sessionMessagesBecomeOneActivityPerKoreaDayAndKeepVerifiedIssueFromUser() throws Exception {
+        store.put("issue",Json.obj("id","CT-123","title","실제 업무"));
         Path file=temporary.resolve("session.jsonl");
         Files.writeString(file,codex("user","CT-123을 수정해 줘.","2026-11-03T15:01:00Z")+codex("assistant","분석했습니다.","2026-11-03T15:02:00Z")+codex("assistant","수정 결과입니다.","2026-11-03T15:03:00Z"));
         assertEquals(3,importer.read("codex",file,Instant.EPOCH));
