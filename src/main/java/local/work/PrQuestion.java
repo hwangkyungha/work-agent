@@ -42,14 +42,19 @@ final class PrQuestion {
             if (context.files.size() >= 6) break;
             context.includeCurrent(api, path);
         }
-        ObjectNode review = store.list("prReview").reversed().stream().filter(row -> pr.url().equals(Json.text(row, "url"))
-                && context.sourceCommit.equals(Json.text(row, "sourceCommit")) && !row.path("validation").asBoolean() && PullRequestReview.succeeded(row)
-                && row.path("parentCommentId").asLong() == 0).findFirst().orElse(null);
+        ObjectNode review=null;
+        String sourceRepository=BitbucketClient.repository(context.metadata,"source",pr);
+        for(ObjectNode candidate:store.list("prReview").reversed()) {
+            String commit=Json.text(candidate,"sourceCommit");
+            if(pr.url().equals(Json.text(candidate,"url"))&&!commit.isBlank()&&context.sourceCommit.startsWith(commit)&&!candidate.path("validation").asBoolean()&&PullRequestReview.succeeded(candidate)&&candidate.path("parentCommentId").asLong()==0
+                    &&context.sourceCommit.equals(api.fullCommit(sourceRepository,commit))){review=candidate;break;}
+        }
+        if(!reviewedCommit.isBlank()&&context.sourceCommit.startsWith(reviewedCommit))reviewedCommit=api.fullCommit(sourceRepository,reviewedCommit);
         if (review != null) {
             new ReviewSources(store, api).restore(context, review);
             for (JsonNode reference : review.path("referenceUrls")) context.includeReference(api, reference.asText());
         }
-        if (reviewedCommit.isBlank() && review != null) reviewedCommit = Json.text(review, "sourceCommit");
+        if (reviewedCommit.isBlank() && review != null) reviewedCommit = context.sourceCommit;
         ObjectNode history = Json.obj("status", review == null ? "" : Json.text(review, "status"),
                 "summary", review == null ? "" : Json.text(review, "summary"), "previousTurns", turns);
         String background = """
@@ -73,7 +78,7 @@ final class PrQuestion {
         if (added) response = execution.complete(WritingStyle.message(background + "\n추가로 읽은 파일까지 반영해 최종 답변을 작성하세요." + excerpts(context, queryTerms)));
         int citations = 0;
         for (JsonNode citation : response.path("replyEvidence")) if (citations++ < 12 && !context.files.containsKey("new:" + Json.text(citation,"path"))) context.includeCurrent(api, Json.text(citation,"path"));
-        if (!context.sameHead(api.pullRequest(pr))) throw new IllegalStateException("답변을 준비하는 동안 PR이 바뀌었습니다. 최신 커밋으로 다시 질문해 주세요.");
+        if (!context.sameHead(api.reviewPullRequest(pr))) throw new IllegalStateException("답변을 준비하는 동안 PR이 바뀌었습니다. 최신 커밋으로 다시 질문해 주세요.");
         JsonNode evidence = response.path("replyEvidence");
         String reply = Json.text(response, "reply");
         if (reply.isBlank() || !evidence.isArray() || evidence.isEmpty()) return Json.obj("message", "PR #" + pr.number() + "에서 이 질문에 답할 코드 근거를 충분히 찾지 못했습니다.");

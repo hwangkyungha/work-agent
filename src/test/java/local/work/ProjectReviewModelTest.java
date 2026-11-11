@@ -25,6 +25,16 @@ class ProjectReviewModelTest {
     @AfterEach void close() throws Exception {store.close();}
     ObjectNode job(String kind){return Json.obj("id",UUID.randomUUID().toString(),"kind",kind,"url","https://bitbucket.org/team/repo/pull-requests/1","sourceCommit",head,"destinationCommit",base);}
     ObjectNode metadata(){return Json.obj("title","CT-42 기능 개선","source",Json.obj("repository",Json.obj("full_name","team/repo"),"branch",Json.obj("name","feature/CT-42")));}
+    @Test void abbreviatedApiHashesPrepareAndReuseTheExactPinnedWorktree()throws Exception {
+        BitbucketClient api=new BitbucketClient(config){
+            @Override JsonNode pullRequest(PullRequest pr){ObjectNode value=metadata();((ObjectNode)value.path("source")).set("commit",Json.obj("hash",head.substring(0,12)));value.set("destination",Json.obj("repository",Json.obj("full_name","team/repo"),"commit",Json.obj("hash",base.substring(0,12))));return value;}
+            @Override JsonNode get(String path){return Json.obj("hash",path.endsWith(head.substring(0,12))?head:base);}
+        };
+        JsonNode metadata=api.reviewPullRequest(BitbucketClient.PullRequest.parse("https://bitbucket.org/team/repo/pull-requests/1"));
+        ObjectNode job=job("review");job.put("sourceCommit",Json.text(metadata.path("source").path("commit"),"hash")).put("destinationCommit",Json.text(metadata.path("destination").path("commit"),"hash"));
+        ReviewWorkspaces workspaces=new ReviewWorkspaces(config,store);Path directory=workspaces.prepare(job,metadata);assertEquals(head,ReviewWorkspaces.git(directory,"rev-parse","HEAD").trim());assertEquals(directory,workspaces.prepare(job,metadata));
+        assertEquals(base,ReviewWorkspaces.git(clone,"rev-parse","HEAD").trim());assertEquals("keep me",Files.readString(clone.resolve("owner-uncommitted.txt")));
+    }
     @Test void reviewUsesAPinnedSeparateWorktreeAndKeepsTheOwnerCheckoutAndUncommittedFiles() throws Exception {
         ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->{fail("must use project session");return null;},(prompt,directory,engine,session,fork,saved)->{
             assertEquals(head,ReviewWorkspaces.git(directory,"rev-parse","HEAD").trim());assertEquals("after\n",Files.readString(directory.resolve("file.txt")));

@@ -21,6 +21,8 @@ class PullRequestReviewTest {
         int writes; List<JsonNode> comments = new ArrayList<>();
         FakeApi(Config config) { super(config); }
         @Override boolean configured() { return true; }
+        // ReviewCommitTest covers real hashes; these fixtures use symbolic revisions.
+        @Override String fullCommit(String repository,String revision) { return revision; }
         @Override JsonNode pullRequest(PullRequest pr) {
             return Json.obj("id", pr.number(), "state", "OPEN", "title", "테스트 PR", "author", Json.obj("uuid", author), "reviewers", List.of(Json.obj("uuid", "owner")),
                     "source", Json.obj("commit", Json.obj("hash", source), "repository", Json.obj("full_name", "team/repo")), "destination", Json.obj("commit", Json.obj("hash", destination), "repository", Json.obj("full_name", "team/repo")));

@@ -68,6 +68,26 @@ class BitbucketClient {
         return rows;
     }
     JsonNode pullRequest(PullRequest pr) throws Exception { return get(pr.api()); }
+    static String repository(JsonNode metadata,String side,PullRequest pr) {
+        String name=Json.text(metadata.path(side).path("repository"),"full_name");
+        return name.isBlank()?pr.workspace()+"/"+pr.repository():name;
+    }
+    String fullCommit(String repository,String revision) throws Exception {
+        String hash=revision.toLowerCase(Locale.ROOT);
+        if(!repository.matches("[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*")||!hash.matches("[0-9a-f]{4,64}"))throw new IllegalArgumentException("PR 커밋 식별자를 확인하세요.");
+        if(hash.matches("(?:[0-9a-f]{40}|[0-9a-f]{64})"))return hash;
+        String full=Json.required(get("/repositories/"+repository+"/commit/"+segment(hash)),"hash").toLowerCase(Locale.ROOT);
+        if(!full.matches("(?:[0-9a-f]{40}|[0-9a-f]{64})")||!full.startsWith(hash))throw new IllegalStateException("Bitbucket에서 PR 커밋의 전체 해시를 확인하지 못했습니다.");
+        return full;
+    }
+    ObjectNode reviewPullRequest(PullRequest pr) throws Exception {
+        ObjectNode metadata=((ObjectNode)pullRequest(pr)).deepCopy();
+        for(String side:List.of("source","destination")) {
+            ObjectNode commit=(ObjectNode)metadata.path(side).path("commit");
+            commit.put("hash",fullCommit(repository(metadata,side,pr),Json.required(commit,"hash")));
+        }
+        return metadata;
+    }
     List<JsonNode> comments(PullRequest pr) throws Exception { return pages(pr.api() + "/comments?pagelen=100"); }
     String source(String repository, String commit, String path) throws Exception { return request("GET", "/repositories/" + repository + "/src/" + segment(commit) + "/" + pathSegment(path), null); }
     JsonNode sourceDirectory(String repository, String commit, String directory, int depth) throws Exception {

@@ -21,12 +21,12 @@ final class ReviewContext {
         this(api, pr, null, true);
     }
     ReviewContext(BitbucketClient api, BitbucketClient.PullRequest pr, Store cache, boolean full) throws Exception {
-        this.pr = pr; metadata = api.pullRequest(pr);
+        this.pr = pr; metadata = api.reviewPullRequest(pr);
         this.cache = cache;
         sourceCommit = Json.required(metadata.path("source").path("commit"), "hash");
         destinationCommit = Json.required(metadata.path("destination").path("commit"), "hash");
         if (full && !Json.text(metadata, "state").equals("OPEN")) throw new IllegalArgumentException("열려 있는 PR만 검토할 수 있습니다.");
-        baseCommit = full ? Json.required(api.get("/repositories/" + BitbucketClient.segment(pr.workspace()) + "/" + BitbucketClient.segment(pr.repository()) + "/merge-base/" + sourceCommit + ".." + destinationCommit), "hash") : "";
+        baseCommit = full ? api.fullCommit(BitbucketClient.repository(metadata,"destination",pr),Json.required(api.get("/repositories/" + BitbucketClient.segment(pr.workspace()) + "/" + BitbucketClient.segment(pr.repository()) + "/merge-base/" + sourceCommit + ".." + destinationCommit), "hash")) : "";
         diff = full ? api.request("GET", pr.api() + "/diff", null) : "";
         if (diff.length() > 1_500_000) throw new IllegalArgumentException("PR 변경이 너무 큽니다. PR을 나눈 뒤 다시 검토하세요.");
         parseChanges(diff);
@@ -38,7 +38,7 @@ final class ReviewContext {
         if (saved != null) saved.path("stats").forEach(stats::add);
         else {
             stats.addAll(api.pages(pr.api() + "/diffstat?pagelen=100"));
-            if (!sameHead(api.pullRequest(pr))) throw new IllegalStateException("자료를 읽는 중 PR 커밋이 바뀌었습니다. 다시 검토하세요.");
+            if (!sameHead(api.reviewPullRequest(pr))) throw new IllegalStateException("자료를 읽는 중 PR 커밋이 바뀌었습니다. 다시 검토하세요.");
             if (cache != null) cache.put("prFileIndex", Json.obj("id", snapshot, "stats", stats));
         }
         for (JsonNode stat : stats) {
@@ -54,7 +54,7 @@ final class ReviewContext {
             try { load(api, sourceRepository, sourceCommit, path, "new"); }
             catch (BitbucketClient.Rejected e) { if (e.status != 404) throw e; }
         }
-        JsonNode current = api.pullRequest(pr);
+        JsonNode current = api.reviewPullRequest(pr);
         if (!sameHead(current)) throw new IllegalStateException("자료를 읽는 중 PR 커밋이 바뀌었습니다. 다시 검토하세요.");
     }
     private void load(BitbucketClient api, String repository, String commit, String path, String side) throws Exception {

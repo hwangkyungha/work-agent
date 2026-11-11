@@ -309,3 +309,6 @@ java -jar work-agent-0.4.2.jar --repair-activity-links
 일정 원본은 Google Calendar입니다. Slack에서 ‘오늘 일정에 서현지 휴가를 종일로 등록해줘’처럼 요청하거나 오늘 화면의 ‘일정 등록’을 사용합니다. 일정 제목을 누르면 수정하고, 삭제 버튼은 Google 일정 삭제를 확인받은 뒤 실행합니다. 종일 일정은 시작일과 마지막 날(포함)을 입력하며, 시간 지정 일정은 시작·종료 시각을 모두 입력합니다. 시각을 임의로 배정하지 않습니다. 반복 일정은 선택한 날짜의 회차만 수정·삭제합니다. Google의 변경이 먼저 발생하면 다시 확인하도록 안내하고 덮어쓰지 않습니다. 응답을 받지 못한 등록 요청은 같은 요청 ID로 재시도해 중복 생성을 막습니다. [Google 일정 등록](https://developers.google.com/workspace/calendar/api/v3/reference/events/insert), [일정 수정](https://developers.google.com/workspace/calendar/api/v3/reference/events/patch)
 
 내부 일정 목록은 Google 조회 결과를 보관하는 캐시입니다. 갱신 실패 시 이전 조회 결과라는 안내를 표시합니다. 기존 로컬 전용 일정은 서버 시작 때 전체 DB를 데이터 폴더의 `backups/before-google-calendar-*.db`로 백업한 뒤 `retiredMeeting` 기록으로 옮겨 목록에서 제외합니다. Google에 이미 있는 같은 제목의 일정을 다시 만들거나 삭제하지 않습니다. Google 쓰기 권한이 없으면 읽기 전용으로 표시하며, 일반 일정의 로컬 저장 경로는 사용하지 않습니다.
+
+
+PR의 축약 커밋 해시는 해당 저장소의 [Bitbucket 커밋 조회](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-commits/)로 전체 해시를 확인한 뒤 저장합니다. 원본·대상·공통 기준 커밋과 작업 폴더, 댓글 저장 전 확인, 같은 head의 리뷰 재사용, 스레드 후속 질문에 같은 기준을 적용합니다. 기존 축약 해시 기록과 알림 이력도 같은 커밋으로 인식합니다. 이 해시 형식 오류로 실패했던 자동 리뷰는 다음 확인 주기에 다시 시도하며, 다른 오류로 실패한 리뷰는 기존 재시도 정책을 유지합니다.

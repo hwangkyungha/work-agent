@@ -50,7 +50,7 @@ final class PullRequestReview implements AutoCloseable {
         if (referenceUrls.size() > 4) throw new IllegalArgumentException("참고 문서는 최대 4개까지 추가할 수 있습니다.");
         for (JsonNode value : referenceUrls) BitbucketClient.SourceReference.parse(value.asText());
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(url);
-        JsonNode metadata = api.pullRequest(pr);
+        JsonNode metadata = api.reviewPullRequest(pr);
         if (!Json.text(metadata, "state").equals("OPEN")) throw new IllegalArgumentException("열려 있는 PR만 검토할 수 있습니다.");
         String source = Json.required(metadata.path("source").path("commit"), "hash"), destination = Json.required(metadata.path("destination").path("commit"), "hash");
         String revision = "";
@@ -60,6 +60,7 @@ final class PullRequestReview implements AutoCloseable {
         }
         String commentRevision = revision;
         List<ObjectNode> history = service.store.list("prReview");
+        for(ObjectNode old:history)if(pr.url().equals(Json.text(old,"url"))&&!Json.text(old,"sourceCommit").isBlank()&&source.startsWith(Json.text(old,"sourceCommit")))pinCommits(old,metadata);
         Collections.reverse(history);
         List<ObjectNode> matching = history.stream().filter(job -> job.path("validation").asBoolean() == validation
                 && pr.url().equals(Json.text(job, "url")) && parent == job.path("parentCommentId").asLong()
@@ -67,7 +68,7 @@ final class PullRequestReview implements AutoCloseable {
         for (ObjectNode job : matching) if (inProgress(job) || Json.text(job, "status").equals("delivery-unknown")) return job;
         if (!rerun && !validation) {
             for (ObjectNode job : matching) if (succeeded(job)) return job;
-            if (automatic && !matching.isEmpty()) return matching.getFirst();
+            if (automatic && !matching.isEmpty() && !matching.stream().allMatch(job->Json.text(job,"status").equals("failed")&&Json.text(job,"error").equals("PR 커밋 해시를 확인하세요."))) return matching.getFirst();
         }
         ArrayNode references = Json.MAPPER.createArrayNode();
         for (JsonNode value : referenceUrls) {
@@ -153,6 +154,7 @@ final class PullRequestReview implements AutoCloseable {
         ObjectNode row = required(id); row.put("status", "running"); save(row);
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.text(row, "url"));
         ReviewContext context = new ReviewContext(api, pr, service.store, true);
+        pinCommits(row,context.metadata);
         if (!context.sourceCommit.equals(Json.text(row, "sourceCommit"))) throw new IllegalStateException("PR head가 바뀌었습니다. 다시 요청하세요.");
         row.put("destinationCommit", context.destinationCommit);
         Model execution = model.forReview(row, context.metadata);
@@ -243,7 +245,7 @@ final class PullRequestReview implements AutoCloseable {
         long fileCount = context.changed.keySet().stream().map(key -> key.substring(key.indexOf(':') + 1)).distinct().count();
         row.put("summary", parent > 0 ? String.join("\n", summaries) : "변경 파일 " + fileCount + "개를 확인했고, 코드 근거와 재검증을 통과한 지적 " + accepted.size() + "개를 남겼습니다.").put("rejectedCount", rejected).put("fileCount", fileCount);
         row.put("readingGuide", String.join("\n\n", new LinkedHashSet<>(summaries.stream().filter(s -> !s.isBlank()).toList())));
-        if (!context.sameSourceHead(api.pullRequest(pr))) row.put("status", "stale"); else row.put("status", "ready");
+        if (!context.sameSourceHead(api.reviewPullRequest(pr))) row.put("status", "stale"); else row.put("status", "ready");
         save(row);
     }
     private static final String FINDING_RULES = """
@@ -425,7 +427,8 @@ final class PullRequestReview implements AutoCloseable {
         if (row.path("validation").asBoolean()) throw new IllegalArgumentException("검증용 실행은 Bitbucket에 저장할 수 없습니다.");
         if (!Set.of("ready", "saved", "delivery-unknown").contains(Json.text(row, "status"))) return row;
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.text(row, "url"));
-        JsonNode current = api.pullRequest(pr);
+        JsonNode current = api.reviewPullRequest(pr);
+        pinCommits(row,current);
         if (!Json.text(current, "state").equals("OPEN") || !Json.text(row, "sourceCommit").equals(Json.text(current.path("source").path("commit"), "hash"))) { row.put("status", "stale"); return save(row); }
         List<JsonNode> comments = api.comments(pr);
         if (row.path("parentCommentId").asLong() == 0 && row.path("findings").isEmpty()) return row;
@@ -450,7 +453,8 @@ final class PullRequestReview implements AutoCloseable {
         String owner = Json.required(api.get("/user"), "uuid");
         for (JsonNode comment : comments) if (!comment.path("deleted").asBoolean() && owner.equals(Json.text(comment.path("user"), "uuid")) && Json.text(comment.path("content"), "raw").contains(marker)) { item.put("delivery", comment.path("pending").asBoolean() ? "pending" : "published").put("commentId", comment.path("id").asLong()); save(review); return; }
         if (Set.of("pending", "published", "posting", "unknown").contains(Json.text(item, "delivery"))) throw new IllegalStateException("이전 댓글 저장 결과를 확인하지 못했습니다. Bitbucket에서 확인한 뒤 다시 요청하세요.");
-        JsonNode current = api.pullRequest(BitbucketClient.PullRequest.parse(Json.text(review, "url")));
+        JsonNode current = api.reviewPullRequest(BitbucketClient.PullRequest.parse(Json.text(review, "url")));
+        pinCommits(review,current);
         if (!Json.text(current, "state").equals("OPEN") || !Json.text(review, "sourceCommit").equals(Json.text(current.path("source").path("commit"), "hash"))) { review.put("status", "stale"); save(review); throw new IllegalStateException("PR 커밋이 바뀌어 저장을 중단했습니다. 다시 검토하세요."); }
         if (parent > 0 && !sameComment(review, api.comments(BitbucketClient.PullRequest.parse(Json.text(review, "url"))))) { review.put("status", "stale"); save(review); throw new IllegalStateException("댓글 내용이 바뀌어 저장을 중단했습니다. 다시 답변을 요청하세요."); }
         item.put("delivery", "posting"); review.put("status", "saving"); save(review);
@@ -466,6 +470,22 @@ final class PullRequestReview implements AutoCloseable {
         if (row.path("parentCommentId").asLong() > 0) row.put("reply", Json.required(input, "text"));
         else { boolean found = false; for (JsonNode finding : row.path("findings")) if (Json.text(finding, "id").equals(Json.text(input, "findingId"))) { ((ObjectNode) finding).put("comment", Json.required(input, "text")); found = true; } if (!found) throw new IllegalArgumentException("수정할 댓글을 찾지 못했습니다."); }
         return save(row);
+    }
+    private void pinCommits(ObjectNode row,JsonNode metadata) throws Exception {
+        BitbucketClient.PullRequest pr=BitbucketClient.PullRequest.parse(Json.required(row,"url"));
+        String source=api.fullCommit(BitbucketClient.repository(metadata,"source",pr),Json.required(row,"sourceCommit"));
+        String destination=Json.text(row,"destinationCommit");
+        if(!destination.isBlank())destination=api.fullCommit(BitbucketClient.repository(metadata,"destination",pr),destination);
+        if(source.equals(Json.text(row,"sourceCommit"))&&destination.equals(Json.text(row,"destinationCommit")))return;
+        String previousNotice=notificationKey(row),target=destination;row.put("sourceCommit",source).put("destinationCommit",target);
+        synchronized(service.store) {
+            service.store.transaction(()->{
+                ObjectNode current=service.store.get("prReview",Json.text(row,"id"));
+                if(current!=null){current.put("sourceCommit",source).put("destinationCommit",target);service.store.put("prReview",current);}
+                ObjectNode notice=service.store.get("prReviewNotice",previousNotice);
+                if(notice!=null){notice.put("id",notificationKey(row));service.store.put("prReviewNotice",notice);}
+            });
+        }
     }
     private ObjectNode required(String id) { ObjectNode row = service.store.get("prReview", id); if (row == null) throw new IllegalArgumentException("리뷰 초안을 찾지 못했습니다."); return row; }
     static String commentRevision(JsonNode comment) { return TranscriptImporter.hash(Json.text(comment.path("content"), "raw") + ":" + Json.text(comment, "updated_on")); }
