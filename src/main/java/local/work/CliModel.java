@@ -58,6 +58,7 @@ final class CliModel implements Agent.Model {
             if (workspace == null) command.add("--no-session-persistence");
             else {
                 command.addAll(List.of("--permission-mode", "dontAsk", "--allowedTools", "Read", "Grep", "Glob"));
+                command.addAll(List.of("--add-dir",workspace.getParent().toString()));
                 if (!session.isBlank()) { command.addAll(List.of("--resume", session)); if (fork) command.add("--fork-session"); }
             }
         } else if (engine.equals("codex")) {

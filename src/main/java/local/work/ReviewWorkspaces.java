@@ -68,6 +68,14 @@ final class ReviewWorkspaces {
         try { git(clone, "cat-file", "-e", commit + "^{commit}"); }
         catch (IllegalStateException e) { String remote=remoteName(clone,repository);git(clone, "fetch", "--no-tags", remote.isBlank()?"https://bitbucket.org/" + repository + ".git":remote, commit); }
     }
+    Path prepareBase(ObjectNode job) throws Exception {
+        Path head=Path.of(Json.required(job,"reviewDirectory")),clone=Path.of(Json.required(job,"localRepository"));
+        String base=git(head,"merge-base",Json.required(job,"sourceCommit"),Json.required(job,"destinationCommit")).trim();
+        Path directory=head.resolveSibling("base-"+base);
+        if(!Files.exists(directory.resolve(".git")))git(clone,"worktree","add","--detach",directory.toString(),base);
+        if(!git(directory,"rev-parse","HEAD").trim().equals(base)||!git(directory,"status","--porcelain").isBlank())throw new IllegalStateException("비교 기준 작업 폴더가 변경됐습니다.");
+        job.put("baseDirectory",directory.toString()).put("baseCommit",base);return directory;
+    }
     private boolean matches(Path path, String repository) throws Exception {
         return !remoteName(path,repository).isBlank();
     }

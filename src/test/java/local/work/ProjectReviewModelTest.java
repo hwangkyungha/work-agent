@@ -25,6 +25,44 @@ class ProjectReviewModelTest {
     @AfterEach void close() throws Exception {store.close();}
     ObjectNode job(String kind){return Json.obj("id",UUID.randomUUID().toString(),"kind",kind,"url","https://bitbucket.org/team/repo/pull-requests/1","sourceCommit",head,"destinationCommit",base);}
     ObjectNode metadata(){return Json.obj("title","CT-42 기능 개선","source",Json.obj("repository",Json.obj("full_name","team/repo"),"branch",Json.obj("name","feature/CT-42")));}
+    BitbucketClient projectApi(int[] sourceReads){
+        return new BitbucketClient(config){
+            @Override JsonNode pullRequest(PullRequest pr){ObjectNode value=metadata();value.put("state","OPEN");((ObjectNode)value.path("source")).set("commit",Json.obj("hash",head));value.set("destination",Json.obj("commit",Json.obj("hash",base),"repository",Json.obj("full_name","team/repo")));return value;}
+            @Override JsonNode get(String path){return path.equals("/user")?Json.obj("uuid","owner"):Json.obj("hash",base);}
+            @Override List<JsonNode> pages(String path){return List.of(Json.obj("old",Json.obj("path","file.txt"),"new",Json.obj("path","file.txt"),"lines_added",1,"lines_removed",1));}
+            @Override List<JsonNode> comments(PullRequest pr){return List.of();}
+            @Override String request(String method,String path,JsonNode body){return "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-before\n+after\n";}
+            @Override String source(String repository,String commit,String path){sourceReads[0]++;return "WHOLE_FILE_PAYLOAD".repeat(2500);}
+        };
+    }
+    @Test void projectReviewExploresFilesWithoutReceivingWholeFileBatches()throws Exception {
+        int[] sourceReads={0},calls={0};
+        BitbucketClient api=projectApi(sourceReads);
+        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,engine,session,fork,saved)->{
+            calls[0]++;if(prompt.contains("WHOLE_FILE_PAYLOAD"))throw new IllegalStateException("whole file content was sent");
+            assertTrue(prompt.contains(head));return Json.obj("summary","PR 전체 안내","findings",List.of(),"limitations",List.of());
+        });
+        try(PullRequestReview reviews=new PullRequestReview(service,api,model)) {
+            ObjectNode row=reviews.request("https://bitbucket.org/team/repo/pull-requests/1",0,false);long until=System.nanoTime()+5_000_000_000L;
+            do{row=store.get("prReview",Json.text(row,"id"));if(!PullRequestReview.inProgress(row))break;Thread.sleep(10);}while(System.nanoTime()<until);
+            assertEquals("ready",Json.text(row,"status"));assertEquals(0,sourceReads[0]);assertEquals(1,calls[0]);assertEquals("PR 전체 안내",Json.text(row,"readingGuide"));
+        }
+    }
+    @Test void projectFindingsAreRecheckedAndCitationsAreVerifiedFromPinnedFiles()throws Exception {
+        int[] reads={0},calls={0};BitbucketClient api=projectApi(reads);
+        ObjectNode finding=Json.obj("path","file.txt","side","new","line",1,"title","확인할 결과","comment","발생 조건과 영향 설명","confidence","high","severity","medium","trigger","입력","expected","before","actual","after","reasoning","검증 근거","impact","결과 변경","fix","계약 확인","evidence",List.of(Json.obj("path","file.txt","side","new","line",1,"quote","after"),Json.obj("path","file.txt","side","old","line",1,"quote","before")));
+        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,engine,session,fork,saved)->{calls[0]++;if(calls[0]==2){assertTrue(prompt.contains("반박"));assertFalse(prompt.contains("WHOLE_FILE_PAYLOAD"));}return Json.obj("summary","전체 안내","findings",List.of(finding),"limitations",List.of());});
+        try(PullRequestReview reviews=new PullRequestReview(service,api,model)) {
+            ObjectNode row=reviews.request("https://bitbucket.org/team/repo/pull-requests/1",0,false);long until=System.nanoTime()+5_000_000_000L;
+            do{row=store.get("prReview",Json.text(row,"id"));if(!PullRequestReview.inProgress(row))break;Thread.sleep(10);}while(System.nanoTime()<until);
+            assertEquals("ready",Json.text(row,"status"));assertEquals(1,row.path("findings").size());assertEquals(2,calls[0]);assertEquals(0,reads[0]);assertEquals("project-session",Json.text(row,"executionMode"));
+        }
+    }
+    @Test void missingLocalRepositoryDoesNotStartWholeFileFallbackReview()throws Exception {
+        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->{throw new AssertionError("must not fall back");},(p,d,e,s,f,save)->Json.object());
+        ObjectNode row=job("review");row.put("url","https://bitbucket.org/team/unknown/pull-requests/1");
+        assertThrows(IllegalArgumentException.class,()->model.forReview(row,metadata()));
+    }
     @Test void abbreviatedApiHashesPrepareAndReuseTheExactPinnedWorktree()throws Exception {
         BitbucketClient api=new BitbucketClient(config){
             @Override JsonNode pullRequest(PullRequest pr){ObjectNode value=metadata();((ObjectNode)value.path("source")).set("commit",Json.obj("hash",head.substring(0,12)));value.set("destination",Json.obj("repository",Json.obj("full_name","team/repo"),"commit",Json.obj("hash",base.substring(0,12))));return value;}

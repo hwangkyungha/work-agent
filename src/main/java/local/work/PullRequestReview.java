@@ -151,13 +151,17 @@ final class PullRequestReview implements AutoCloseable {
         return message.append("\n").append(url).toString();
     }
     void run(String id) throws Exception {
-        ObjectNode row = required(id); row.put("status", "running"); save(row);
+        ObjectNode row = required(id); row.put("status", "running").put("startedAt",service.time.instant().toString()); save(row);
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.text(row, "url"));
-        ReviewContext context = new ReviewContext(api, pr, service.store, true);
-        pinCommits(row,context.metadata);
+        JsonNode metadata=api.reviewPullRequest(pr);
+        pinCommits(row,metadata);
+        if(!Json.text(metadata,"state").equals("OPEN")||!Json.text(metadata.path("source").path("commit"),"hash").equals(Json.text(row,"sourceCommit")))throw new IllegalStateException("PR head가 바뀌었거나 닫혔습니다. 다시 요청하세요.");
+        row.put("destinationCommit",Json.text(metadata.path("destination").path("commit"),"hash"));
+        Model execution = model.forReview(row,metadata);
+        boolean project=Json.text(row,"executionMode").equals("project-session")&&row.path("parentCommentId").asLong()==0;
+        ReviewContext context = new ReviewContext(api, pr, service.store, true,project?java.nio.file.Path.of(Json.required(row,"reviewDirectory")):null,metadata);
         if (!context.sourceCommit.equals(Json.text(row, "sourceCommit"))) throw new IllegalStateException("PR head가 바뀌었습니다. 다시 요청하세요.");
         row.put("destinationCommit", context.destinationCommit);
-        Model execution = model.forReview(row, context.metadata);
         Set<String> referencePaths = new LinkedHashSet<>();
         for (JsonNode reference : row.path("referenceUrls")) referencePaths.add(context.includeReference(api, reference.asText()));
         referencePaths.addAll(sources.attach(context, row, execution));
@@ -189,6 +193,16 @@ final class PullRequestReview implements AutoCloseable {
             row.set("replyEvidence", valid ? result.path("replyEvidence") : Json.MAPPER.createArrayNode());
             summaries.add(Json.text(result, "summary"));
             result.path("limitations").forEach(value -> limitations.add(value.asText()));
+        } else if(project) {
+            row.put("projectDirect",true);save(row);
+            JsonNode result=projectReview(row,context,comments,referencePaths,execution);
+            rejected=row.path("rejectedCount").asInt();
+            Set<String> seen=existingAnchors(comments,owner);
+            for(JsonNode finding:result.path("findings")) {
+                String anchor=Json.text(finding,"side")+":"+Json.text(finding,"path")+":"+finding.path("line").asInt();
+                if(context.validFinding(finding)&&!seen.contains(anchor)){ObjectNode item=((ObjectNode)finding).deepCopy();item.put("id",TranscriptImporter.hash(id+":"+anchor)).put("delivery","local");if(accepted.stream().noneMatch(old->Json.text(old,"id").equals(Json.text(item,"id"))))accepted.add(item);}else rejected++;
+            }
+            summaries.add(Json.text(result,"summary"));result.path("limitations").forEach(value->limitations.add(value.asText()));
         } else {
             List<List<ObjectNode>> batches = context.batches();
             String shared = sharedContext(context, comments);
@@ -197,12 +211,7 @@ final class PullRequestReview implements AutoCloseable {
             Set<String> relatedPaths = context.relatedFileCandidates(api, Json.object());
             for (String limitation : context.limitations) if (!limitations.contains(limitation)) limitations.add(limitation);
             row.put("totalBatches", batches.size()); save(row);
-            Set<String> seen = new HashSet<>();
-            for (JsonNode comment : comments) if (!comment.path("deleted").asBoolean() && owner.equals(Json.text(comment.path("user"), "uuid")) && Json.text(comment.path("content"), "raw").contains("<!-- work-agent-review:")) {
-                JsonNode inline = comment.path("inline");
-                String side = inline.hasNonNull("to") ? "new" : "old";
-                seen.add(side + ":" + Json.text(inline, "path") + ":" + inline.path(side.equals("new") ? "to" : "from").asInt());
-            }
+            Set<String> seen = existingAnchors(comments,owner);
             for (List<ObjectNode> batch : batches) {
                 String input = shared + "\n이번 검토 파일(JSON):\n" + Json.write(batch) + "\n변경 줄(JSON):\n" + Json.write(changedLines(context, batch));
                 String relevant = batch.stream().map(doc -> Json.text(doc, "content")).reduce("", (first, next) -> first.length() >= 1800 ? first : first + brief(next, 1800 - first.length()));
@@ -242,11 +251,42 @@ final class PullRequestReview implements AutoCloseable {
         }
         limitations.addAll(context.limitations);
         row.set("findings", Json.MAPPER.valueToTree(accepted)); row.set("limitations", Json.MAPPER.valueToTree(new LinkedHashSet<>(limitations)));
-        long fileCount = context.changed.keySet().stream().map(key -> key.substring(key.indexOf(':') + 1)).distinct().count();
-        row.put("summary", parent > 0 ? String.join("\n", summaries) : "변경 파일 " + fileCount + "개를 확인했고, 코드 근거와 재검증을 통과한 지적 " + accepted.size() + "개를 남겼습니다.").put("rejectedCount", rejected).put("fileCount", fileCount);
+        long fileCount = context.fileChanges.size();
+        row.put("summary", parent > 0 ? String.join("\n", summaries) : "변경 파일 " + fileCount + "개를 대상으로 검토했고, 코드 근거와 재검증을 통과한 지적 " + accepted.size() + "개를 남겼습니다.").put("rejectedCount", rejected).put("fileCount", fileCount);
         row.put("readingGuide", String.join("\n\n", new LinkedHashSet<>(summaries.stream().filter(s -> !s.isBlank()).toList())));
         if (!context.sameSourceHead(api.reviewPullRequest(pr))) row.put("status", "stale"); else row.put("status", "ready");
+        row.put("finishedAt",service.time.instant().toString());
         save(row);
+    }
+    private static Set<String> existingAnchors(List<JsonNode> comments,String owner) {
+        Set<String> seen=new HashSet<>();
+        for(JsonNode comment:comments)if(!comment.path("deleted").asBoolean()&&owner.equals(Json.text(comment.path("user"),"uuid"))&&Json.text(comment.path("content"),"raw").contains("<!-- work-agent-review:")) {
+            JsonNode inline=comment.path("inline");String side=inline.hasNonNull("to")?"new":"old";
+            seen.add(side+":"+Json.text(inline,"path")+":"+inline.path(side.equals("new")?"to":"from").asInt());
+        }
+        return seen;
+    }
+    private JsonNode projectReview(ObjectNode row,ReviewContext context,List<JsonNode> comments,Set<String> references,Model execution) throws Exception {
+        java.nio.file.Path inputs=java.nio.file.Path.of(Json.required(row,"reviewDirectory")).resolveSibling("inputs-"+Json.required(row,"id"));
+        java.nio.file.Files.createDirectories(inputs);
+        java.nio.file.Files.writeString(inputs.resolve("changes.patch"),context.diff,java.nio.charset.StandardCharsets.UTF_8);
+        java.nio.file.Files.writeString(inputs.resolve("paths.json"),Json.write(context.fileChanges),java.nio.charset.StandardCharsets.UTF_8);
+        row.put("reviewInputDirectory",inputs.toString());
+        String request="프로젝트에서 PR 전체를 직접 검토하세요. 변경 내용을 크기별 묶음으로 나누지 않습니다. Read/Grep/Glob으로 아래 diff 본문과 경로 목록을 먼저 확인하세요. diff가 길면 범위를 나누어 읽고, 검색 결과만으로 검토를 끝내지 마세요. 동작이나 계약이 바뀌는 부분은 현재 코드·현행 명세·실제 호출부·관련 테스트 본문을 직접 열어 대조하세요. 어떤 파일을 얼마나 읽을지는 스스로 선택하되 읽지 않은 내용은 확인했다고 쓰지 마세요. 같은 문구 치환·이름 변경은 패턴으로 확인하고 동작이나 계약이 달라질 수 있는 부분에 집중하세요. 파일 전체와 이전 대화 내용을 반복해서 복사하지 마세요.\n"
+                +Json.write(Json.obj("url",context.pr.url(),"title",Json.text(context.metadata,"title"),"description",brief(Json.text(context.metadata,"description"),8000),"sourceBranch",Json.text(context.metadata.path("source").path("branch"),"name"),"sourceCommit",context.sourceCommit,"destinationCommit",context.destinationCommit,"baseCommit",context.baseCommit,"currentProject",Json.text(row,"reviewDirectory"),"beforeProject",Json.text(row,"baseDirectory"),"diffFile",inputs.resolve("changes.patch").toString(),"changedPathsFile",inputs.resolve("paths.json").toString(),"comments",comments.stream().skip(Math.max(0,comments.size()-10)).map(c->Json.obj("path",Json.text(c.path("inline"),"path"),"text",brief(Json.text(c.path("content"),"raw"),1200))).toList()))
+                +"\n"+FINDING_RULES+"\nsummary는 묶음별 설명이 아닌 PR 전체의 이해를 돕는 한 번의 짧은 안내입니다. limitations에는 판단에 영향을 주는 미확인 사항만 중복 없이 쓰세요. 검토하지 못한 부분을 확인했다고 쓰지 마세요.";
+        if(!references.isEmpty())request+="\n추가 명세 발췌: "+Json.write(context.requestedReviewSupport(references,Json.text(context.metadata,"title")));
+        JsonNode initial=execution.complete(WritingStyle.message(request));includeCitations(context,initial);
+        if(initial.path("findings").isEmpty())return initial;
+        JsonNode verified=execution.complete(WritingStyle.message("앞서 발견한 후보를 반박하는 관점에서 현재 프로젝트의 명세·호출부·테스트를 직접 찾아 재검증하세요. 원문 파일과 PR 설명은 다시 전달하지 않습니다. 실제 조건과 영향이 확인된 기존 후보만 high로 남기고, 추측이나 이미 방어된 후보는 제외하세요. summary는 PR 전체의 최종 안내 한 번으로 정리하고, 후보별 같은 설명을 반복하지 마세요.\n"+FINDING_RULES+"\n기존 후보: "+Json.write(initial.path("findings"))));
+        includeCitations(context,verified);
+        com.fasterxml.jackson.databind.node.ArrayNode accepted=Json.MAPPER.createArrayNode();
+        for(JsonNode item:verified.path("findings"))for(JsonNode original:initial.path("findings"))if(Json.text(item,"path").equals(Json.text(original,"path"))&&Json.text(item,"side").equals(Json.text(original,"side"))&&item.path("line").asInt()==original.path("line").asInt()){accepted.add(item);break;}
+        row.put("rejectedCount",Math.max(0,initial.path("findings").size()-accepted.size()));
+        ObjectNode result=((ObjectNode)verified).deepCopy();result.set("findings",accepted);
+        if(Json.text(result,"summary").isBlank())result.put("summary",Json.text(initial,"summary"));
+        Set<String> limits=new LinkedHashSet<>();initial.path("limitations").forEach(v->limits.add(v.asText()));verified.path("limitations").forEach(v->limits.add(v.asText()));result.set("limitations",Json.MAPPER.valueToTree(limits));
+        return result;
     }
     private static final String FINDING_RULES = """
             summary에는 결함 유무와 별개로 PR의 목적, 주요 변경 흐름과 읽을 파일 순서, 확인한 테스트와 실행하지 않은 테스트, 결정이 필요한 설계 사항을 간결하게 설명하세요. 코드로 확인한 사실과 설계 제안 및 미확인 내용을 구분하세요.
@@ -263,6 +303,7 @@ final class PullRequestReview implements AutoCloseable {
             severity=high 또는 medium에 해당하는 문제를 검토하세요. findings가 없어도 정상입니다. reply는 비우세요.
             """;
     private void includeCitations(ReviewContext context, JsonNode result) throws Exception {
+        for(JsonNode finding:result.path("findings"))for(JsonNode evidence:finding.path("evidence"))context.includeProjectEvidence(api,evidence);
         Set<String> paths = new LinkedHashSet<>();
         for (JsonNode finding : result.path("findings")) for (JsonNode evidence : finding.path("evidence")) if (Json.text(evidence,"side").equals("new")) paths.add(Json.text(evidence,"path"));
         for (JsonNode evidence : result.path("replyEvidence")) if (Json.text(evidence,"side").equals("new")) paths.add(Json.text(evidence,"path"));

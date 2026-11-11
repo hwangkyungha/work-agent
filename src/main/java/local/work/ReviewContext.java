@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.*;
 import java.util.regex.*;
+import java.nio.file.Path;
 
 /** Pins PR evidence to both commits and validates model citations against actual source lines. */
 final class ReviewContext {
@@ -12,7 +13,9 @@ final class ReviewContext {
     final String sourceCommit, destinationCommit, baseCommit, diff;
     private final String sourceRepository;
     private final Store cache;
+    private final Path project;
     final List<String> currentPaths = new ArrayList<>();
+    final List<ObjectNode> fileChanges = new ArrayList<>();
     final Map<String, String> files = new LinkedHashMap<>();
     final Map<String, Set<Integer>> changed = new LinkedHashMap<>();
     final List<String> limitations = new ArrayList<>();
@@ -21,13 +24,16 @@ final class ReviewContext {
         this(api, pr, null, true);
     }
     ReviewContext(BitbucketClient api, BitbucketClient.PullRequest pr, Store cache, boolean full) throws Exception {
-        this.pr = pr; metadata = api.reviewPullRequest(pr);
+        this(api,pr,cache,full,null,null);
+    }
+    ReviewContext(BitbucketClient api,BitbucketClient.PullRequest pr,Store cache,boolean full,Path project,JsonNode metadata) throws Exception {
+        this.pr = pr; this.metadata = metadata==null?api.reviewPullRequest(pr):metadata;metadata=this.metadata;this.project=project;
         this.cache = cache;
         sourceCommit = Json.required(metadata.path("source").path("commit"), "hash");
         destinationCommit = Json.required(metadata.path("destination").path("commit"), "hash");
         if (full && !Json.text(metadata, "state").equals("OPEN")) throw new IllegalArgumentException("열려 있는 PR만 검토할 수 있습니다.");
-        baseCommit = full ? api.fullCommit(BitbucketClient.repository(metadata,"destination",pr),Json.required(api.get("/repositories/" + BitbucketClient.segment(pr.workspace()) + "/" + BitbucketClient.segment(pr.repository()) + "/merge-base/" + sourceCommit + ".." + destinationCommit), "hash")) : "";
-        diff = full ? api.request("GET", pr.api() + "/diff", null) : "";
+        baseCommit = project!=null?ReviewWorkspaces.git(project,"merge-base",sourceCommit,destinationCommit).trim():full ? api.fullCommit(BitbucketClient.repository(metadata,"destination",pr),Json.required(api.get("/repositories/" + BitbucketClient.segment(pr.workspace()) + "/" + BitbucketClient.segment(pr.repository()) + "/merge-base/" + sourceCommit + ".." + destinationCommit), "hash")) : "";
+        diff = project!=null?ReviewWorkspaces.git(project,"diff","--no-ext-diff","--no-textconv",baseCommit,sourceCommit,"--"):full ? api.request("GET", pr.api() + "/diff", null) : "";
         if (diff.length() > 1_500_000) throw new IllegalArgumentException("PR 변경이 너무 큽니다. PR을 나눈 뒤 다시 검토하세요.");
         parseChanges(diff);
         sourceRepository = Json.required(metadata.path("source").path("repository"), "full_name");
@@ -43,12 +49,14 @@ final class ReviewContext {
         }
         for (JsonNode stat : stats) {
             String oldPath = Json.text(stat.path("old"), "path"), newPath = Json.text(stat.path("new"), "path");
+            fileChanges.add(Json.obj("before",oldPath,"after",newPath,"status",Json.text(stat,"status")));
             if (!newPath.isBlank()) currentPaths.add(newPath);
-            if (!full) continue;
+            if (!full||project!=null) continue;
             if (stat.path("lines_added").asInt() == 0 && stat.path("lines_removed").asInt() == 0) { limitations.add((newPath.isBlank() ? oldPath : newPath) + ": 텍스트 변경 없이 이동했거나 바이너리 파일입니다."); continue; }
             if (!newPath.isBlank()) load(api, sourceRepository, sourceCommit, newPath, "new");
             if (!oldPath.isBlank()) load(api, destinationRepository, baseCommit, oldPath, "old");
         }
+        if(project!=null){if(!sameHead(api.reviewPullRequest(pr)))throw new IllegalStateException("자료를 준비하는 중 PR이 바뀌었습니다.");return;}
         if (!full) return;
         for (String path : List.of("AGENTS.md", "CLAUDE.md", "README.md")) if (!files.containsKey("new:" + path)) {
             try { load(api, sourceRepository, sourceCommit, path, "new"); }
@@ -60,7 +68,7 @@ final class ReviewContext {
     private void load(BitbucketClient api, String repository, String commit, String path, String side) throws Exception {
         String key = sourceKey(repository, commit, path);
         ObjectNode saved = cache == null ? null : cache.get("prSource", key);
-        String text = saved == null ? api.source(repository, commit, path).replace("\r\n", "\n") : Json.text(saved, "text");
+        String text = saved == null ? (project==null?api.source(repository, commit, path):ReviewWorkspaces.git(project,"show",commit+":"+path)).replace("\r\n", "\n") : Json.text(saved, "text");
         if (text.length() > 220_000) { limitations.add(path + ": 파일이 커서 본문 검토에서 제외했습니다."); return; }
         if (cache != null && saved == null) cache.put("prSource", Json.obj("id", key, "text", text));
         files.put(side + ":" + path, text);
@@ -68,6 +76,12 @@ final class ReviewContext {
     }
     private static String sourceKey(String repository, String commit, String path) {
         return TranscriptImporter.hash(Json.write(List.of(repository, commit, path)));
+    }
+    void includeProjectEvidence(BitbucketClient api,JsonNode evidence) throws Exception {
+        String side=Json.text(evidence,"side"),path=Json.text(evidence,"path");
+        if(project==null||files.containsKey(side+":"+path)||!Set.of("new","old").contains(side)||path.isBlank()||path.startsWith("/")||path.contains("\\")||Arrays.asList(path.split("/")).contains(".."))return;
+        try{load(api,side.equals("new")?sourceRepository:BitbucketClient.repository(metadata,"destination",pr),side.equals("new")?sourceCommit:baseCommit,path,side);}
+        catch(IllegalStateException missing){limitations.add(path+": 인용한 파일을 고정된 커밋에서 확인하지 못했습니다.");}
     }
     String includeReference(BitbucketClient api, String url) throws Exception {
         BitbucketClient.SourceReference ref = BitbucketClient.SourceReference.parse(url);
