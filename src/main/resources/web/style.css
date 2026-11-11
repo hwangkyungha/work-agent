@@ -444,3 +444,10 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 .link-source p { margin:0; font-size:14px; line-height:1.7; overflow-wrap:anywhere; }
 #work-link-form .field { margin-bottom:24px; }
 #work-link-form .form-actions { margin-top:24px; }
+
+#meeting-dates[hidden],#meeting-times[hidden] { display:none; }
+.schedule-row>div { min-width:0; flex:1; }
+.schedule-row .task-title { font-size:13px; }
+.schedule-row>.text-button { flex-shrink:0; align-self:center; }
+
+#record-form[data-kind="meeting"] .checks { margin-bottom:20px; }

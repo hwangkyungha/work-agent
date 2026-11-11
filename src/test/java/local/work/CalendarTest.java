@@ -29,7 +29,7 @@ class CalendarTest {
     }
     @Test void cancellationRemovesImportedMeetingButKeepsManualMeeting() throws Exception {
         String dates="DTSTART:20261104T010000Z\r\nDTEND:20261104T020000Z\r\n";
-        importText(event("review",dates,""));service.meeting(Json.obj("title","개인 일정","start","2026-11-04T10:00:00+09:00"));
+        importText(event("review",dates,""));store.put("meeting",Json.obj("source","manual","title","개인 일정","start","2026-11-04T10:00:00+09:00"));
         importText(event("review",dates,"STATUS:CANCELLED\r\n"));assertEquals(1,store.list("meeting").size());assertEquals("개인 일정",Json.text(store.list("meeting").get(0),"title"));
     }
     @Test void recurrenceOverrideDoesNotCreateDuplicateOriginalTime() throws Exception {

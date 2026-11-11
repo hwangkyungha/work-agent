@@ -73,14 +73,17 @@ final class Store implements AutoCloseable {
         } catch (SQLException e) { throw new IllegalStateException("같은 Jira 이슈의 업무를 중복 저장할 수 없습니다.", e); }
     }
     synchronized Path backupTaskMerge() {
-        Path backup = file.getParent().resolve("backups").resolve("before-task-merge-" + UUID.randomUUID() + ".db");
+        return backup("before-task-merge");
+    }
+    synchronized Path backup(String prefix) {
+        Path backup = file.getParent().resolve("backups").resolve(prefix + "-" + UUID.randomUUID() + ".db");
         try {
             Files.createDirectories(backup.getParent());
             try (PreparedStatement statement = connection.prepareStatement("VACUUM INTO ?")) {
                 statement.setString(1,backup.toString()); statement.execute();
             }
             return backup;
-        } catch (Exception e) { throw new IllegalStateException("중복 업무 정리 전 백업을 만들지 못했습니다. 기존 기록은 변경하지 않았습니다.",e); }
+        } catch (Exception e) { throw new IllegalStateException("기록 정리 전 백업을 만들지 못했습니다. 기존 기록은 변경하지 않았습니다.",e); }
     }
     synchronized boolean enqueue(String id, ObjectNode payload) {
         try (PreparedStatement p = connection.prepareStatement("INSERT OR IGNORE INTO inbox VALUES(?,?,'pending')")) {

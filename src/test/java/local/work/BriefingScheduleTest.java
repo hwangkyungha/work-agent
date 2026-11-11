@@ -76,7 +76,7 @@ class BriefingScheduleTest {
             tick(now, config, kind -> {
                 calls.add(kind);
                 synced(kind, now, true);
-                store.put("meeting", Json.obj("id", "leave", "title", "홍길동 휴가", "start", "2026-11-09T00:00:00+09:00", "end", "2026-11-10T00:00:00+09:00"));
+                store.put("meeting", Json.obj("source","calendar","id", "leave", "title", "홍길동 휴가", "start", "2026-11-09T00:00:00+09:00", "end", "2026-11-10T00:00:00+09:00"));
                 return Json.object();
             }, sent::add);
         }
@@ -104,10 +104,10 @@ class BriefingScheduleTest {
     }
     @Test void skipsOwnLeaveAndBothHalfDaysButNotAnotherPersonsLeave() throws Exception {
         for (String type : List.of("휴가", "연차", "오전 반차", "오후 반차")) {
-            store.put("meeting", Json.obj("id", "leave", "title", "홍길동 " + type, "start", "2026-11-06T00:00:00+09:00", "end", "2026-11-07T00:00:00+09:00", "allDay", true));
+            store.put("meeting", Json.obj("source","calendar","id", "leave", "title", "홍길동 " + type, "start", "2026-11-06T00:00:00+09:00", "end", "2026-11-07T00:00:00+09:00", "allDay", true));
             tick("2026-11-06T00:00:00Z"); assertTrue(sent.isEmpty(), type);
         }
-        store.put("meeting", Json.obj("id", "leave", "title", "김다른 휴가", "start", "2026-11-06T00:00:00+09:00", "end", "2026-11-07T00:00:00+09:00"));
+        store.put("meeting", Json.obj("source","calendar","id", "leave", "title", "김다른 휴가", "start", "2026-11-06T00:00:00+09:00", "end", "2026-11-07T00:00:00+09:00"));
         tick("2026-11-06T00:00:00Z"); assertEquals(1, sent.size());
     }
     @Test void mondayUsesFridayEvenIfWeekendHasSessionsAndHolidaysFallBackToLatestWork() throws Exception {

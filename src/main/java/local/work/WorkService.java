@@ -197,18 +197,6 @@ final class WorkService {
         stamp(row);
         return store.put("activity", row);
     }
-    ObjectNode meeting(JsonNode input) {
-        Instant start = KoreaTime.parse(Json.required(input, "start"));
-        String endText = Json.text(input, "end");
-        if (!endText.isBlank() && !KoreaTime.parse(endText).isAfter(start)) throw new IllegalArgumentException("회의 종료 시각은 시작 시각보다 늦어야 합니다.");
-        ObjectNode row = Json.obj("title", Json.required(input, "title"), "start", start.toString(),
-                "end", endText.isBlank() ? "" : KoreaTime.parse(endText).toString(), "date", start.atZone(KoreaTime.ZONE).toLocalDate().toString(),
-                "product", input.path("product").asText("미분류"), "jiraKey", issue(Json.text(input, "jiraKey")),
-                "source", input.path("source").asText("manual"));
-        if (input.hasNonNull("id")) row.set("id", input.get("id"));
-        stamp(row);
-        return store.put("meeting", row);
-    }
     synchronized ObjectNode plan(JsonNode input) {
         String date = day(input);
         JsonNode suppliedIds = input.path("taskIds");
@@ -293,7 +281,7 @@ final class WorkService {
     }
     List<ObjectNode> meetings(LocalDate day) {
         Instant from = day.atStartOfDay(KoreaTime.ZONE).toInstant(), until = day.plusDays(1).atStartOfDay(KoreaTime.ZONE).toInstant();
-        return store.list("meeting").stream().filter(n -> {
+        return store.list("meeting").stream().filter(n -> Json.text(n,"source").equals("calendar")).filter(n -> {
             Instant start = KoreaTime.parse(Json.text(n, "start"));
             String end = Json.text(n, "end");
             return start.isBefore(until) && (end.isBlank() ? !start.isBefore(from) : KoreaTime.parse(end).isAfter(from));

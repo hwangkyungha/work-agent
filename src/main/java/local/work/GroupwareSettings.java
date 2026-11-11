@@ -11,10 +11,13 @@ final class GroupwareSettings {
     final Path file;
     private final ObjectNode values;
 
-    GroupwareSettings(Config config) throws Exception {
+    static Path location(Config config) {
         String local = config.environment("LOCALAPPDATA");
         Path home = local.isBlank() ? Path.of(System.getProperty("user.home"), "AppData", "Local") : Path.of(local);
-        file = (config.has("GROUPWARE_CONFIG") ? Path.of(config.get("GROUPWARE_CONFIG", "")) : home.resolve("Suresoft/groupware/settings.json")).toAbsolutePath().normalize();
+        return (config.has("GROUPWARE_CONFIG") ? Path.of(config.get("GROUPWARE_CONFIG", "")) : home.resolve("Suresoft/groupware/settings.json")).toAbsolutePath().normalize();
+    }
+    GroupwareSettings(Config config) throws Exception {
+        file = location(config);
         Files.createDirectories(file.getParent());
         try (var in = GroupwareSettings.class.getResourceAsStream("/groupware-defaults.json")) {
             values = (ObjectNode) Json.read(new String(Objects.requireNonNull(in).readAllBytes(), StandardCharsets.UTF_8));

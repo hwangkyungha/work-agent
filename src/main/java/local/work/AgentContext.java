@@ -69,7 +69,7 @@ final class AgentContext {
             context.set("worklogCandidates",Json.MAPPER.valueToTree(java.util.stream.IntStream.range(0,7).boxed().flatMap(i->ledger.worklogCandidates(monday.plusDays(i)).stream()).limit(40).map(row->fields(row,"date","workId","taskId","title","jiraKey","outcome")).toList()));
         }
         if (query.matches("(?s).*(회의|미팅|일정|캘린더).*")) {
-            context.set("meetings", Json.MAPPER.valueToTree(service.meetings(day).stream().map(row -> fields(row, "title", "start", "end", "allDay")).toList()));
+            context.set("meetings", Json.MAPPER.valueToTree(service.meetings(day).stream().map(row -> fields(row,"id","googleEventId","recurringEventId","etag","title","start","end","date","endDate","allDay","calendarUrl")).toList()));
         }
         if (query.matches("(?s).*(데일리|스탠드업|브리핑|공유).*")) {
             ObjectNode note = service.store.get("daily", day.toString());

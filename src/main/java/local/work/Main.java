@@ -63,6 +63,7 @@ public final class Main {
         WorklogSync worklogSync = new WorklogSync(service);
         TranscriptImporter importer = new TranscriptImporter(service, config);
         CalendarSync calendar = new CalendarSync(config, service);
+        calendar.retireLocalEvents();
         Agent.Synchronizer sync = kind -> {
             ObjectNode result = Json.object();
             for (String target : kind.equals("all") ? List.of("cli", "jira", "calendar") : List.of(kind)) {
@@ -89,7 +90,7 @@ public final class Main {
         // The notifier is attached after the Slack connection has been created.
         SlackConnection[] slackTarget = new SlackConnection[1];
         ReviewMonitor reviewMonitor = new ReviewMonitor(service, bitbucket, reviews, config, (text, review) -> slackTarget[0].notifyReview(text, review));
-        Agent agent = new Agent(service, reports, cli, sync, config.agentName(), config.agentCallName(), booking, reviews, reviewMonitor);
+        Agent agent = new Agent(service, reports, cli, sync, config.agentName(), config.agentCallName(), booking, reviews, reviewMonitor).calendar(calendar);
         SlackConnection slack = new SlackConnection(config, store, agent);
         slackTarget[0] = slack;
         DraftResults draftResults=new DraftResults(service,bitbucket,cli,config);
@@ -128,7 +129,7 @@ public final class Main {
                         case "/api/reviews" -> json(exchange, 200, reviewMonitor.state());
                         case "/api/tasks/transitions" -> json(exchange, 200, service.transitions(query.getOrDefault("id", "")));
                         case "/api/messages" -> json(exchange, 200, store.list("message").stream().filter(n -> Json.text(n, "conversation").equals("web")).toList());
-                        case "/api/settings" -> json(exchange, 200, Json.obj("workTypes", config.workTypes(), "agentName", config.agentName(), "agentCallName", config.agentCallName(), "engine", config.get("AGENT_ENGINE", "codex"), "slackConfigured", slack.configured(), "slackConnected", slack.connected(), "slackError", slack.lastError(), "jiraConfigured", service.jira.configured(), "calendarConfigured", calendar.configured(), "briefingTime", config.get("BRIEFING_TIME", "09:00"), "fridayTime", config.get("FRIDAY_REVIEW_TIME", "16:30"), "claudeSessionTime", config.get("CLAUDE_SESSION_TIME", ""), "claudeSession", store.get("scheduled", "claude-session:" + time.today()), "codexSessionTime", config.get("CODEX_SESSION_TIME", ""), "codexSession", store.get("scheduled", "codex-session:" + time.today()), "timezone", "Asia/Seoul"));
+                        case "/api/settings" -> json(exchange, 200, Json.obj("workTypes", config.workTypes(), "agentName", config.agentName(), "agentCallName", config.agentCallName(), "engine", config.get("AGENT_ENGINE", "codex"), "slackConfigured", slack.configured(), "slackConnected", slack.connected(), "slackError", slack.lastError(), "jiraConfigured", service.jira.configured(), "calendarConfigured", calendar.configured(), "calendarWritable", calendar.writable(), "briefingTime", config.get("BRIEFING_TIME", "09:00"), "fridayTime", config.get("FRIDAY_REVIEW_TIME", "16:30"), "claudeSessionTime", config.get("CLAUDE_SESSION_TIME", ""), "claudeSession", store.get("scheduled", "claude-session:" + time.today()), "codexSessionTime", config.get("CODEX_SESSION_TIME", ""), "codexSession", store.get("scheduled", "codex-session:" + time.today()), "timezone", "Asia/Seoul"));
                         case "/api/evidence" -> {
                             ObjectNode activity = store.get("activity", query.getOrDefault("id", ""));
                             ObjectNode evidence = activity == null ? null : store.get("evidence", Json.text(activity, "evidenceId"));
@@ -184,7 +185,8 @@ public final class Main {
                         case "/api/followups/dismiss" -> service.dismissFollowup(body);
                         case "/api/draft-results/refresh" -> draftResults.generate(date,true);
                         case "/api/draft-results/reviewed" -> service.reviewDraftResult(body);
-                        case "/api/meetings" -> service.meeting(body);
+                        case "/api/meetings" -> calendar.save(body);
+                        case "/api/meetings/delete" -> calendar.delete(body);
                         case "/api/daily" -> service.dailyNote(body);
                         case "/api/worklogs" -> service.saveWorklog(body);
                         case "/api/worklogs/post" -> service.postWorklog(LocalDate.parse(Json.required(body, "date")));

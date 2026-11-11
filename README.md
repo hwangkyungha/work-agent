@@ -90,7 +90,7 @@ scope가 있는 Cloud 토큰은 `JIRA_KIND=cloud`로 설정하고, `JIRA_URL`에
 
 ### Google Calendar
 
-Google Calendar의 회의 일정은 먼저 읽기 전용으로 연결합니다.
+Google OAuth를 연결하면 일정 조회·등록·수정·삭제에 같은 캘린더를 사용합니다. 아래 회의실 예약 설정의 Google 연결을 그대로 사용하며, 회의실을 예약하지 않고 일정만 등록할 수도 있습니다. OAuth 연결 전에는 아래 ICS 주소로 읽기 전용 조회를 사용할 수 있습니다.
 
 자신의 iCal 주소를 로컬 `config.properties`의 `CALENDAR_ICS_URL`에 입력하세요. 이 이름의 환경변수를 새로 만들 필요는 없습니다. 형식은 다음과 같습니다.
 
@@ -109,7 +109,7 @@ CALENDAR_ICS_URL=https://calendar.google.com/calendar/ical/캘린더주소/basic
 
 `CALENDAR_ICS_URL`에 구독용 ICS 주소를, 또는 `CALENDAR_ICS_FILE`에 내보낸 ICS 파일 경로를 넣으세요. 반복 일정, 제외 날짜, 개별 일정 변경과 취소를 반영합니다. 조회 범위는 오늘 기준 이전 14일부터 이후 60일까지입니다.
 
-일정 조회는 읽기 전용 ICS 연결입니다. 일반 회의 등록은 업무 에이전트의 로컬 일정에 저장합니다. 아래 회의실 예약 기능은 Google OAuth를 연결하면 예약한 회의를 Google Calendar에도 등록합니다.
+OAuth가 연결되면 ICS 대신 Google API로 조회합니다. Google 일정 ID를 기준으로 표시하고 수정·삭제하며, Google에서 삭제된 일정도 다음 동기화에 반영됩니다. 일정 자동 갱신은 5분 주기이고, 화면의 기록 새로 확인으로 즉시 갱신할 수 있습니다. 브리핑 전에는 최신 캘린더를 확인합니다.
 
 ### 회의실 예약
 
@@ -304,3 +304,8 @@ java -jar work-agent-0.4.2.jar --repair-activity-links
 같은 Jira 번호는 하나의 할 일에만 연결합니다. Jira 동기화 전에 로컬 할 일을 만들었거나, 수집된 Jira 업무에 나중에 로컬 할 일을 연결해도 원래 로컬 업무 ID를 유지해 합칩니다. 동일 번호로 새 할 일을 등록하면 기존 업무를 재사용합니다. 선행 작업·계획과 당시의 업무 이름·활동·세션·후속 제안·워크로그의 업무 연결을 옮기며, 기록한 날짜·시간·Jira 등록 ID와 워크로그 중복 등록 방지 표시는 유지합니다. 예전 업무 ID로 들어온 요청과 브라우저의 임시 워크로그도 새 연결을 사용합니다.
 
 기존 중복은 서버 시작 때 정리합니다. 정리 전 SQLite 전체 백업을 데이터 폴더의 `backups/before-task-merge-*.db`에 만들고, 업무별 병합 내역과 이전 ID 연결도 DB에 남깁니다. 중요도·긴급도·숨김·업무 묶음·성격 또는 같은 날짜의 수행 상태가 충돌하면 해당 병합은 되돌리고 전체 할 일 화면에 확인할 내용을 표시합니다. 두 업무의 충돌 값을 확인해 일치시킨 뒤 다시 연결하면 합칠 수 있습니다. Jira 상태·마감일 등은 Jira 자료로 갱신합니다.
+
+
+일정 원본은 Google Calendar입니다. Slack에서 ‘오늘 일정에 서현지 휴가를 종일로 등록해줘’처럼 요청하거나 오늘 화면의 ‘일정 등록’을 사용합니다. 일정 제목을 누르면 수정하고, 삭제 버튼은 Google 일정 삭제를 확인받은 뒤 실행합니다. 종일 일정은 시작일과 마지막 날(포함)을 입력하며, 시간 지정 일정은 시작·종료 시각을 모두 입력합니다. 시각을 임의로 배정하지 않습니다. 반복 일정은 선택한 날짜의 회차만 수정·삭제합니다. Google의 변경이 먼저 발생하면 다시 확인하도록 안내하고 덮어쓰지 않습니다. 응답을 받지 못한 등록 요청은 같은 요청 ID로 재시도해 중복 생성을 막습니다. [Google 일정 등록](https://developers.google.com/workspace/calendar/api/v3/reference/events/insert), [일정 수정](https://developers.google.com/workspace/calendar/api/v3/reference/events/patch)
+
+내부 일정 목록은 Google 조회 결과를 보관하는 캐시입니다. 갱신 실패 시 이전 조회 결과라는 안내를 표시합니다. 기존 로컬 전용 일정은 서버 시작 때 전체 DB를 데이터 폴더의 `backups/before-google-calendar-*.db`로 백업한 뒤 `retiredMeeting` 기록으로 옮겨 목록에서 제외합니다. Google에 이미 있는 같은 제목의 일정을 다시 만들거나 삭제하지 않습니다. Google 쓰기 권한이 없으면 읽기 전용으로 표시하며, 일반 일정의 로컬 저장 경로는 사용하지 않습니다.

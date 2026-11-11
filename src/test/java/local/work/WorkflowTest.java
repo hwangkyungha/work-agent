@@ -53,12 +53,12 @@ class WorkflowTest {
         assertEquals(1, service.activities(time.today(),time.today()).size());
     }
     @Test void meetingTimeIsNotTaskDeadline() {
-        service.meeting(Json.obj("title","리뷰","start","2026-11-05T10:00:00+09:00"));
+        store.put("meeting",Json.obj("source","calendar","title","리뷰","start","2026-11-05T10:00:00+09:00"));
         assertEquals(1,service.meetings(time.today().plusDays(1)).size());
         assertTrue(service.tasks().isEmpty());
     }
     @Test void meetingSpanningMidnightAppearsOnBothKoreaDays() {
-        service.meeting(Json.obj("title","장기 회의","start","2026-11-03T23:00:00+09:00","end","2026-11-04T01:00:00+09:00"));
+        store.put("meeting",Json.obj("source","calendar","title","장기 회의","start","2026-11-03T23:00:00+09:00","end","2026-11-04T01:00:00+09:00"));
         assertEquals(1,service.meetings(LocalDate.of(2026,11,3)).size());
         assertEquals(1,service.meetings(LocalDate.of(2026,11,4)).size());
     }

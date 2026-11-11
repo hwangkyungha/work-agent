@@ -15,11 +15,48 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
 
-final class GoogleBookingCalendar implements BookingCalendar {
+class GoogleBookingCalendar implements BookingCalendar {
     static final String SCOPE = "https://www.googleapis.com/auth/calendar.events";
     private final GroupwareSettings settings;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
     GoogleBookingCalendar(GroupwareSettings settings) { this.settings = settings; }
+    static boolean configured(Config config) {
+        if (!Files.isRegularFile(GroupwareSettings.location(config))) return false;
+        try { GroupwareSettings settings=new GroupwareSettings(config);return Files.isRegularFile(settings.googleToken()) && Files.isRegularFile(settings.googleClient()); }
+        catch (Exception e) { return false; }
+    }
+    String calendarId() { return settings.googleCalendar(); }
+    ObjectNode listEvents(Instant from,Instant to,String pageToken) throws Exception {
+        String query="?singleEvents=true&orderBy=startTime&showDeleted=false&maxResults=250&timeZone=Asia%2FSeoul&timeMin="+encode(from.toString())+"&timeMax="+encode(to.toString());
+        if (!pageToken.isBlank()) query+="&pageToken="+encode(pageToken);
+        return checked(send("GET",events()+query,null),200);
+    }
+    ObjectNode getEvent(String id) throws Exception {
+        HttpResponse<String> response=send("GET",events()+"/"+encode(id),null);
+        if(Set.of(404,410).contains(response.statusCode()))return null;
+        ObjectNode event=checked(response,200);return Json.text(event,"status").equals("cancelled")?null:event;
+    }
+    ObjectNode createEvent(String id,ObjectNode body) throws Exception {
+        ObjectNode existing=getEvent(id);if(existing!=null)return existing;
+        ObjectNode request=body.deepCopy();request.put("id",id);
+        HttpResponse<String> response=send("POST",events(),request);
+        if(response.statusCode()==409) {ObjectNode saved=getEvent(id);if(saved!=null)return saved;}
+        return checked(response,200,201);
+    }
+    ObjectNode updateEvent(String id,ObjectNode body,String etag) throws Exception {
+        ObjectNode patch=body.deepCopy();
+        for(String field:List.of("start","end")) {ObjectNode value=(ObjectNode)patch.get(field);if(value.has("date")){value.putNull("dateTime");value.putNull("timeZone");}else value.putNull("date");}
+        return checked(send("PATCH",events()+"/"+encode(id),patch,etag),200);
+    }
+    void deleteEvent(String id,String etag) throws Exception {
+        HttpResponse<String> response=send("DELETE",events()+"/"+encode(id),null,etag);
+        if(!Set.of(204,404,410).contains(response.statusCode()))checked(response,204);
+    }
+    private static ObjectNode checked(HttpResponse<String> response,int... allowed) {
+        if(response.statusCode()==412)throw new IllegalArgumentException("Google에서 일정이 변경됐습니다. 새로고침 후 다시 수정하세요.");
+        if(Arrays.stream(allowed).noneMatch(code->code==response.statusCode()))throw calendarError(response.statusCode());
+        return response.body()==null||response.body().isBlank()?Json.object():(ObjectNode)Json.read(response.body());
+    }
     ObjectNode status() throws Exception {
         HttpResponse<String> response = send("GET", events() + "?maxResults=1&fields=accessRole", null);
         if (response.statusCode() != 200) throw calendarError(response.statusCode());
@@ -50,11 +87,13 @@ final class GoogleBookingCalendar implements BookingCalendar {
                 "end", Json.obj("dateTime", request.date().atTime(request.end()).atZone(KoreaTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "timeZone", "Asia/Seoul"));
     }
     private String events() { return "https://www.googleapis.com/calendar/v3/calendars/" + encode(settings.googleCalendar()) + "/events"; }
-    private HttpResponse<String> send(String method, String url, ObjectNode body) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30))
+    HttpResponse<String> send(String method, String url, ObjectNode body) throws Exception { return send(method,url,body,""); }
+    HttpResponse<String> send(String method, String url, ObjectNode body,String etag) throws Exception {
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30))
                 .header("Authorization", "Bearer " + accessToken()).header("Content-Type", "application/json")
-                .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(Json.write(body))).build();
-        return http.send(request, HttpResponse.BodyHandlers.ofString());
+                .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(Json.write(body)));
+        if(!etag.isBlank())request.header("If-Match",etag);
+        return http.send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
     private synchronized String accessToken() throws Exception {
         if (!Files.exists(settings.googleToken())) throw new IllegalStateException("구글 캘린더 로그인이 필요합니다. ./groupware.ps1 calendar-login을 실행하세요.");

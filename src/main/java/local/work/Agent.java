@@ -17,6 +17,7 @@ final class Agent {
     private final GroupwareBooking booking;
     private final PullRequestReview reviews;
     private final ReviewMonitor reviewMonitor;
+    private CalendarSync calendar;
     Agent(WorkService service, Reports reports, Model model, Synchronizer synchronizer, String name, String callName) {
         this(service, reports, model, synchronizer, name, callName, null);
     }
@@ -29,6 +30,7 @@ final class Agent {
         this.booking = booking;
         this.reviews = reviews; this.reviewMonitor = reviewMonitor;
     }
+    Agent calendar(CalendarSync calendar) {this.calendar=calendar;return this;}
     synchronized ObjectNode chat(String conversation, String requestId, String text) throws Exception {
         return chat(conversation, requestId, text, null);
     }
@@ -167,7 +169,13 @@ final class Agent {
                 result.put("jiraKey", WorkService.issue(Json.required(p, "jiraKey"))).put("userLinked", true);
                 service.store.put("activity", result); message = "활동을 Jira 이슈에 연결했습니다.";
             }
-            case "meeting" -> { result = service.meeting(p); message = "회의를 저장했습니다: " + Json.text(result, "title") + " (업무 에이전트 일정)"; }
+            case "meeting" -> {
+                if(calendar==null)throw new IllegalArgumentException("Google Calendar 연결을 확인하세요.");
+                result=calendar.save(p);
+                message=(result.path("deleted").asBoolean()?"Google 캘린더에서 삭제했습니다: ":"Google 캘린더에 반영했습니다: ")+Json.text(result,"title");
+                if(!result.path("deleted").asBoolean())message+="\n"+Json.text(result,"date")+(result.path("allDay").asBoolean()?" · 종일":" · "+KoreaTime.parse(Json.text(result,"start")).atZone(KoreaTime.ZONE).toLocalTime()+" ~ "+KoreaTime.parse(Json.text(result,"end")).atZone(KoreaTime.ZONE).toLocalTime()+" (한국 시간)");
+                if(!Json.text(result,"calendarUrl").isBlank())message+="\n"+Json.text(result,"calendarUrl");
+            }
             case "plan" -> { result = service.plan(p); message = date + " 계획을 저장했습니다."; }
             case "plan_item" -> { result = service.planItem(p); message = date + " 할 일을 갱신했습니다."; }
             case "daily_note" -> { result = service.dailyNote(p); message = date + " 데일리 추가 내용을 저장했습니다."; }
@@ -271,8 +279,9 @@ final class Agent {
             work_day: {date,workId,outcome,note}. 그날의 수행 상태를 저장한다. outcome은 unconfirmed,not-started,progress,done,deferred,cancelled. 이 값은 Jira 상태가 아니다. 계획한 사실만으로 진행했다고 판단하지 않는다.
             link_work: {date,workId,taskId,create,jiraKey}. 실제 활동을 기존 업무에 연결한다. 새로운 업무로 등록할 때만 create=true와 선택적인 jiraKey를 사용한다. Jira가 없으면 업무 제목과 실제 내부 ID를 그대로 쓰며 REQ-* 같은 가짜 키를 만들지 않는다.
             link_activity: {id,jiraKey}. 여러 도구의 기록이 같은 이슈면 같은 jiraKey에 연결한다.
-            meeting: {title,start,end,product,jiraKey}. 종료 시각을 모르면 end="". 회의 시각을 개발 마감으로 바꾸지 않는다.
-            meeting은 업무 에이전트 일정만 저장한다. 외부 캘린더에도 썼다고 말하지 않는다.
+            meeting: {operation,id,title,allDay,date,endDate,start,end,etag}. Google Calendar에 직접 등록·수정·삭제한다. operation은 create,update,delete이며 기본 create다. 수정·삭제에는 meetings에 있는 실제 id를 사용하고 etag도 전달한다. 제목이 같은 일정이 여러 개면 대상을 확인한다. 사용자가 요청한 일정만 변경하며 다른 사람의 일정은 임의로 삭제하지 않는다.
+            종일 또는 휴가·연차처럼 시간이 없는 일정은 allDay=true,date=시작일,endDate=마지막 날(포함)로 등록한다. 단일 날짜면 endDate는 date와 같다. 시간 지정 일정은 allDay=false,start와 end 모두 한국 시간 ISO 시각을 전달한다. 시간이 모호하면 질문하고 실행하지 않는다. 09:00이나 종료 시각을 임의로 정하지 않는다. 회의 시각을 개발 마감으로 바꾸지 않는다. Google 반영 결과가 나오기 전에 등록 완료를 주장하지 않는다. 회의실 예약 없이 일정만 등록할 때는 meeting을 사용한다.
+            반복 일정의 수정·삭제는 선택한 날짜의 해당 회차에만 적용한다. 반복 전체 변경 요청은 지원 범위를 설명하고 개별 회차 처리로 임의 실행하지 않는다.
             room_booking: {operation,date,start,end,attendees,purpose,room}. 회의실 조회·예약·취소는 meeting 대신 이 작업을 사용한다. operation은 check,book,cancel이다.
             date는 한국 날짜 YYYY-MM-DD, start/end는 한국 시각 HH:mm이며 30분 단위이다. 날짜, 시작·종료 시각이 빠졌으면 먼저 물어보고 actions=[]로 둔다.
             attendees는 수용 인원에 맞는 회의실을 고르는 데만 사용하는 양의 정수다. 회의실을 지정하지 않았고 인원이 없으면 먼저 물어본다. 회의실을 지정했으면 인원을 묻지 않고, 언급하지 않은 attendees 필드는 생략한다. 참석인원 명단은 요청하거나 생성하지 않으며 그룹웨어 입력란에는 프로그램이 항상 -를 넣는다.

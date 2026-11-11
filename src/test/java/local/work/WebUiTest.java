@@ -30,7 +30,8 @@ class WebUiTest {
     List<ObjectNode> pastWorkCandidates=new ArrayList<>();
     List<String> configuredWorkTypes=Config.DEFAULT_WORK_TYPES;
     Map<String,List<ObjectNode>> otherWorkDays=new HashMap<>();
-    List<JsonNode> workspaceUpdates=new ArrayList<>(),referenceUpdates=new ArrayList<>();
+    List<JsonNode> workspaceUpdates=new ArrayList<>(),referenceUpdates=new ArrayList<>(),calendarSaves=new ArrayList<>(),calendarDeletes=new ArrayList<>();
+    boolean calendarSaveFails,calendarReadOnly;
     static final String ORIGIN = "http://127.0.0.1:18765";
     ObjectNode task(String id, String key, String title) { return Json.obj("id", id, "jiraKey", key, "title", title, "status", "todo", "important", false, "urgent", false, "product", "개발", "due", "", "hidden", false, "createdAt", "2026-11-06T00:00:00Z"); }
     @BeforeEach void open() {
@@ -49,7 +50,7 @@ class WebUiTest {
                     type = path.equals("/") ? "text/html; charset=utf-8" : path.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8";
                 }
                 case "/api/state" -> content = Json.write(state);
-                case "/api/settings" -> content = Json.write(Json.obj("workTypes",configuredWorkTypes,"agentName", "호박", "agentCallName", "호박아", "slackConnected", true, "jiraConfigured", true, "engine", "codex"));
+                case "/api/settings" -> content = Json.write(Json.obj("workTypes",configuredWorkTypes,"agentName", "호박", "agentCallName", "호박아", "slackConnected", true, "jiraConfigured", true,"calendarWritable",!calendarReadOnly, "engine", "codex"));
                 case "/api/reviews" -> content = Json.write(Json.obj("configured", true, "automatic", true, "jobs", reviewJobs, "warnings", List.of(), "workspaces", List.of("team"), "repositoryCount", 48));
                 case "/api/reviews/refresh" -> reviewRefreshes++;
                 case "/api/reviews/workspace" -> workspaceUpdates.add(Json.read(route.request().postData()));
@@ -87,6 +88,16 @@ class WebUiTest {
                     for(JsonNode id:payload.path("taskIds")) for(JsonNode task:state.path("tasks")) if(id.asText().equals(Json.text(task,"id")) && plan.findValuesAsText("id").stream().noneMatch(value->value.equals(id.asText()))) plan.add(task);
                     content=Json.write(Json.obj("added",plan.size()-before));
                 }
+                case "/api/meetings" -> {
+                    JsonNode payload=Json.read(route.request().postData());calendarSaves.add(payload);
+                    if(calendarSaveFails){route.fulfill(new Route.FulfillOptions().setStatus(502).setContentType("application/json").setBody(Json.write(Json.obj("error","Google 캘린더 연결 오류"))));return;}
+                    String id=Json.text(payload,"id");if(id.isBlank())id="calendar:new";
+                    String start=Json.text(payload,"start"),end=Json.text(payload,"end"),date=Json.text(payload,"date");
+                    if(payload.path("allDay").asBoolean()){start=date+"T00:00:00+09:00";end=java.time.LocalDate.parse(Json.text(payload,"endDate")).plusDays(1)+"T00:00:00+09:00";}else date=start.substring(0,10);
+                    ObjectNode meeting=Json.obj("id",id,"googleEventId","google-event","title",Json.text(payload,"title"),"start",start,"end",end,"date",date,"endDate",payload.path("endDate").asText(date),"allDay",payload.path("allDay").asBoolean(),"etag","v2","calendarUrl","https://calendar.google.com/calendar/event?eid=google-event","source","calendar");
+                    ArrayNode meetings=Json.MAPPER.createArrayNode();for(JsonNode row:state.path("meetings"))if(!Json.text(row,"id").equals(id))meetings.add(row);meetings.add(meeting);state.set("meetings",meetings);content=Json.write(meeting);
+                }
+                case "/api/meetings/delete" -> {JsonNode payload=Json.read(route.request().postData());calendarDeletes.add(payload);ArrayNode remaining=Json.MAPPER.createArrayNode();for(JsonNode row:state.path("meetings"))if(!Json.text(row,"id").equals(Json.text(payload,"id")))remaining.add(row);state.set("meetings",remaining);}
                 case "/api/work-links" -> workLinks.add(Json.read(route.request().postData()));
                 case "/api/activities" -> savedActivities.add(Json.read(route.request().postData()));
                 case "/api/work-days/candidates" -> content=Json.write(pastWorkCandidates);
@@ -588,6 +599,27 @@ class WebUiTest {
         assertEquals(0,page.locator("[data-add-worklog-work='local']").count());page.locator("#worklog-form [type='submit']").click();page.waitForCondition(()->savedWorklogs.size()==1);
         assertEquals("local",Json.text(savedWorklogs.getFirst().path("items").get(0),"taskId"));assertEquals("original-marker",Json.text(savedWorklogs.getFirst().path("items").get(0),"marker"));
         page.locator("[data-view='plan']").click();assertTrue(page.getByRole(AriaRole.ALERT).textContent().contains("CT-77"));
+    }
+
+    @Test void googleCalendarFormSupportsAllDayTimedEditsAndConfirmedDeletion() throws Exception {
+        page.reload();page.locator("[data-open='meeting']").click();assertEquals("",page.locator("#field-start").inputValue());assertTrue(page.locator("#field-end").evaluate("el=>el.required").equals(true));
+        page.locator("#field-title").fill("서현지 휴가");page.locator("#meeting-all-day").check();assertFalse(page.locator("#meeting-times").isVisible());
+        page.locator("#field-date").fill("2026-11-06");page.locator("#field-endDate").fill("2026-11-06");
+        String screenshot=System.getProperty("work.ui.calendar.screenshots","");if(!screenshot.isBlank()){Path dir=Files.createDirectories(Path.of(screenshot));page.setViewportSize(390,844);assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("all-day-form.png")));page.setViewportSize(1440,1000);}
+        page.locator("#record-form [type='submit']").click();page.waitForCondition(()->calendarSaves.size()==1);
+        assertTrue(calendarSaves.getFirst().path("allDay").asBoolean());assertFalse(calendarSaves.getFirst().has("start"));assertFalse(Json.text(calendarSaves.getFirst(),"requestId").isBlank());
+        page.locator("[data-edit-meeting='calendar:new']").waitFor();assertTrue(page.locator(".schedule-row time").textContent().contains("종일"));assertEquals("https://calendar.google.com/calendar/event?eid=google-event",page.locator(".schedule-row a").getAttribute("href"));
+        page.locator("[data-edit-meeting='calendar:new']").click();assertTrue(page.locator("#meeting-all-day").isChecked());page.locator("#meeting-all-day").uncheck();
+        page.locator("#field-start").fill("2026-11-06T13:00");page.locator("#field-end").fill("2026-11-06T18:00");page.locator("#record-form [type='submit']").click();page.waitForCondition(()->calendarSaves.size()==2);
+        assertEquals("update",Json.text(calendarSaves.get(1),"operation"));assertEquals("2026-11-06T13:00:00+09:00",Json.text(calendarSaves.get(1),"start"));assertEquals("v2",Json.text(calendarSaves.get(1),"etag"));
+        page.onDialog(Dialog::accept);page.locator("[data-delete-meeting='calendar:new']").click();page.waitForCondition(()->calendarDeletes.size()==1);assertEquals("calendar:new",Json.text(calendarDeletes.getFirst(),"id"));page.waitForCondition(()->page.locator(".schedule-row").count()==0);
+    }
+    @Test void failedGoogleSaveKeepsTheFormAndRequestIdentityAndReadOnlyCacheIsClearlyMarked() {
+        calendarSaveFails=true;page.reload();page.locator("[data-open='meeting']").click();page.locator("#field-title").fill("외부 등록 실패");page.locator("#meeting-all-day").check();
+        page.locator("#record-form [type='submit']").click();page.waitForCondition(()->calendarSaves.size()==1);assertTrue(page.locator("#modal").isVisible());assertEquals(0,state.path("meetings").size());page.waitForCondition(()->!page.locator("#record-form [type='submit']").isDisabled());
+        page.locator("#record-form [type='submit']").click();page.waitForCondition(()->calendarSaves.size()==2);assertEquals(Json.text(calendarSaves.getFirst(),"requestId"),Json.text(calendarSaves.get(1),"requestId"));page.locator("#close-modal").click();
+        calendarReadOnly=true;state.set("meetings",Json.MAPPER.valueToTree(List.of(Json.obj("id","calendar:readonly","googleEventId","remote","title","Google 조회 일정","start","2026-11-06T00:00:00+09:00","end","2026-11-07T00:00:00+09:00","allDay",true,"calendarUrl","https://calendar.google.com/calendar/event?eid=remote"))));
+        state.set("sync",Json.MAPPER.valueToTree(List.of(Json.obj("id","calendar","ok",false))));page.reload();page.locator(".schedule-row").waitFor();assertEquals(0,page.locator("[data-edit-meeting]").count());assertEquals(0,page.locator("[data-delete-meeting]").count());assertEquals(0,page.locator("[data-open='meeting']").count());assertTrue(page.locator("#content").textContent().contains("이전 조회 결과"));
     }
 
 }
