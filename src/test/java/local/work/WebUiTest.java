@@ -71,6 +71,7 @@ class WebUiTest {
                     for (JsonNode task : state.path("tasks")) if (Json.text(task, "id").equals(Json.text(payload, "id"))) payload.fields().forEachRemaining(field -> ((ObjectNode) task).set(field.getKey(), field.getValue()));
                     refreshPlan();
                 }
+                case "/api/jira/issue" -> content=Json.write(Json.obj("id","CT-99","title","다른 담당자의 Jira 업무","product","개발","due","","jiraStatus","Backlog","assignee","다른 담당자","issueUrl","https://example.atlassian.net/browse/CT-99"));
                 case "/api/tasks/transitions" -> content = Json.write(Json.obj("current", Json.obj("jiraStatus", "In Progress"), "transitions", List.of(Json.obj("id", "31", "name", "Complete", "to", Json.obj("name", "Done")))));
                 case "/api/tasks/status" -> {
                     JsonNode payload = Json.read(route.request().postData()); statusUpdates.add(payload);
@@ -327,6 +328,39 @@ class WebUiTest {
         page.reload(); page.locator("[data-view='worklog']").click();
         assertEquals("1h", page.locator(".log-duration").inputValue()); assertTrue(page.locator(".log-duration").isDisabled());assertFalse(page.locator(".worklog-input-row[data-state='posted']").isVisible());
     }
+    @Test void todayCanAddExistingTaskOrUnassignedJiraWithoutEditingTitle() throws Exception {
+        page.locator("#choose-today-issue").click();
+        page.locator("#today-existing-task-search").fill("CT-42");
+        page.locator("#today-existing-task-search").press("Enter");
+        page.locator("#existing-today-form [type=submit]").click();
+        page.waitForCondition(()->!planUpdates.isEmpty());
+        assertEquals("jira:CT-42",planUpdates.getLast().path("taskIds").get(0).asText());
+        assertTrue(state.path("plan").findValuesAsText("id").contains("jira:CT-42"));
+        assertEquals(0,updates.size());
+        page.locator("#choose-today-issue").click();
+        page.locator("#today-jira-key").fill("CT-99");
+        page.locator("#today-jira-form [type=submit]").click();
+        page.locator("#add-jira-today").waitFor();
+        assertTrue(page.locator("#today-jira-result").textContent().contains("다른 담당자의 Jira 업무"));
+        String screenshots=System.getProperty("work.ui.picker.screenshots","");
+        if(!screenshots.isBlank()){Path dir=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("today-issue-desktop.png")));}
+        page.setViewportSize(390,844);
+        assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));
+        if(!screenshots.isBlank())page.screenshot(new Page.ScreenshotOptions().setPath(Path.of(screenshots).resolve("today-issue-mobile.png")));
+        page.setViewportSize(1440,1000);
+        page.locator("#today-jira-key").fill("CT-98");
+        assertEquals(0,page.locator("#add-jira-today").count());
+        page.locator("#today-jira-key").fill("CT-99");
+        page.locator("#today-jira-form [type=submit]").click();
+        page.locator("#add-jira-today").click();
+        page.waitForCondition(()->updates.size()==1);
+        assertEquals("CT-99",Json.text(updates.getFirst(),"jiraKey"));
+        assertEquals("다른 담당자의 Jira 업무",Json.text(updates.getFirst(),"title"));
+        assertTrue(updates.getFirst().path("today").asBoolean());
+        assertFalse(updates.getFirst().has("assignee"));
+        assertEquals(0,statusUpdates.size());
+    }
+
     @Test void favoritesAndRecentIssuesAddToDraftWithoutAffectingTaskList() {
         state.set("recentWorklogIssues",Json.MAPPER.valueToTree(List.of(Json.obj("jiraKey","WOR-1431","title","실 주간 회의","lastDate","2026-11-05"))));
         page.reload();page.locator("[data-view='worklog']").click();

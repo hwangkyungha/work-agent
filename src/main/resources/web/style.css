@@ -451,3 +451,13 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 .schedule-row>.text-button { flex-shrink:0; align-self:center; }
 
 #record-form[data-kind="meeting"] .checks { margin-bottom:20px; }
+
+.today-add-tools { display:flex; gap:10px; align-items:stretch; }
+.today-add-tools .quick-task { flex:1; min-width:0; }
+.today-jira-lookup { margin-top:24px; padding-top:20px; border-top:1px solid var(--line); }
+.today-jira-lookup h3 { margin:0 0 8px; font-size:14px; }
+.today-jira-lookup .quick-task { margin-top:12px; }
+.today-jira-preview { display:flex; gap:16px; align-items:center; justify-content:space-between; margin-top:16px; padding:16px; border:1px solid var(--line); border-radius:8px; }
+.today-jira-preview div { min-width:0; overflow-wrap:anywhere; }
+.today-jira-preview small { display:block; margin-top:6px; color:var(--muted); }
+@media(max-width:700px) { .today-add-tools { flex-direction:column; } .today-add-tools>button { align-self:flex-start; } .today-jira-preview { flex-direction:column; align-items:stretch; } }
