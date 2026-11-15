@@ -22,15 +22,13 @@ class SessionAndTokensTest {
         Agent agent=new Agent(service,new Reports(service),p->Json.object(),k->Json.object(),"호박","호박아");
         try(SlackConnection slack=new SlackConnection(config,store,agent);Scheduler scheduler=new Scheduler(service,new Reports(service),slack,config,k->Json.object(),start)){scheduler.tick();}
     }
-    @Test void sessionRunsOnWeekendsOncePerKoreaDayIncludingAfterRestart() throws Exception {
-        List<String> calls = new ArrayList<>();
-        tick("2026-11-07T20:59:59Z","06:00","06:00",calls::add);
-        assertTrue(calls.isEmpty());
-        tick("2026-11-07T21:00:00Z","06:00","06:00",calls::add);
-        tick("2026-11-07T21:30:00Z","06:00","06:00",calls::add);
-        assertEquals(List.of("claude", "codex"), calls);
-        assertEquals("complete",Json.text(store.get("scheduled","claude-session:2026-11-08"),"status"));
-        assertEquals("complete",Json.text(store.get("scheduled","codex-session:2026-11-08"),"status"));
+    @Test void sessionsSkipBothWeekendDaysAndRunOnceOnMonday() throws Exception {
+        List<String> calls=new ArrayList<>();
+        for(String instant:List.of("2026-11-06T21:00:00Z","2026-11-07T21:00:00Z"))tick(instant,"06:00","06:00",calls::add);
+        assertTrue(calls.isEmpty());assertTrue(store.list("scheduled").isEmpty());
+        tick("2026-11-08T21:00:00Z","06:00","06:00",calls::add);tick("2026-11-08T21:30:00Z","06:00","06:00",calls::add);
+        assertEquals(List.of("claude","codex"),calls);
+        assertEquals("complete",Json.text(store.get("scheduled","codex-session:2026-11-09"),"status"));
     }
     @Test void failureIsNotMistakenForSuccessOrRetriedEveryTickAndLateStartupSkipsOldRequest() throws Exception {
         List<String> calls = new ArrayList<>();

@@ -14,16 +14,16 @@ class BriefingScheduleTest {
     List<String> sent = new ArrayList<>();
     @BeforeEach void open() throws Exception { store = new Store(temporary.resolve("test.db")); }
     @AfterEach void close() throws Exception { store.close(); }
-    @Test void draftResultsRunAtEightKoreaTimeAndDoNotRepeatAfterRestartIncludingWeekends() throws Exception {
+    @Test void draftResultsSkipWeekendsAndRunOnceAtEightOnMonday() throws Exception {
         Config config=new Config(temporary.resolve("none"),Map.of("AUTO_SYNC","false","BRIEFING_TIME","","FRIDAY_REVIEW_TIME","","SLACK_APP_TOKEN","test","SLACK_BOT_TOKEN","test","SLACK_USER_ID","test"));
         List<LocalDate> dates=new ArrayList<>();
-        for(String instant:List.of("2026-11-07T22:59:59Z","2026-11-07T23:00:00Z","2026-11-07T23:01:00Z")) {
+        for(String instant:List.of("2026-11-07T22:59:59Z","2026-11-07T23:00:00Z","2026-11-07T23:01:00Z","2026-11-06T23:00:00Z","2026-11-08T22:59:59Z","2026-11-08T23:00:00Z","2026-11-08T23:01:00Z")) {
             WorkService service=new WorkService(store,new KoreaTime(Clock.fixed(Instant.parse(instant),ZoneOffset.UTC)),new JiraClient(config));
             Agent agent=new Agent(service,new Reports(service),p->Json.object(),k->Json.object(),"테스트","테스트야");
             try(SlackConnection slack=new SlackConnection(config,store,agent);Scheduler scheduler=new Scheduler(service,new Reports(service),slack,config,k->Json.object(),engine->{},sent::add,date->{dates.add(date);return "draft PR 정리";})) {scheduler.tick();}
         }
-        assertEquals(List.of(LocalDate.of(2026,11,8)),dates);assertEquals(1,sent.size());assertTrue(sent.getFirst().contains("draft PR 정리"));
-        assertNotNull(store.get("scheduled","draft-results:2026-11-08"));
+        assertEquals(List.of(LocalDate.of(2026,11,9)),dates);assertEquals(1,sent.size());assertTrue(sent.getFirst().contains("draft PR 정리"));
+        assertNotNull(store.get("scheduled","draft-results:2026-11-09"));
     }
     WorkService service(String now) throws Exception {
         return new WorkService(store, new KoreaTime(Clock.fixed(Instant.parse(now), ZoneOffset.UTC)), new JiraClient(new Config(temporary.resolve("none"), Map.of())));

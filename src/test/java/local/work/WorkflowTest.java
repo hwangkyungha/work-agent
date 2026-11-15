@@ -104,12 +104,19 @@ class WorkflowTest {
         assertEquals(9000,WorkDuration.seconds("2h 30m"));
         assertEquals(1,WorkDuration.seconds("1s"));
     }
-    @Test void issueListCanBeSavedWithoutTimeButCannotBePostedUntilCompleted() throws Exception {
+    @Test void partialWorklogPostsReadyItemsAndKeepsUntimedItems() throws Exception {
         ObjectNode draft = service.saveWorklog(entries("1h", ""));
         assertEquals(0, draft.path("items").get(1).path("seconds").asInt());
         assertEquals(3600, draft.path("totalSeconds").asInt());
-        assertThrows(IllegalArgumentException.class, () -> service.postWorklog(time.today())); assertEquals(0, jira.calls);
+        ObjectNode partial=service.postWorklog(time.today()); assertEquals(1,jira.calls);assertEquals("draft",Json.text(partial.path("items").get(1),"state"));
         service.saveWorklog(entries("1h", "2h")); service.postWorklog(time.today()); assertEquals(2, jira.calls);
+    }
+    @Test void partialPostingPreservesUnlinkedWorkAndDoesNotResendPostedItems() throws Exception {
+        service.saveWorklog(Json.obj("items",List.of(Json.obj("jiraKey","CT-1","duration","7h"),Json.obj("workId","local-work","title","이슈 없는 업무","duration","1h"))));
+        ObjectNode saved=service.postWorklog(time.today());assertEquals(1,jira.calls);
+        assertEquals("posted",Json.text(saved.path("items").get(0),"state"));assertEquals("draft",Json.text(saved.path("items").get(1),"state"));
+        assertEquals(3600,saved.path("items").get(1).path("seconds").asInt());
+        assertThrows(IllegalArgumentException.class,()->service.postWorklog(time.today()));assertEquals(1,jira.calls);
     }
     @Test void worklogCanUseLessOrMoreThanEightHours() {
         assertEquals(3600,service.saveWorklog(entries("30m","30m")).path("totalSeconds").asLong());

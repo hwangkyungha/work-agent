@@ -24,12 +24,12 @@ class RecommendationTest {
         for(String role:List.of("user","assistant"))store.put("evidence",Json.obj("id",session+role,"source","codex","session",session,"date",date,"role",role,"text",key+" 작업","issueKeys",List.of(key)));
     }
     List<String> keys(String group) {return service.todayGroups(day).stream().filter(g->Json.text(g,"id").equals(group)).findFirst().orElseThrow().path("tasks").findValuesAsText("jiraKey");}
-    @Test void recentWorkRequiresInProgressAndSessionsFromExactlyYesterdayThroughThreeDaysAgo() {
-        for(int i=0;i<=4;i++){String key="CTS-"+i;task(key,"in-progress","",false,false);session(key,i);}
-        task("CTS-5","todo","",false,false);session("CTS-5",1);
-        task("CTS-6","done","",false,false);session("CTS-6",1);
+    @Test void recentWorkRequiresInProgressAndSessionsFromExactlyYesterdayThroughFiveDaysAgo() {
+        for(int i=0;i<=6;i++){String key="CTS-"+i;task(key,"in-progress","",false,false);session(key,i);}
+        task("CTS-7","todo","",false,false);session("CTS-7",1);
+        task("CTS-8","done","",false,false);session("CTS-8",1);
         service.hideTask(Json.obj("id","CTS-2"));
-        assertEquals(List.of("CTS-1","CTS-3"),keys("recent"));assertTrue(service.planned(day).isEmpty());
+        assertEquals(List.of("CTS-1","CTS-3","CTS-4","CTS-5"),keys("recent"));assertTrue(service.planned(day).isEmpty());
     }
     @Test void manualNotesAndUnrelatedOrUnlinkedSessionsDoNotMakeOngoingWorkRecent() {
         task("CTS-10","in-progress","",false,false);

@@ -304,6 +304,16 @@ class WebUiTest {
         assertEquals("12px", page.locator(".duration-error").first().evaluate("e=>getComputedStyle(e).fontSize"));
         assertEquals("1h", page.locator("#duration-total").textContent());
     }
+    @Test void savedMixedWorklogEnablesPartialPostingAndExplainsHeldItems() {
+        state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","workId","ready","title","연결된 업무","jiraKey","CT-42"),Json.obj("date","2026-11-06","workId","held","title","이슈 없는 업무","jiraKey",""))));
+        page.reload();page.locator("[data-view='worklog']").click();
+        page.locator(".log-duration").nth(0).fill("7h");page.locator(".log-duration").nth(1).fill("1h");
+        assertTrue(page.locator("#post-worklog").isDisabled());
+        page.locator("#worklog-form [type=submit]").click();
+        page.waitForCondition(()->page.locator("#post-worklog").isEnabled());
+        assertEquals("Jira에 등록 (1건)",page.locator("#post-worklog").textContent());
+        assertTrue(page.locator("#worklog-post-hint").textContent().contains("1건은 초안으로 남습니다"));
+    }
     @Test void worklogListSavesWithoutTimeAndCanBeRestoredFromServer() {
         page.locator("[data-view='worklog']").click(); page.locator("#add-worklog").click(); page.locator(".log-key").fill("WOR-1517");
         page.locator("#worklog-form [type='submit']").click();

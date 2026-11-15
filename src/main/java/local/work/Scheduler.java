@@ -40,9 +40,9 @@ final class Scheduler implements AutoCloseable {
     }
     void tick() throws Exception {
         ZonedDateTime now = service.time.now();
-        startSessionIfDue(now, "claude", "Claude");
-        startSessionIfDue(now, "codex", "Codex");
-        if(slack.configured() && draftBriefing!=null) {
+        boolean weekday = now.getDayOfWeek().getValue() <= 5;
+        if(weekday){startSessionIfDue(now, "claude", "Claude");startSessionIfDue(now, "codex", "Codex");}
+        if(weekday && slack.configured() && draftBriefing!=null) {
             String key="draft-results:"+now.toLocalDate(),hour=config.get("DRAFT_REVIEW_TIME","08:00");
             if(due(key,hour,now)) {
                 sync("cli");
@@ -51,7 +51,6 @@ final class Scheduler implements AutoCloseable {
                 if(message!=null) {notifier.send(reports.preparation(now.toLocalDate())+message);service.store.put("scheduled",Json.obj("id",key,"at",now.toInstant().toString()));}
             }
         }
-        boolean weekday = now.getDayOfWeek().getValue() <= 5;
         boolean automatic = config.get("AUTO_SYNC", "true").equals("true");
         if (automatic) syncIfDue("cli", SYNC_INTERVAL_MINUTES, now.toInstant());
         if (weekday && slack.configured()) sendMorningBriefing(now);

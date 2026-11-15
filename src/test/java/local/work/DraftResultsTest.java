@@ -46,6 +46,11 @@ class DraftResultsTest {
         results().generate(date,false);results.generate(date,true);assertEquals(4,calls.get());
         ((ObjectNode)api.prs.get(0).path("source").path("commit")).put("hash","changed-head");results.generate(date,true);assertEquals(5,calls.get());
     }
+    @Test void preparationReportShowsPrTitleWithoutBodySummaryOrLongReasons() throws Exception {
+        api.prs.add(pr(1,"2026-11-09T20:00:00Z"));String report=results().report(service.time.today());
+        assertTrue(report.contains("CT-1 기능 구현"));assertTrue(report.contains("https://bitbucket.org/"));
+        assertFalse(report.contains("PR 설명에 따르면"));assertFalse(report.contains("PR 설명 요약"));assertFalse(report.contains("PR 설명에 다음 단계"));
+    }
     @Test void acceptedReviewTaskIsLocalAndDoesNotReopenItsJiraIssue()throws Exception {
         api.prs.add(pr(1,"2026-11-09T20:00:00Z"));
         store.put("task",Json.obj("id","jira:CT-1","title","구현","jiraKey","CT-1","status","done"));

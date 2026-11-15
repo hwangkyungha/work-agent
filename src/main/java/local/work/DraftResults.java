@@ -131,15 +131,13 @@ final class DraftResults {
         for(JsonNode row:digest.path("prs")) {
             if(row.path("reviewed").asBoolean())continue;
             pending=true;
-            text.append("\n- ").append(Json.text(row,"title")).append(row.path("reviewed").asBoolean()?" (검토 완료)":" (검토 대기)").append('\n');
-            if(!Json.text(row,"summary").isBlank())text.append("  PR 설명 요약: ").append(Json.text(row,"summary")).append('\n');
-            for(JsonNode suggestion:row.path("suggestions"))if(!suggestion.hasNonNull("acceptedTaskId"))text.append("  후속 제안: ").append(Json.text(suggestion,"title")).append(" — ").append(Json.text(suggestion,"reason")).append('\n');
+            text.append("\n- ").append(Json.text(row,"title").replaceAll("\\s+", " ")).append(row.path("reviewed").asBoolean()?" (검토 완료)":" (검토 대기)").append('\n');
             text.append(Json.text(row,"url")).append('\n');
         }
         if(!pending)text.append(digest.path("errors").isEmpty()?"\n검토할 draft PR이 없습니다.\n":"\n확인된 draft PR이 없습니다. 조회하지 못한 자료를 확인하세요.\n");
         Set<String> visibleSuggestions=new HashSet<>();
         for(JsonNode row:digest.path("prs"))if(!row.path("reviewed").asBoolean())row.path("suggestions").forEach(suggestion->visibleSuggestions.add(Json.text(suggestion,"id")));
-        for(ObjectNode suggestion:service.store.list("followup"))if(Json.text(suggestion,"kind").equals("followup") && !suggestion.hasNonNull("acceptedTaskId") && !suggestion.path("dismissed").asBoolean() && !visibleSuggestions.contains(Json.text(suggestion,"id")))text.append("\n후속 제안: ").append(Json.text(suggestion,"title")).append(" · ").append(Json.text(suggestion,"reason")).append('\n');
+        for(ObjectNode suggestion:service.store.list("followup"))if(Json.text(suggestion,"kind").equals("followup") && !suggestion.hasNonNull("acceptedTaskId") && !suggestion.path("dismissed").asBoolean() && !visibleSuggestions.contains(Json.text(suggestion,"id")))text.append("\n후속 제안: ").append(Json.text(suggestion,"title")).append('\n');
         for(JsonNode error:digest.path("errors"))text.append("확인 필요: ").append(error.asText()).append('\n');
         return text.append("\n업무 수첩의 ‘작업 결과와 다음 할 일’에서 오늘 할 일을 선택하세요.").toString();
     }
