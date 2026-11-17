@@ -51,6 +51,23 @@ class DraftResultsTest {
         assertTrue(report.contains("CT-1 기능 구현"));assertTrue(report.contains("https://bitbucket.org/"));
         assertFalse(report.contains("PR 설명에 따르면"));assertFalse(report.contains("PR 설명 요약"));assertFalse(report.contains("PR 설명에 다음 단계"));
     }
+    @Test void oldLongSummaryIsReplacedOnceWithoutChangingExistingProposalsOrReviewState() throws Exception {
+        api.prs.add(pr(1,"2026-11-09T20:00:00Z"));ObjectNode original=results().generate(service.time.today(),true);
+        ObjectNode row=(ObjectNode)original.path("prs").get(0);String id=Json.text(row,"id");
+        ObjectNode saved=store.get("draftResult",id);saved.put("summary","PR 설명을 요약하면 다음과 같습니다.\n\n**목적**\n"+"상세 변경과 검증 내역입니다. ".repeat(30)).put("reviewed",true);saved.remove("summaryFormat");store.put("draftResult",saved);
+        JsonNode proposals=saved.path("suggestionIds").deepCopy();
+        assertEquals(Json.text(saved,"title"),Json.text(DraftResults.state(service,service.time.today()).path("prs").get(0),"summary"));
+        AtomicInteger summaries=new AtomicInteger();String compact="요구사항과 테스트 결과에 AI 생성 표시를 추가합니다.";
+        DraftResults upgraded=new DraftResults(service,api,p->{summaries.incrementAndGet();return Json.obj("reply",compact,"actions",List.of());},config);
+        JsonNode actual=upgraded.generate(service.time.today(),true).path("prs").get(0);
+        assertEquals(compact,Json.text(actual,"summary"));assertTrue(actual.path("reviewed").asBoolean());assertEquals(proposals,store.get("draftResult",id).path("suggestionIds"));
+        upgraded.generate(service.time.today(),true);assertEquals(1,summaries.get());
+    }
+    @Test void multiSentenceOrMarkdownModelOutputDoesNotReachTheSummaryCard() throws Exception {
+        api.prs.add(pr(1,"2026-11-09T20:00:00Z"));
+        DraftResults bad=new DraftResults(service,api,p->Json.obj("reply","요약하면 다음과 같습니다. **목적** 자세한 설명입니다.","actions",List.of()),config);
+        assertEquals("CT-1 기능 구현",Json.text(bad.generate(service.time.today(),true).path("prs").get(0),"summary"));
+    }
     @Test void acceptedReviewTaskIsLocalAndDoesNotReopenItsJiraIssue()throws Exception {
         api.prs.add(pr(1,"2026-11-09T20:00:00Z"));
         store.put("task",Json.obj("id","jira:CT-1","title","구현","jiraKey","CT-1","status","done"));
