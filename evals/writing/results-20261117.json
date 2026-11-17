@@ -1,0 +1,88 @@
+{
+  "date": "2026-11-17",
+  "cli": {
+    "version": "Claude Code 2.1.326",
+    "outputAndJudgeModel": "claude-sonnet-5-5",
+    "selectionModel": "claude-fable-5-2"
+  },
+  "sourceFiles": {
+    "skills/work-agent-writing/common.md": "dd5c8718ecce81a8748c9e597641dc55f8d281458ae91f1d45f2566e891962f7",
+    "skills/work-agent-writing/references/editing.md": "782a086d192cd80d5263813a804a116df0d63870c0be09191af6e3244d8f02bc",
+    "skills/write-document/references/brief.md": "f55f3ecdba1c3f1bb1244c6dc7bc8b803c82e7c9da4506fd771a4398f93986cd",
+    "skills/write-document/references/decision.md": "ce162120d45c25d369564e4e98c1bc99c665aa3db5b97bcb89b3ba26840bb1c2",
+    "skills/write-document/references/meeting.md": "4c645f4b7d530b05dd63d3784089d88392b4d3fd1db38bf8fc9ab9a6bb5be47a",
+    "skills/write-document/references/plan.md": "73989cee4925f93092a41348dd97144564213dda8f20079e4e253b3c6c355f63",
+    "skills/write-document/references/reader-check.md": "f9145b50d48a0821162eb16f433ae1853117d59766709748371aa93a4320ec58",
+    "skills/write-document/references/research.md": "ad1bb6679475c888e1a417ef62f3a4a7aadf4a355230457d39ee2aae17ec3c14",
+    "skills/write-document/SKILL.md": "5f80e3a9f52aa178a76dfb6074e86c2eab801abfee125832cd3f36e1d9bcf92f",
+    "skills/write-message/references/pr-comments.md": "b152ecbb38d699e036c9c7c508df885f8aaeb1d524fdecb01304146cc2f3e630",
+    "skills/write-message/SKILL.md": "1a6c5f58f693351ea55062f7a2728af9e6470dc8d77723e5b68a45c91bc089fb"
+  },
+  "evaluationFiles": {
+    "evals/writing/cases.json": "03b115fd3198bb2bd79e99cd6890dded2aa737aca6edfca3f522139f5ffe2a72",
+    "src/test/java/local/work/WritingEvaluation.java": "fd71f9059d32837abb43adc43deb9d3b9bc4155c4651ae2b1ffc7652d79b33ff",
+    "src/main/java/local/work/WritingStyle.java": "9e6e631a6b0f73974ef09e82affcc36ad13f7490b9878094cf42def1c02db3d5"
+  },
+  "initial": {
+    "repeats": 3,
+    "outputs": 39,
+    "criticalFailures": 2,
+    "qualityFailures": 2,
+    "observed": [
+      "짧은 공유자료에 원문에서 명시하지 않은 이슈 연결을 추가함",
+      "짧은 의사결정 문서에 과도한 절 구성이나 미지정 후속 계획을 추가함"
+    ]
+  },
+  "final": {
+    "repeats": 3,
+    "cases": 13,
+    "candidateOutputs": 39,
+    "comparisonOutputs": 39,
+    "criticalFailures": 0,
+    "qualityFailures": 0,
+    "unchangedControls": 9,
+    "unnecessaryEdits": 0,
+    "selectionCases": 24,
+    "selectionFailures": 0,
+    "selectionErrors": 0
+  },
+  "automatedChecks": {
+    "tests": 308,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 46
+  },
+  "installation": {
+    "work-agent-writing": true,
+    ".agents/work-agent-writing": true,
+    ".claude/work-agent-writing": true,
+    "write-message": true,
+    ".agents/write-message": true,
+    ".claude/write-message": true,
+    "write-document": true,
+    ".agents/write-document": true,
+    ".claude/write-document": true,
+    "claudeOutputStyle": true,
+    "selectedStyle": "work-agent-korean"
+  },
+  "artifacts": {
+    "initial": "work/writing-evals/20261117-conservative-editing",
+    "final": "work/writing-evals/20261117-conservative-editing-final"
+  },
+  "limitations": [
+    "동일 모델의 소규모 출력 평가이며 일반적인 문장 품질이나 의미 보존을 보장하지 않습니다.",
+    "baseline은 보강된 공통 기준만, candidate는 공통 기준과 작업별 스킬을 사용합니다. 구버전과 신버전의 엄밀한 비교는 아닙니다.",
+    "자동 선택 평가는 발동 범위를 확인하며 독자 검토 전체 절차까지 증명하지 않습니다.",
+    "원문 일치는 원문 유지를 요청한 대조 사례에만 적용하며 일반 글에 변경률 제한을 두지 않습니다.",
+    "이번 자동 테스트는 UI·외부 실연동 검사 등 46건을 제외했습니다."
+  ],
+  "evaluationScope": {
+    "repeatedEvaluation": "수정 예시를 포함했던 스냅샷의 출력·선택 평가 결과입니다. sourceFiles는 그 평가 당시 해시입니다.",
+    "afterExampleRemoval": {
+      "changes": "수정 예시 파일과 스킬·코드·문서의 활성 참조를 제거했습니다.",
+      "automatedIntegrationTests": 11,
+      "failures": 0,
+      "repeatedModelEvaluation": false
+    }
+  }
+}

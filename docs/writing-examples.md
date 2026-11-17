@@ -21,3 +21,9 @@ work-agent는 사용자 PC의 스킬 설치 여부와 관계없이 같은 글쓰
 댓글은 발생 조건, 코드에서 확인한 동작, 사용자에게 미치는 영향과 필요한 수정을 설명합니다. 한 원인에서 나온 지적은 하나로 모읍니다. 코드와 테스트를 읽어도 결함을 입증할 수 없으면 결함 댓글로 게시하지 않습니다. 글쓰기 기준은 검토 내용이 맞는지 확인하는 절차를 대신하지 않습니다.
 
 문장 점검 기준은 [korean-writing-qa의 검사 항목과 목적](https://github.com/kkhfiles/korean-writing-qa/blob/main/docs/check-inventory.md)도 참고했습니다. 표기 오류와 문맥 판단, 개인 문체 선호를 구분하는 방식을 반영했습니다. 특정 단어를 일괄 치환하거나 다른 조직의 문서 형식을 강제하는 검사기·훅은 설치하지 않습니다.
+
+## 문장 수정 범위
+
+공통 기준은 자연스럽고 목적에 맞는 문장을 유지하며, 실제로 어색한 구절만 고치도록 합니다. 가능성·요구·진행·완료를 구분하고, 조건과 원인을 줄여 의미를 바꾸지 않습니다. ‘통해’ 같은 표현을 금지어로 취급하지 않으며 문장 길이·종결어미·서식을 획일적으로 바꾸지 않습니다.
+
+이 보강에는 [im-not-ai의 윤문 원칙](https://github.com/epoko77-ai/im-not-ai/blob/main/skills/humanize-korean/references/rewriting-playbook.md)과 [표현별 보존 조건](https://github.com/epoko77-ai/im-not-ai/blob/main/skills/humanize-korean/references/ai-tell-taxonomy.md)을 참고했습니다. 외부 스킬이나 검사기는 설치하지 않았고, 자체 평가 수치·변경률 임계값·AI 작성 판별 기준은 도입하지 않았습니다.

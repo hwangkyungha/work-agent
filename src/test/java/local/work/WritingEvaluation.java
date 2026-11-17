@@ -32,7 +32,9 @@ public final class WritingEvaluation {
                 String id = Json.required(item, "id"); String baseline = text(versions.get("baseline"), id), candidate = text(versions.get("candidate"), id);
                 List<String> missing = new ArrayList<>(); for (JsonNode literal : item.path("required")) if (!candidate.contains(literal.asText())) missing.add(literal.asText());
                 criticalFailures += missing.size();
-                results.add(Json.obj("repeat", repeat, "id", id, "missingLiterals", missing, "baselineLength", baseline.length(), "candidateLength", candidate.length()));
+                boolean unnecessaryEdit = item.has("unchanged") && !candidate.strip().equals(Json.required(item,"unchanged"));
+                if(unnecessaryEdit)qualityFailures++;
+                results.add(Json.obj("repeat", repeat, "id", id, "missingLiterals", missing, "unnecessaryEdit", unnecessaryEdit, "baselineLength", baseline.length(), "candidateLength", candidate.length()));
                 pairs.add(Json.obj("id", id, "request", item.path("prompt"), "criteria", item.path("criteria"), "A", reversed ? candidate : baseline, "B", reversed ? baseline : candidate));
             }
             String judge = "글을 작성한 맥락을 모르는 검토자입니다. 각 요청과 기준에 따라 A와 B를 따로 평가하세요. 출처 없는 사실, 조건·부정·수치·확신 정도 변경은 facts=false입니다. 요청한 형식과 길이를 지키고 불필요한 항목이 없으면 fit=true입니다. 취향만으로 실패를 만들지 마세요. reply에 JSON 배열 [{\"id\":\"사례 ID\",\"A\":{\"facts\":true,\"fit\":true},\"B\":{\"facts\":true,\"fit\":true},\"reason\":\"판단 근거\"}]을 문자열로 넣고 actions=[]로 출력하세요.\n" + Json.write(pairs);
