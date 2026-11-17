@@ -145,9 +145,10 @@ small,.hint { font-size:12px; color:var(--muted); line-height:1.8; }
 .draft-result-heading { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
 .draft-result-heading .tag { flex-shrink:0; }
 .draft-next-task { margin-top:16px; padding-left:12px; border-left:2px solid var(--line); }
+.draft-next-task .form-actions { justify-content:flex-start; align-items:center; gap:12px; margin-top:12px; }
 .result-subtitle { margin-top:20px; }
 .followup-row small,.job-row small,.observation small { display:block; margin-bottom:8px; }
-.schedule-row { display:grid; grid-template-columns:48px 1fr; gap:12px; padding:12px 0; line-height:1.8; }
+.schedule-row { display:grid; grid-template-columns:48px minmax(0,1fr) auto; gap:12px; padding:12px 0; line-height:1.8; }
 .schedule-row+.schedule-row { border-top:1px solid var(--line); }
 .schedule-row time { font-size:12px; color:var(--blue); padding-top:2px; }
 .schedule-row strong { font-size:13px; font-weight:500; }
@@ -448,7 +449,7 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 #meeting-dates[hidden],#meeting-times[hidden] { display:none; }
 .schedule-row>div { min-width:0; flex:1; }
 .schedule-row .task-title { font-size:13px; }
-.schedule-row>.text-button { flex-shrink:0; align-self:center; }
+.schedule-row>.text-button { align-self:start; }
 
 #record-form[data-kind="meeting"] .checks { margin-bottom:20px; }
 

@@ -114,7 +114,7 @@ class WebUiTest {
                     if(route.request().method().equals("GET")) content=Json.write(fixtureWorkDay(URI.create(route.request().url()).getQuery().replace("date=","")));
                     else {JsonNode body=Json.read(route.request().postData());workDayUpdates.add(body);for(JsonNode row:fixtureWorkDay(Json.text(body,"date")))if(Json.text(row,"workId").equals(Json.text(body,"workId")))((ObjectNode)row).put("outcome",Json.text(body,"outcome"));}
                 }
-                case "/api/followups/dismiss" -> { String id=Json.required(Json.read(route.request().postData()),"id");ArrayNode remaining=Json.MAPPER.createArrayNode();for(JsonNode row:state.path("followups"))if(!id.equals(Json.text(row,"id")))remaining.add(row);state.set("followups",remaining); }
+                case "/api/followups/dismiss" -> { String id=Json.required(Json.read(route.request().postData()),"id");ArrayNode remaining=Json.MAPPER.createArrayNode();for(JsonNode row:state.path("followups"))if(!id.equals(Json.text(row,"id")))remaining.add(row);state.set("followups",remaining);for(JsonNode pr:state.path("draftDigest").path("prs"))for(JsonNode proposal:pr.path("suggestions"))if(id.equals(Json.text(proposal,"id")))((ObjectNode)proposal).put("dismissed",true); }
                 case "/api/followups/accept" -> {
                     String id=Json.required(Json.read(route.request().postData()),"id");acceptedFollowups.add(id);
                     ObjectNode accepted=task("accepted","","Draft PR 검토");((ArrayNode)state.path("tasks")).add(accepted);((ArrayNode)state.path("plan")).add(accepted);
@@ -453,6 +453,29 @@ class WebUiTest {
         assertTrue((Boolean)detail.evaluate("el=>el.open"));
         detail.locator("summary").click();job.put("summary","갱신 완료");page.evaluate("updateReviews()");
         assertFalse((Boolean)detail.evaluate("el=>el.open"));
+    }
+    @Test void followupButtonsHaveSpaceAndCalendarDeleteStaysBesideEachEvent() throws Exception {
+        state.set("draftDigest",Json.obj("prs",List.of(Json.obj("id","draft-layout","number",105,"title","CT-42 변경 결과","url","https://bitbucket.org/team/repo/pull-requests/105","reviewed",false,"suggestions",List.of(Json.obj("id","layout-followup","kind","followup","title","내보내기 목록 생성과 가져오기 복원 호출 단위 테스트 추가","reason","PR 설명에 남아 있는 후속 작업입니다."))))));
+        state.set("meetings",Json.MAPPER.valueToTree(List.of(
+            Json.obj("id","calendar:leave","googleEventId","leave","title","강규환 휴가","allDay",true,"date","2026-11-06","endDate","2026-11-08","calendarUrl","https://calendar.google.com/calendar/event?eid=leave"),
+            Json.obj("id","calendar:meeting","googleEventId","meeting","title","배포 검증 결과와 후속 작업을 함께 확인하는 데일리 미팅","start","2026-11-06T09:00:00+09:00","end","2026-11-06T10:00:00+09:00","calendarUrl","https://calendar.google.com/calendar/event?eid=meeting"))));
+        page.reload();page.locator("[data-dismiss-followup='layout-followup']").waitFor();
+        String screenshots=System.getProperty("work.ui.actions.screenshots","");
+        for(int width:List.of(1440,1000,760,390)) {
+            page.setViewportSize(width,1000);
+            BoundingBox add=page.locator("[data-accept-followup='layout-followup']").boundingBox(),dismiss=page.locator("[data-dismiss-followup='layout-followup']").boundingBox();
+            boolean sameLine=dismiss.y<add.y+add.height&&add.y<dismiss.y+dismiss.height;
+            assertTrue(sameLine?dismiss.x-add.x-add.width>=11:dismiss.y-add.y-add.height>=11,"Followup action gap at "+width);
+            for(String id:List.of("calendar:leave","calendar:meeting")) {
+                Locator row=page.locator(".schedule-row").filter(new Locator.FilterOptions().setHas(page.locator("[data-delete-meeting='"+id+"']")));
+                BoundingBox body=row.locator("div").boundingBox(),remove=row.locator("[data-delete-meeting]").boundingBox();
+                assertTrue(remove.x>=body.x+body.width+8,"Delete must stay to the right at "+width);
+                assertTrue(remove.y<=body.y+8,"Delete must stay on the event row at "+width);
+            }
+            assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth<=innerWidth"));
+            if(!screenshots.isBlank()){Path dir=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("actions-"+width+".png")).setFullPage(true));}
+        }
+        page.locator("[data-dismiss-followup='layout-followup']").click();page.waitForCondition(()->page.locator("[data-dismiss-followup='layout-followup']").count()==0);
     }
     @Test void draftResultsAndProposalsShareOneSectionAndRequireExplicitSelection() {
         state.set("draftDigest",Json.obj("generatedAt","2026-11-05T22:30:00Z","from","2026-11-04T15:00:00Z","until","2026-11-05T22:30:00Z","errors",List.of(),"prs",List.of(Json.obj("id","draft","number",105,"title","CT-42 CI 구현","url","https://bitbucket.org/team/repo/pull-requests/105","summary","PR 설명 요약","reviewed",false,"reviewSuggestion",Json.obj("id","review-draft"),"suggestions",List.of(Json.obj("id","followup-draft","title","배포 문서 작성","reason","PR에 남은 작업으로 기록돼 있습니다."))))));
