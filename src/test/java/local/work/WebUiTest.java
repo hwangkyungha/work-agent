@@ -336,7 +336,7 @@ class WebUiTest {
         page.locator("#add-worklog").click(); page.locator(".log-key").nth(1).fill("WOR-1517"); page.locator(".log-duration").nth(1).fill("1h");
         assertEquals("true", page.locator(".log-duration").first().getAttribute("aria-invalid"));
         assertTrue(page.locator(".worklog-time").first().locator(".duration-error").isVisible());
-        assertEquals("12px", page.locator(".duration-error").first().evaluate("e=>getComputedStyle(e).fontSize"));
+        assertEquals("13px", page.locator(".duration-error").first().evaluate("e=>getComputedStyle(e).fontSize"));
         assertEquals("1h", page.locator("#duration-total").textContent());
     }
     @Test void savedMixedWorklogEnablesPartialPostingAndExplainsHeldItems() {
@@ -422,7 +422,7 @@ class WebUiTest {
         assertEquals(2,page.locator(".registered-log").count());assertEquals("8h",page.locator(".registered-heading>strong").textContent());
         page.locator("#add-worklog").click();page.locator(".log-key").fill("CT-2");page.locator(".log-duration").fill("1h");
         page.locator("#sync-worklogs").click();page.waitForCondition(()->worklogSyncCalls==1&&(Boolean)page.evaluate("!syncingWorklogs"));
-        assertEquals("1h",page.locator(".log-duration").inputValue());assertEquals("9h",page.locator("#combined-worklog-total").textContent());
+        assertEquals("1h",page.locator(".log-duration").inputValue());assertEquals("9h",page.locator("#combined-worklog-total").textContent());assertTrue(page.locator(".worklog-combined").isVisible());
         assertEquals(0,page.locator(".registered-log input").count());
     }
     @Test void autoSyncRunsOnFirstOpenAndFailureKeepsDraftAndPreviousSnapshot() {
@@ -482,7 +482,9 @@ class WebUiTest {
         assertTrue(page.locator(".review-prose h4").count()>=4);assertEquals(2,page.locator(".review-prose ol li").count());
         assertTrue(page.locator(".review-prose code").first().textContent().contains("save()"));
         assertEquals("none",page.locator(".review-assessment").evaluate("el=>getComputedStyle(el,'::before').content"));
-        Locator guide=page.locator(".pr-review-guide");guide.locator(":scope > summary").click();job.put("summary","갱신된 검토 결과");page.evaluate("updateReviews()");assertFalse((Boolean)guide.evaluate("el=>el.open"));guide.locator(":scope > summary").click();
+        Locator guide=page.locator(".pr-review-guide");assertFalse((Boolean)guide.evaluate("el=>el.open"));
+        guide.locator(":scope > summary").click();job.put("summary","갱신된 검토 결과");page.evaluate("updateReviews()");assertTrue((Boolean)guide.evaluate("el=>el.open"));
+        guide.locator(":scope > summary").click();job.put("summary","닫은 상태도 유지");page.evaluate("updateReviews()");assertFalse((Boolean)guide.evaluate("el=>el.open"));guide.locator(":scope > summary").click();
         page.locator(".review-finding details").first().locator(":scope > summary").click();
         assertTrue(page.locator(".review-rationale").innerText().contains("워크로그 시간이 중복 집계됩니다."));
         page.locator(".review-finding details").last().locator(":scope > summary").click();
@@ -498,6 +500,7 @@ class WebUiTest {
         String fixture=System.getProperty("work.ui.readability.fixture","");Assumptions.assumeTrue(!fixture.isBlank());
         reviewJobs.add((ObjectNode)Json.read(Files.readString(Path.of(fixture),StandardCharsets.UTF_8)));
         page.locator("[data-view='reviews']").click();page.locator(".pr-review-guide").waitFor();
+        assertFalse((Boolean)page.locator(".pr-review-guide").evaluate("el=>el.open"));page.locator(".pr-review-guide>summary").click();
         assertTrue(page.locator(".pr-review-guide h4").count()>=5);assertTrue(page.locator(".pr-review-guide code").count()>0);
         String output=System.getProperty("work.ui.readability.screenshots","");
         if(!output.isBlank()){Path dir=Files.createDirectories(Path.of(output));for(int width:List.of(1440,390)){page.setViewportSize(width,1000);assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth<=innerWidth"));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("existing-review-"+width+".png")).setFullPage(true));}}
@@ -589,12 +592,31 @@ class WebUiTest {
         state.set("draftDigest",Json.obj("generatedAt","2026-11-05T22:30:00Z","from","2026-11-04T15:00:00Z","until","2026-11-05T22:30:00Z","errors",List.of(),"prs",List.of(Json.obj("id","draft","number",105,"title","CT-42 CI 구현","url","https://bitbucket.org/team/repo/pull-requests/105","summary","PR 설명 요약","reviewed",false,"reviewSuggestion",Json.obj("id","review-draft"),"suggestions",List.of(Json.obj("id","followup-draft","title","배포 문서 작성","reason","PR에 남은 작업으로 기록돼 있습니다."))))));
         page.reload();page.getByRole(AriaRole.HEADING,new Page.GetByRoleOptions().setName("작업 결과와 다음 할 일").setExact(true)).waitFor();
         assertEquals(0,page.getByRole(AriaRole.HEADING,new Page.GetByRoleOptions().setName("후속 작업 제안").setExact(true)).count());
+        assertFalse(page.locator(".proposal-evidence p").isVisible());
+        assertTrue(page.locator("[data-accept-followup='followup-draft']").isVisible());
+        page.locator(".proposal-evidence>summary").click();assertTrue(page.locator(".proposal-evidence p").isVisible());
+        page.locator("[data-today-status='all']").click();assertTrue(page.locator(".proposal-evidence p").isVisible());
         assertTrue(acceptedFollowups.isEmpty());
         page.locator("[data-accept-followup='review-draft']").click();
         page.waitForCondition(()->acceptedFollowups.size()==1&&page.locator("[data-accept-followup='review-draft']").isDisabled());
         assertEquals(List.of("review-draft"),acceptedFollowups);
         page.locator("[data-draft-reviewed='draft']").click();
         page.waitForCondition(()->page.locator("[data-draft-reviewed='draft']").textContent().equals("다시 검토 대기로"));
+    }
+    @Test void emptyRecommendationsStayCompactAndManualDisclosureChoicesSurviveRenders() {
+        state.set("todayGroups",Json.MAPPER.valueToTree(List.of(
+                Json.obj("id","recent","title","최근 진행 작업","description","최근 작업한 업무입니다","tasks",List.of(state.path("tasks").get(1))),
+                Json.obj("id","due","title","마감이 다가오는 일","description","일주일 안에 마감되는 업무입니다","tasks",List.of()))));
+        page.reload();
+        Locator recent=page.locator("[data-candidate-group='recent']"),empty=page.locator("[data-candidate-group='due']");
+        assertTrue((Boolean)recent.evaluate("el=>el.open"));assertFalse((Boolean)empty.evaluate("el=>el.open"));
+        recent.locator(":scope>summary").click();empty.locator(":scope>summary").click();
+        page.locator("[data-today-status='all']").click();
+        assertFalse((Boolean)recent.evaluate("el=>el.open"));assertTrue((Boolean)empty.evaluate("el=>el.open"));
+        assertTrue(empty.locator(".candidate-description").isVisible());
+        page.locator("[data-view='worklog']").click();
+        assertFalse(page.locator(".worklog-combined").isVisible());
+        assertTrue(page.locator("#duration-total").isVisible());assertEquals("0h",page.locator("#duration-total").textContent());
     }
     List<JsonNode> fixtureWorkDay(String date) {
         if(date.equals(Json.text(state,"date"))){List<JsonNode> rows=new ArrayList<>();state.path("todayWork").forEach(rows::add);return rows;}

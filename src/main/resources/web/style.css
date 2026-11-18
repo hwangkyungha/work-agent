@@ -505,3 +505,55 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 .review-list-status:empty{display:none}
 .review-list-status strong{color:var(--blue);font-weight:600}
 @media(max-width:700px){.review-card>.sheet-header{flex-wrap:wrap}.review-list-actions{width:100%;justify-content:flex-start}.review-list-toolbar>button{margin-left:auto}.review-filters{gap:6px}}
+
+/* Unslop polish: keep the notebook palette and give work content the emphasis. */
+.readable-page { --secondary:#52615b; }
+.readable-page .button { font-size:14px; line-height:20px; min-height:40px; padding:8px 16px; }
+.readable-page .text-button { display:inline-flex; align-items:center; min-height:36px; padding:4px 0; font-size:14px; line-height:20px; }
+.readable-page :is(small,.hint) { font-size:13px; line-height:1.7; }
+.readable-page :is(.filter,.task-toolbar label,.today-view-options label) { font-size:13px; }
+.readable-page .filter { min-height:36px; }
+.readable-page .task-toolbar select { min-height:40px; }
+.readable-page .today-add-tools { gap:12px; }
+.readable-page .task-title { font-size:14px; line-height:1.6; }
+.readable-page .task-detail small { gap:8px; }
+.readable-page .status-button { min-height:36px; font-size:13px; }
+.readable-page .today-candidates>.form-actions { margin-top:16px; }
+.readable-page .draft-result-heading { align-items:flex-start; }
+.readable-page .draft-result-heading h3 { font-weight:500; }
+.readable-page .draft-result>small { margin:8px 0 12px; }
+.readable-page .draft-result>p { font-size:14px; line-height:1.7; }
+.readable-page .draft-result>.form-actions { margin-top:16px; justify-content:flex-start; align-items:center; gap:12px; }
+.readable-page .draft-next-task { padding-left:16px; border-left-width:1px; }
+.readable-page .draft-next-task>strong { display:block; font-size:14px; font-weight:500; line-height:1.6; overflow-wrap:anywhere; }
+.proposal-evidence { margin-top:8px; }
+.proposal-evidence>summary { padding:4px 0; cursor:pointer; color:var(--secondary); font-size:13px; line-height:20px; }
+.proposal-evidence p { margin:8px 0 0; }
+.readable-page .day-button { gap:4px; padding:12px 16px; font-size:12px; line-height:20px; }
+.readable-page .day-button strong { font-size:18px; }
+.readable-page .worklog-task-title { font-size:14px; font-weight:500; line-height:1.6; }
+.readable-page .allocation-total { padding:20px 0 12px; }
+.readable-page .allocation-total strong { color:var(--blue); font-size:32px; line-height:40px; }
+.readable-page .worklog-combined { flex-wrap:wrap; gap:8px 16px; font-size:13px; line-height:20px; margin-bottom:20px; }
+.readable-page .worklog-combined[hidden] { display:none; }
+.readable-page .worklog-combined :is(b,strong) { margin-left:4px; font-size:14px; font-weight:500; color:var(--secondary); }
+.readable-page .registered-heading>strong { font-size:16px; color:var(--secondary); }
+.readable-page .worklog-choice-add strong { font-size:13px; }
+.readable-page .worklog-choice-add span { font-size:14px; }
+.readable-page .favorite-toggle { display:grid; place-items:center; width:36px; height:36px; padding:8px; }
+.favorite-toggle[aria-pressed='true'] svg { fill:var(--blue-soft); }
+.readable-page .review-card>.sheet-header>div:first-child { flex:1 1 360px; min-width:0; }
+.readable-page .review-card .sheet-header h2 { margin-top:4px; overflow-wrap:anywhere; }
+.readable-page .review-list-actions { flex-shrink:1; gap:12px; }
+.readable-page .review-card>.sheet-body { padding:20px 24px; }
+.readable-page .review-assessment { margin:0 0 12px; font-size:14px; line-height:1.7; color:var(--ink); }
+.readable-page .review-detail { margin:12px 0; }
+.readable-page .review-detail>summary { padding:8px 0; font-weight:500; }
+.readable-page .review-prose h4 { font-weight:600; }
+.readable-page .review-rationale>div { padding:16px 0; }
+.readable-page .review-list-toolbar,.readable-page .review-filters { gap:8px; }
+@media(max-width:800px) {
+  .readable-page .review-card>.sheet-body { padding:16px; }
+  .readable-page .heading-actions .button { white-space:normal; text-align:center; }
+  .readable-page .review-list-actions { flex-wrap:wrap; }
+}
