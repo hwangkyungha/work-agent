@@ -231,6 +231,7 @@ class WebUiTest {
         structuredTasks();
         assertEquals(2, page.locator("#today-list .today-task").count());
         assertEquals(0, page.locator("#today-list [data-today-id='jira:CT-43']").count());
+        page.locator("#group-today").check();
         assertTrue(page.locator("#today-list").innerText().contains("완료 1 / 전체 3 · 오늘 1건"));
         page.getByRole(AriaRole.BUTTON, new Page.GetByRoleOptions().setName("전체 할 일").setExact(true)).click();
         page.locator("[data-filter='all']").click();
@@ -259,10 +260,36 @@ class WebUiTest {
         assertEquals("31", Json.text(statusUpdates.getFirst(), "transitionId")); assertFalse(statusUpdates.getFirst().has("status"));
         assertFalse(page.locator("#all-task-list .dependency-line").innerText().contains("선행 작업 대기"));
     }
+    @Test void todayDefaultsToGlobalOrderWithGroupLabelsAndCrossGroupMovesPersist() throws Exception {
+        ObjectNode first=task("first","CT-1","우선 검토"),second=task("second","CT-2","고객 문의"),third=task("third","CT-3","후속 구현");
+        first.put("workGroup","CI 개선");second.put("workGroup","고객 지원");third.put("workGroup","CI 개선");
+        state.set("tasks",Json.MAPPER.valueToTree(List.of(first,second,third)));state.set("plan",Json.MAPPER.valueToTree(List.of(first,second,third)));page.reload();
+        page.locator("[data-today-id='third']").waitFor();assertFalse(page.locator("#group-today").isChecked());
+        assertEquals(List.of("first","second","third"),page.locator("#today-list [data-today-id]").evaluateAll("els=>els.map(e=>e.dataset.todayId)"));
+        assertTrue(page.locator("[data-today-id='first']").innerText().contains("CI 개선"));assertTrue(page.locator("[data-today-id='second']").innerText().contains("고객 지원"));
+        BoundingBox source=page.locator("[data-drag-task='second']").boundingBox(),target=page.locator("[data-today-id='first']").boundingBox();
+        page.mouse().move(source.x+source.width/2,source.y+source.height/2);page.mouse().down();page.mouse().move(target.x+60,target.y+2,new Mouse.MoveOptions().setSteps(8));page.mouse().up();
+        page.waitForCondition(()->!planUpdates.isEmpty()&&(Boolean)page.evaluate("!savingPlan"));
+        assertEquals(List.of("second","first","third"),Json.MAPPER.convertValue(planUpdates.getLast().path("taskIds"),List.class));
+        assertEquals("manual",Json.text(planUpdates.getLast(),"sort"));
+        page.reload();page.locator("[data-drag-task='first']").waitFor();assertEquals("second",page.locator("#today-list [data-today-id]").first().getAttribute("data-today-id"));
+        page.setViewportSize(390,844);page.locator("[data-drag-task='first']").focus();page.keyboard().press("Alt+ArrowUp");page.waitForCondition(()->planUpdates.size()==2&&(Boolean)page.evaluate("!savingPlan"));
+        assertEquals("first",planUpdates.getLast().path("taskIds").get(0).asText());
+        assertEquals("CI 개선",Json.text(state.path("tasks").get(0),"workGroup"));assertEquals("고객 지원",Json.text(state.path("tasks").get(1),"workGroup"));
+        page.locator("#group-today").check();page.locator("[data-drag-task='second']").focus();page.keyboard().press("Alt+ArrowUp");
+        page.waitForCondition(()->planUpdates.size()==3&&(Boolean)page.evaluate("!savingPlan"));assertFalse(page.locator("#group-today").isChecked());
+        page.locator("#group-today").check();
+        source=page.locator("[data-drag-task='second']").boundingBox();target=page.locator("[data-today-id='first']").boundingBox();
+        page.mouse().move(source.x+source.width/2,source.y+source.height/2);page.mouse().down();page.mouse().move(target.x+60,target.y+2,new Mouse.MoveOptions().setSteps(8));page.mouse().up();
+        page.waitForCondition(()->planUpdates.size()==4&&(Boolean)page.evaluate("!savingPlan"));
+        assertFalse(page.locator("#group-today").isChecked());assertEquals("second",planUpdates.getLast().path("taskIds").get(0).asText());
+        assertTrue(statusUpdates.isEmpty());assertTrue(updates.isEmpty());
+        String screenshots=System.getProperty("work.ui.order.screenshots","");if(!screenshots.isBlank()){Path dir=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("today-order-mobile.png")).setFullPage(true));page.setViewportSize(1440,1000);page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("today-order-desktop.png")).setFullPage(true));}
+    }
     @Test void draggingInsideGroupAndFlatPriorityOrderBothSave() {
         structuredTasks();
         ArrayNode plan = Json.MAPPER.createArrayNode(); for (JsonNode task : state.path("tasks")) if (List.of("jira:CT-42", "jira:CT-43", "local").contains(Json.text(task, "id"))) plan.add(task);
-        state.set("plan", plan); page.reload(); page.locator("#today-list [data-today-id='jira:CT-43']").waitFor();
+        state.set("plan", plan); page.reload(); page.locator("#group-today").check(); page.locator("#today-list [data-today-id='jira:CT-43']").waitFor();
         BoundingBox source = page.locator("[data-drag-task='jira:CT-42']").boundingBox(); BoundingBox target = page.locator("[data-today-id='jira:CT-43']").boundingBox();
         page.mouse().move(source.x + source.width / 2, source.y + source.height / 2); page.mouse().down(); page.mouse().move(target.x + 40, target.y + 2, new Mouse.MoveOptions().setSteps(8)); page.mouse().up();
         page.waitForCondition(() -> !planUpdates.isEmpty() && (Boolean) page.evaluate("!savingPlan")); assertEquals("jira:CT-42", planUpdates.getFirst().path("taskIds").get(0).asText());

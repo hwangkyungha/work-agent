@@ -117,6 +117,7 @@ small,.hint { font-size:12px; color:var(--muted); line-height:1.8; }
 .drag-hint { margin-bottom:12px; }
 .today-task { display:flex; align-items:flex-start; border-top:1px solid var(--line); }
 .today-task:first-child { border-top:0; }
+.today-work-group { flex-basis:100%; overflow-wrap:anywhere; }
 .today-task>.task-row { flex:1; min-width:0; border:0; }
 .today-task.dragging { opacity:.5; background:var(--blue-soft); }
 .drag-handle { flex-shrink:0; border:0; background:transparent; color:#78877e; margin-top:4px; padding:8px 8px 8px 0; font-size:24px; line-height:1; cursor:grab; touch-action:none; }
