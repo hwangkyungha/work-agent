@@ -398,7 +398,6 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 .review-summary>span:first-of-type { flex:1; min-width:0; }
 .review-summary strong { display:block; font-size:15px; font-weight:600; }
 .review-summary small { display:block; margin-top:4px; color:var(--muted); font-size:12px; }
-.review-summary-action { color:var(--blue); font-size:12px; white-space:nowrap; }
 .review-summary:hover { background:#fafbfa; }
 .review-summary:focus-visible { outline:2px solid var(--blue); outline-offset:-3px; }
 .review-date-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
