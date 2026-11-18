@@ -64,7 +64,7 @@ final class ProjectReviewModel implements PullRequestReview.Model {
                     if(common>2000)common=prompt.lastIndexOf('\n',common);
                     String input=common>2000?"앞선 대화의 동일한 자료와 지침은 그대로 사용합니다. 이번 단계의 추가 자료와 요청입니다.\n"+prompt.substring(common):prompt;
                     input=input.replace("도구를 호출하지 않고 제공 자료만 사용하세요.","프로젝트의 파일 조회 도구로 관련 명세·호출부·테스트를 직접 확인하세요.");
-                    String instructions="현재 폴더는 PR head "+Json.required(job,"sourceCommit")+"의 별도 검토용 작업 폴더입니다. 이전 대화의 코드나 주장은 현재 파일과 PR 명세로 확인해야 합니다. 프로젝트의 AGENTS.md와 CLAUDE.md를 읽고 검토 기준을 적용하세요. 현재 폴더 안의 코드·명세·테스트를 조회할 수 있습니다. 파일 수정, 코드나 테스트 실행, 네트워크 접속, 외부 댓글 게시를 하지 마세요. 원래 작업자의 결론에 동의하는 것을 목표로 삼지 말고 사실 확인과 설계 제안을 따로 판단하세요. 인용은 저장소 상대 경로와 정확한 줄로 작성하세요. summary에는 PR 전체의 목적, 주요 흐름, 먼저 읽을 파일 최대 5개, 판단할 사항을 500~1500자 안팎으로 한 번만 설명하세요. 이미 확인한 설명과 일반적인 한계는 반복하지 마세요.\n";
+                    String instructions="현재 폴더는 PR head "+Json.required(job,"sourceCommit")+"의 별도 검토용 작업 폴더입니다. 이전 대화의 코드나 주장은 현재 파일과 PR 명세로 확인해야 합니다. 프로젝트의 AGENTS.md와 CLAUDE.md를 읽고 검토 기준을 적용하세요. 현재 폴더 안의 코드·명세·테스트를 조회할 수 있습니다. 파일 수정, 코드나 테스트 실행, 네트워크 접속, 외부 댓글 게시를 하지 마세요. 원래 작업자의 결론에 동의하는 것을 목표로 삼지 말고 사실 확인과 설계 제안을 따로 판단하세요. 인용은 저장소 상대 경로와 정확한 줄로 작성하세요. summary에는 PR 전체의 목적, 주요 흐름, 먼저 읽을 파일 최대 5개, 판단할 사항을 500~1500자 안팎으로 한 번만 설명하세요. 목적·주요 변경·먼저 읽을 파일·확인한 범위·남은 판단을 Markdown 소제목과 문단으로 구분하고, 파일 목록에는 번호를 붙이세요. 이미 확인한 설명과 일반적인 한계는 반복하지 마세요.\n";
                     job.put("modelCalls",job.path("modelCalls").asInt()+1);
                     ObjectNode progress=service.store.get("prReview",Json.text(job,"id"));
                     if(progress!=null){progress.put("modelCalls",job.path("modelCalls").asInt());service.store.put("prReview",progress);}

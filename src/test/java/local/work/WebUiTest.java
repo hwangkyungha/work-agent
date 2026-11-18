@@ -467,6 +467,42 @@ class WebUiTest {
         assertEquals("jira:CT-42",planUpdates.getFirst().path("taskIds").get(0).asText());
         assertEquals("local",state.path("plan").get(0).path("id").asText());
     }
+    @Test void reviewContentIsStructuredReadableAndSafeAcrossPolling() throws Exception {
+        ObjectNode finding=Json.obj("id","readable-finding","title","재요청 때 저장이 중복됩니다","path","src/service.java","line",42,"severity","medium","comment","첫 요청이 끝나기 전에 다시 누르면 같은 항목이 저장됩니다.\n\n등록 중 버튼을 비활성화해 주세요.","trigger","저장 요청 중 다시 클릭","expected","한 번만 저장","actual","두 번 저장","reasoning","호출부에 중복 방지가 없습니다.","impact","워크로그 시간이 중복 집계됩니다.","fix","중복 저장을 막습니다.","evidence",List.of(Json.obj("path","src/service.java","line",42,"side","new","quote","if (count < 2) { save(); }"),Json.obj("path","spec.md","line",3,"side","old","quote","요청당 한 번만 저장합니다.")));
+        ObjectNode job=Json.obj("id","readable-review","kind","review","status","ready","title","CT-42 저장 개선","url","https://bitbucket.org/team/repo/pull-requests/105","sourceCommit","abcdef123456","readingGuide","목적: `save()`의 중복 호출을 막습니다. 주요 흐름: 저장 중 상태를 확인합니다. 먼저 읽을 파일: 1) `src/service.java` 2) `spec.md` 확인한 것: 코드를 읽었습니다. 확인하지 못한 것: 테스트는 실행하지 않았습니다.","summary","변경 파일 2개, 지적 1개입니다.","findings",List.of(finding),"limitations",List.of("외부 서버는 확인하지 못했습니다."));
+        reviewJobs.add(job);page.locator("[data-view='reviews']").click();page.locator(".review-card").waitFor();
+        assertTrue(page.locator(".review-prose h4").count()>=4);assertEquals(2,page.locator(".review-prose ol li").count());
+        assertTrue(page.locator(".review-prose code").first().textContent().contains("save()"));
+        assertEquals("none",page.locator(".review-assessment").evaluate("el=>getComputedStyle(el,'::before').content"));
+        Locator guide=page.locator(".pr-review-guide");guide.locator(":scope > summary").click();job.put("summary","갱신된 검토 결과");page.evaluate("updateReviews()");assertFalse((Boolean)guide.evaluate("el=>el.open"));guide.locator(":scope > summary").click();
+        page.locator(".review-finding details").first().locator(":scope > summary").click();
+        assertTrue(page.locator(".review-rationale").innerText().contains("워크로그 시간이 중복 집계됩니다."));
+        page.locator(".review-finding details").last().locator(":scope > summary").click();
+        assertEquals(2,page.locator(".review-evidence").count());assertTrue(page.locator(".review-evidence").first().innerText().contains("검토 커밋"));
+        assertEquals("if (count < 2) { save(); }",page.locator(".review-evidence pre code").first().textContent());
+        String screenshots=System.getProperty("work.ui.readability.screenshots","");
+        for(int width:List.of(1440,760,390)) {page.setViewportSize(width,1000);assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth<=innerWidth"));if(!screenshots.isBlank()){Path dir=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("review-"+width+".png")).setFullPage(true));}}
+        job.put("readingGuide","## 목적\n`<img src=x onerror=alert(1)>`\n\n<script>alert(1)</script>\n\n```java\nif (x < 2) save();\n``` ");page.evaluate("updateReviews()");
+        assertEquals(0,page.locator(".review-prose img,.review-prose script").count());assertTrue(page.locator(".pr-review-guide .review-prose").textContent().contains("<script>"));
+        assertEquals(1,page.locator(".review-prose pre code").count());
+    }
+    @Test void existingStoredReviewUsesSectionsWithoutRunningAnotherReview() throws Exception {
+        String fixture=System.getProperty("work.ui.readability.fixture","");Assumptions.assumeTrue(!fixture.isBlank());
+        reviewJobs.add((ObjectNode)Json.read(Files.readString(Path.of(fixture),StandardCharsets.UTF_8)));
+        page.locator("[data-view='reviews']").click();page.locator(".pr-review-guide").waitFor();
+        assertTrue(page.locator(".pr-review-guide h4").count()>=5);assertTrue(page.locator(".pr-review-guide code").count()>0);
+        String output=System.getProperty("work.ui.readability.screenshots","");
+        if(!output.isBlank()){Path dir=Files.createDirectories(Path.of(output));for(int width:List.of(1440,390)){page.setViewportSize(width,1000);assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth<=innerWidth"));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("existing-review-"+width+".png")).setFullPage(true));}}
+        assertTrue(reviewRequests.isEmpty());assertEquals(0,pendingSaves);
+    }
+    @Test void replyCommentAndItsEvidenceRemainSeparate() {
+        reviewJobs.add(Json.obj("id","design-reply","kind","reply","replyKind","design","status","ready","title","CT-42 설계 검토","url","https://bitbucket.org/team/repo/pull-requests/105","sourceCommit","head","reply","제안의 조건을 확인했습니다.","replyEvidence",List.of(Json.obj("path","spec.md","line",12,"side","new","quote","조건이 일치할 때만 실행합니다."))));
+        page.locator("[data-view='reviews']").click();page.locator(".review-finding").waitFor();
+        assertTrue(page.locator(".review-finding h3").textContent().contains("설계 제안 검토"));
+        assertEquals("제안의 조건을 확인했습니다.",page.locator(".review-comment").textContent());
+        page.locator(".review-finding details summary").click();assertEquals("spec.md:12",page.locator(".review-evidence figcaption code").textContent());
+        assertFalse(page.locator(".review-comment").textContent().contains("조건이 일치"));assertEquals(0,pendingSaves);
+    }
     @Test void reviewDetailsStayOpenAcrossUnchangedAndChangedPollingResponses() {
         ObjectNode job=Json.obj("id","stable-review","kind","review","status","running","title","CI PR","url","https://bitbucket.org/team/repo/pull-requests/105","sourceCommit","head","findings",List.of(),"limitations",List.of("외부 실행은 하지 않았습니다."));
         reviewJobs.add(job);
