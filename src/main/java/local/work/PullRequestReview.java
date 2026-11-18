@@ -19,10 +19,11 @@ final class PullRequestReview implements AutoCloseable {
     private final Model model;
     private final String agentName;
     final ReviewSources sources;
+    final ReviewList list;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Set<String> active = ConcurrentHashMap.newKeySet();
     PullRequestReview(WorkService service, BitbucketClient api, Model model) { this(service, api, model, "work-agent"); }
-    PullRequestReview(WorkService service, BitbucketClient api, Model model, String agentName) { this.service = service; this.api = api; this.model = model; this.agentName = agentName; this.sources = new ReviewSources(service.store, api); }
+    PullRequestReview(WorkService service, BitbucketClient api, Model model, String agentName) { this.service = service; this.api = api; this.model = model; this.agentName = agentName; this.sources = new ReviewSources(service.store, api);this.list=new ReviewList(service,api); }
     ObjectNode answerQuestion(String question, String boundUrl, String reviewedCommit, List<String> recentUrls) throws Exception {
         Set<String> urls = new LinkedHashSet<>(PR_LINK.matcher(question).results().map(match -> match.group()).toList());
         var match = PR_NUMBER.matcher(question);
@@ -51,6 +52,7 @@ final class PullRequestReview implements AutoCloseable {
         for (JsonNode value : referenceUrls) BitbucketClient.SourceReference.parse(value.asText());
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(url);
         JsonNode metadata = api.reviewPullRequest(pr);
+        list.observe(pr.url(),metadata);
         if (!Json.text(metadata, "state").equals("OPEN")) throw new IllegalArgumentException("열려 있는 PR만 검토할 수 있습니다.");
         String source = Json.required(metadata.path("source").path("commit"), "hash"), destination = Json.required(metadata.path("destination").path("commit"), "hash");
         String revision = "";

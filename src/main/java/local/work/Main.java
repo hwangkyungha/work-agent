@@ -161,6 +161,8 @@ public final class Main {
                     Object result = switch (path) {
                         case "/api/rooms" -> booking.execute(Json.required(body, "requestId"), body);
                         case "/api/reviews/refresh" -> reviewMonitor.refresh();
+                        case "/api/reviews/states" -> reviews.list.refresh();
+                        case "/api/reviews/reviewed" -> reviews.list.mark(body);
                         case "/api/reviews/repositories" -> reviews.sources.configure(body);
                         case "/api/reviews/workspace" -> projectReviews.workspaces.configure(body);
                         case "/api/reviews/session" -> projectReviews.bind(body);

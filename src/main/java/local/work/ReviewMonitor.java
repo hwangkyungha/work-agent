@@ -76,7 +76,7 @@ final class ReviewMonitor implements AutoCloseable {
         catch (BitbucketClient.Rejected e) { if (e.status != 403) throw e; warnings.add("워크스페이스 자동 조회 권한이 없습니다. read:workspace:bitbucket 권한을 추가하면 모든 워크스페이스를 찾습니다. 현재는 BITBUCKET_WORKSPACES에 지정한 범위를 확인합니다."); }
         for (String slug : config.get("BITBUCKET_WORKSPACES", "").split(",")) if (!slug.isBlank()) workspaces.add(slug.strip());
         if (workspaces.isEmpty()) throw new IllegalArgumentException("확인할 워크스페이스가 없습니다. read:workspace:bitbucket 권한을 추가하거나 BITBUCKET_WORKSPACES를 설정하세요.");
-        List<ObjectNode> items = new ArrayList<>(); Set<String> seen = new HashSet<>(); int repositoryCount = 0;
+        List<ObjectNode> items = new ArrayList<>(); Set<String> seen = new HashSet<>(),observed=new HashSet<>(); int repositoryCount = 0;
         for (String workspace : workspaces) {
             List<JsonNode> repositories;
             try { repositories = api.pages("/user/workspaces/" + BitbucketClient.segment(workspace) + "/permissions/repositories?pagelen=100"); }
@@ -92,6 +92,7 @@ final class ReviewMonitor implements AutoCloseable {
                         for (JsonNode person : pr.path("reviewers")) reviewer |= owner.equals(Json.text(person, "uuid"));
                         if (!Json.text(pr, "state").equals("OPEN") || (!own && !reviewer)) continue;
                         String url = "https://bitbucket.org/" + fullName + "/pull-requests/" + pr.path("id").asInt();
+                        reviews.list.observe(url,pr);observed.add(url);
                         if (!own && reviewer) { ObjectNode job = reviews.request(url, 0, true); items.add(item(job, fullName, "review")); }
                         if (own) {
                             List<JsonNode> comments = api.comments(BitbucketClient.PullRequest.parse(url));
@@ -101,6 +102,7 @@ final class ReviewMonitor implements AutoCloseable {
                 } catch (Exception e) { warnings.add(fullName + ": " + SlackConnection.friendly(e)); }
             }
         }
+        warnings.addAll(reviews.list.refreshKnown(observed));
         return service.store.put("reviewMonitor", Json.obj("id", "status", "at", service.time.instant().toString(), "repositoryCount", repositoryCount, "workspaces", workspaces, "warnings", warnings, "items", items));
     }
     private static ObjectNode item(ObjectNode job, String repository, String kind) { return Json.obj("id", Json.text(job, "id"), "url", Json.text(job, "url"), "repository", repository, "kind", kind); }
@@ -119,7 +121,7 @@ final class ReviewMonitor implements AutoCloseable {
         ObjectNode status = service.store.get("reviewMonitor", "status");
         if (status == null) status = Json.obj("items", List.of(), "warnings", List.of());
         status.put("scanning", scanning).put("configured", api.configured()).put("automatic", config.get("BITBUCKET_AUTO_REVIEW", "true").equals("true"));
-        List<ObjectNode> jobs = service.store.list("prReview"); Collections.reverse(jobs); status.set("jobs", Json.MAPPER.valueToTree(jobs));
+        List<ObjectNode> jobs = service.store.list("prReview"); Collections.reverse(jobs); status.set("jobs", Json.MAPPER.valueToTree(reviews.list.decorate(jobs)));
         status.set("repositories", Json.MAPPER.valueToTree(reviews.sources.settings()));
         status.set("localRepositories", Json.MAPPER.valueToTree(service.store.list("prRepositoryPath")));
         status.set("sessionBindings", Json.MAPPER.valueToTree(service.store.list("prSessionBinding")));

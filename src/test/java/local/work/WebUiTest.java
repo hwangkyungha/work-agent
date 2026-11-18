@@ -24,7 +24,7 @@ class WebUiTest {
     List<JsonNode> updates = new ArrayList<>(), groupUpdates = new ArrayList<>(), statusUpdates = new ArrayList<>(), planUpdates = new ArrayList<>();
     List<JsonNode> savedWorklogs = new ArrayList<>(); boolean worklogSaveFails;
     List<JsonNode> favoriteUpdates = new ArrayList<>(); int worklogSyncCalls; boolean worklogSyncFails;
-    List<ObjectNode> reviewJobs = new ArrayList<>(); List<JsonNode> reviewRequests = new ArrayList<>(); int reviewRefreshes, pendingSaves;
+    List<ObjectNode> reviewJobs = new ArrayList<>(); List<JsonNode> reviewRequests = new ArrayList<>(), reviewDecisions=new ArrayList<>(); int reviewRefreshes, pendingSaves, reviewStateReads;
     List<String> acceptedFollowups=new ArrayList<>();
     List<JsonNode> workDayUpdates=new ArrayList<>(),addedPastWork=new ArrayList<>(),workLinks=new ArrayList<>(),savedActivities=new ArrayList<>();
     List<ObjectNode> pastWorkCandidates=new ArrayList<>();
@@ -53,6 +53,14 @@ class WebUiTest {
                 case "/api/settings" -> content = Json.write(Json.obj("workTypes",configuredWorkTypes,"agentName", "호박", "agentCallName", "호박아", "slackConnected", true, "jiraConfigured", true,"calendarWritable",!calendarReadOnly, "engine", "codex"));
                 case "/api/reviews" -> content = Json.write(Json.obj("configured", true, "automatic", true, "jobs", reviewJobs, "warnings", List.of(), "workspaces", List.of("team"), "repositoryCount", 48));
                 case "/api/reviews/refresh" -> reviewRefreshes++;
+                case "/api/reviews/states" -> reviewStateReads++;
+                case "/api/reviews/reviewed" -> {
+                    JsonNode payload=Json.read(route.request().postData());reviewDecisions.add(payload);
+                    reviewJobs.stream().filter(job->Json.text(job,"id").equals(Json.text(payload,"id"))).forEach(job->{
+                        boolean reviewed=payload.path("reviewed").asBoolean();job.put("userReviewed",reviewed);
+                        job.put("listGroup",Set.of("MERGED","DECLINED").contains(Json.text(job,"prState"))?"closed":reviewed?"completed":"active");
+                    });
+                }
                 case "/api/reviews/workspace" -> workspaceUpdates.add(Json.read(route.request().postData()));
                 case "/api/reviews/repositories" -> referenceUpdates.add(Json.read(route.request().postData()));
                 case "/api/reviews/request" -> reviewRequests.add(Json.read(route.request().postData()));
@@ -516,6 +524,43 @@ class WebUiTest {
         assertTrue((Boolean)detail.evaluate("el=>el.open"));
         detail.locator("summary").click();job.put("summary","갱신 완료");page.evaluate("updateReviews()");
         assertFalse((Boolean)detail.evaluate("el=>el.open"));
+    }
+    @Test void reviewListSupportsHumanCompletionRestoreClosedHistoryAndHeadChanges() throws Exception {
+        ObjectNode active=Json.obj("id","active","kind","review","status","ready","title","CT-42 현재 검토","url","https://bitbucket.org/team/repo/pull-requests/105","sourceCommit","head","prState","OPEN","listGroup","active","readingGuide","목적: 검토할 변경입니다.");
+        reviewJobs.add(active);
+        for(String status:List.of("MERGED","DECLINED"))reviewJobs.add(Json.obj("id",status,"title",status+" 종료된 PR","sourceCommit","head","status","ready","prState",status,"listGroup","closed"));
+        reviewJobs.add(Json.obj("id","history","title","이전 실행","sourceCommit","old","status","ready","listGroup","history"));
+        page.locator("[data-view='reviews']").click();page.locator("[data-review-id='active']").waitFor();
+        assertEquals(1,page.locator(".review-card").count());
+        page.locator("[data-review-decision='active']").click();
+        page.waitForCondition(()->page.locator(".review-card").count()==0);
+        assertEquals(1,reviewDecisions.size());assertEquals("ready",Json.text(active,"status"));
+        page.locator("[data-review-filter='completed']").click();page.locator("[data-review-id='active']").waitFor();
+        assertEquals("복원",page.locator("[data-review-decision='active']").textContent());
+        page.locator("[data-review-decision='active']").click();page.waitForCondition(()->page.locator(".review-card").count()==0);
+        page.locator("[data-review-filter='active']").click();page.locator("[data-review-id='active']").waitFor();
+        page.locator("[data-review-decision='active']").click();page.waitForCondition(()->page.locator(".review-card").count()==0);
+        active.put("headChanged",true).put("listGroup","active");page.evaluate("updateReviews()");
+        assertTrue(page.locator("[data-review-id='active']").textContent().contains("새 커밋 있음"));
+        assertEquals("복원",page.locator("[data-review-decision='active']").textContent());
+        page.locator("[data-review-filter='closed']").click();page.waitForCondition(()->page.locator(".review-card").count()==2);
+        page.locator("[data-review-filter='all']").click();page.waitForCondition(()->page.locator(".review-card").count()==4);
+        page.locator("#refresh-review-states").click();page.waitForCondition(()->reviewStateReads==1&&!page.locator("#refresh-review-states").isDisabled());
+        assertEquals(0,reviewRefreshes);assertEquals(0,pendingSaves);assertTrue(reviewRequests.isEmpty());
+        String output=System.getProperty("work.ui.management.screenshots","");
+        for(int width:List.of(1440,760,390)){
+            page.setViewportSize(width,1000);assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth<=innerWidth"));
+            if(!output.isBlank()){Path dir=Files.createDirectories(Path.of(output));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("review-management-"+width+".png")).setFullPage(true));}
+        }
+    }
+    @Test void reviewCompletionIsDisabledDuringWorkAndOnOldUnreviewedHead() {
+        reviewJobs.add(Json.obj("id","running","title","검토 중","status","running","sourceCommit","head"));
+        reviewJobs.add(Json.obj("id","old","title","이전 head","status","ready","sourceCommit","old","headChanged",true));
+        reviewJobs.add(Json.obj("id","no-findings","title","지적 없음","status","ready","automatic",true,"sourceCommit","head","findings",List.of()));
+        page.locator("[data-view='reviews']").click();page.locator("[data-review-id='old']").waitFor();
+        assertTrue(page.locator("[data-review-decision='running']").isDisabled());
+        assertTrue(page.locator("[data-review-decision='old']").isDisabled());
+        assertFalse(page.locator("[data-review-decision='no-findings']").isDisabled());
     }
     @Test void followupButtonsHaveSpaceAndCalendarDeleteStaysBesideEachEvent() throws Exception {
         state.set("draftDigest",Json.obj("prs",List.of(Json.obj("id","draft-layout","number",105,"title","CT-42 변경 결과","url","https://bitbucket.org/team/repo/pull-requests/105","reviewed",false,"suggestions",List.of(Json.obj("id","layout-followup","kind","followup","title","내보내기 목록 생성과 가져오기 복원 호출 단위 테스트 추가","reason","PR 설명에 남아 있는 후속 작업입니다."))))));

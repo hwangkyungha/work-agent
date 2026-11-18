@@ -495,3 +495,14 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 .review-limitations>ul { padding-left:22px; }
 .review-limitations li+li { margin-top:12px; }
 @media(max-width:700px) { .review-card>.sheet-body { padding:16px; } .review-rationale>div { grid-template-columns:1fr; gap:6px; } }
+
+/* PR list management is separate from AI review status. */
+.review-list-toolbar,.review-filters,.review-list-actions,.review-list-status{display:flex;align-items:center;flex-wrap:wrap;gap:10px}
+.review-list-toolbar{justify-content:space-between;margin:20px 0 12px}
+.review-filters .button[aria-pressed="true"]{background:var(--blue);color:#fff;border-color:var(--blue)}
+.review-filters .button span{margin-left:5px;font-size:.85em}
+.review-list-actions{justify-content:flex-end;flex-shrink:0}
+.review-list-status{font-size:.85rem;color:var(--muted);margin-bottom:12px}
+.review-list-status:empty{display:none}
+.review-list-status strong{color:var(--blue);font-weight:600}
+@media(max-width:700px){.review-card>.sheet-header{flex-wrap:wrap}.review-list-actions{width:100%;justify-content:flex-start}.review-list-toolbar>button{margin-left:auto}.review-filters{gap:6px}}
