@@ -362,7 +362,16 @@ function renderWorklog() {
 }
 function worklogRow(row={}) {
   const locked=['posted','posting','unknown'].includes(row.state),errorId='worklog-time-error-'+(++worklogFieldId);
-  return `<div class="allocation-row worklog-input-row" data-work-id="${esc(row.workId||'')}" data-task-id="${esc(row.taskId||'')}" data-work-title="${esc(row.title||'')}" data-state="${esc(row.state||'draft')}" ${row.state==='posted'?'hidden':''}><div>${row.title?`<strong class="worklog-task-title">${esc(row.title)}</strong>`:''}<input class="log-key" aria-label="Jira 이슈 번호" placeholder="${row.workId?'Jira 미연결 · 초안 저장 가능':'CT-123'}" value="${esc(row.jiraKey||'')}" ${row.workId?'':'required'} ${locked?'disabled':''}></div><div class="worklog-time"><input class="log-duration" aria-label="작업 시간" aria-describedby="${errorId}" aria-invalid="false" placeholder="예: 2h 30m" value="${esc(row.duration??durationText(row.seconds||0))}" ${locked?'disabled':''}><small class="duration-error" id="${errorId}" hidden>예: 4h, 2.5h, 2h 30m</small></div>${locked?'<span class="worklog-post-status">'+logStatus(row.state)+'</span>':'<button class="icon-button" type="button" data-remove-worklog aria-label="시간 기록 삭제">×</button>'}<input class="log-comment" type="hidden" value="${esc(row.comment??'업무 기록')}"><input class="log-marker" type="hidden" value="${esc(row.marker||(locked?'':('work-agent:'+crypto.randomUUID())))}"></div>`;
+  return `<div class="allocation-row worklog-input-row" data-work-id="${esc(row.workId||'')}" data-task-id="${esc(row.taskId||'')}" data-work-title="${esc(row.title||'')}" data-state="${esc(row.state||'draft')}" ${row.state==='posted'?'hidden':''}>
+    ${row.title?`<strong class="worklog-task-title">${esc(row.title)}</strong>`:''}
+    <input class="log-key" aria-label="Jira 이슈 번호" placeholder="${row.workId?'Jira 미연결 · 초안 저장 가능':'CT-123'}" value="${esc(row.jiraKey||'')}" ${row.workId?'':'required'} ${locked?'disabled':''}>
+    <input class="log-duration" aria-label="작업 시간" aria-describedby="${errorId}" aria-invalid="false" placeholder="예: 2h 30m" value="${esc(row.duration??durationText(row.seconds||0))}" ${locked?'disabled':''}>
+    ${locked?'':'<button class="icon-button" type="button" data-remove-worklog aria-label="시간 기록 삭제">×</button>'}
+    <small class="duration-error" id="${errorId}" hidden>예: 4h, 2.5h, 2h 30m</small>
+    ${locked?`<span class="worklog-post-status">${logStatus(row.state)}</span>`:''}
+    <input class="log-comment" type="hidden" value="${esc(row.comment??'업무 기록')}">
+    <input class="log-marker" type="hidden" value="${esc(row.marker||(locked?'':('work-agent:'+crypto.randomUUID())))}">
+  </div>`;
 }
 function updateTotal() {
   let total=0,invalid=false;

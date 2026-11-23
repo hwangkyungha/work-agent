@@ -331,13 +331,33 @@ class WebUiTest {
         assertEquals("WOR-1431", page.locator(".log-key").nth(1).inputValue());
     }
     @Test void invalidTimeIsExplainedBelowItsInputAndDoesNotReplaceTotal() {
-        page.locator("[data-view='worklog']").click(); page.locator("#add-worklog").click();
-        page.locator(".log-key").fill("CT-42"); page.locator(".log-duration").fill("4");
+        state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","workId","jira:CT-42",
+                "jiraKey","CT-42","title","여러 줄로 표시되는 업무 제목과 시간 입력칸 정렬 확인 ".repeat(3)))));
+        page.reload(); page.locator("[data-view='worklog']").click();
         page.locator("#add-worklog").click(); page.locator(".log-key").nth(1).fill("WOR-1517"); page.locator(".log-duration").nth(1).fill("1h");
-        assertEquals("true", page.locator(".log-duration").first().getAttribute("aria-invalid"));
-        assertTrue(page.locator(".worklog-time").first().locator(".duration-error").isVisible());
-        assertEquals("13px", page.locator(".duration-error").first().evaluate("e=>getComputedStyle(e).fontSize"));
-        assertEquals("1h", page.locator("#duration-total").textContent());
+        Locator row=page.locator("#worklog-rows [data-work-id='jira:CT-42']");
+        Locator issue=row.locator(".log-key"), time=row.locator(".log-duration"), remove=row.locator("[data-remove-worklog]"), warning=row.locator(".duration-error");
+        for(int width:List.of(1440,390)) {
+            page.setViewportSize(width,900);
+            time.fill("4h");
+            assertFalse(warning.isVisible());
+            double topBefore=time.boundingBox().y-row.boundingBox().y;
+            time.fill("4");
+            assertEquals("true",time.getAttribute("aria-invalid"));
+            assertTrue(warning.isVisible());
+            BoundingBox input=time.boundingBox(), issueInput=issue.boundingBox(), deleteButton=remove.boundingBox(), message=warning.boundingBox();
+            assertEquals(topBefore,input.y-row.boundingBox().y,1,"Time input moved when showing its warning at "+width);
+            assertEquals(issueInput.y,input.y,1);
+            assertEquals(deleteButton.y+deleteButton.height/2,input.y+input.height/2,1);
+            assertEquals(input.x,message.x,1);
+            assertTrue(message.y>=input.y+input.height);
+            assertEquals("13px",warning.evaluate("e=>getComputedStyle(e).fontSize"));
+            assertEquals("1h",page.locator("#duration-total").textContent());
+            time.fill("4h");
+            assertFalse(warning.isVisible());
+            assertEquals(topBefore,time.boundingBox().y-row.boundingBox().y,1);
+            assertEquals("5h",page.locator("#duration-total").textContent());
+        }
     }
     @Test void savedMixedWorklogEnablesPartialPostingAndExplainsHeldItems() {
         state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","workId","ready","title","연결된 업무","jiraKey","CT-42"),Json.obj("date","2026-11-06","workId","held","title","이슈 없는 업무","jiraKey",""))));
