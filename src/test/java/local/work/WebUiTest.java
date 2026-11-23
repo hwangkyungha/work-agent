@@ -330,7 +330,7 @@ class WebUiTest {
         page.reload(); page.locator("[data-view='worklog']").click();
         assertEquals("WOR-1431", page.locator(".log-key").nth(1).inputValue());
     }
-    @Test void invalidTimeIsExplainedBelowItsInputAndDoesNotReplaceTotal() {
+    @Test void invalidTimeShowsAWarningOnlyOnSaveAndKeepsInputsAligned() {
         state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","workId","jira:CT-42",
                 "jiraKey","CT-42","title","여러 줄로 표시되는 업무 제목과 시간 입력칸 정렬 확인 ".repeat(3)))));
         page.reload(); page.locator("[data-view='worklog']").click();
@@ -343,8 +343,15 @@ class WebUiTest {
             assertFalse(warning.isVisible());
             double topBefore=time.boundingBox().y-row.boundingBox().y;
             time.fill("4");
+            assertEquals("false",time.getAttribute("aria-invalid"));
+            assertFalse(warning.isVisible());
+            Locator save=page.locator("#worklog-form [type='submit']");
+            assertTrue(save.isEnabled());
+            save.click();
             assertEquals("true",time.getAttribute("aria-invalid"));
             assertTrue(warning.isVisible());
+            assertTrue((Boolean)time.evaluate("el=>el===document.activeElement"));
+            assertTrue(savedWorklogs.isEmpty());
             BoundingBox input=time.boundingBox(), issueInput=issue.boundingBox(), deleteButton=remove.boundingBox(), message=warning.boundingBox();
             assertEquals(topBefore,input.y-row.boundingBox().y,1,"Time input moved when showing its warning at "+width);
             assertEquals(issueInput.y,input.y,1);
@@ -358,6 +365,8 @@ class WebUiTest {
             assertEquals(topBefore,time.boundingBox().y-row.boundingBox().y,1);
             assertEquals("5h",page.locator("#duration-total").textContent());
         }
+        page.locator("#worklog-form [type='submit']").click();
+        page.waitForCondition(()->savedWorklogs.size()==1);
     }
     @Test void savedMixedWorklogEnablesPartialPostingAndExplainsHeldItems() {
         state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(Json.obj("date","2026-11-06","workId","ready","title","연결된 업무","jiraKey","CT-42"),Json.obj("date","2026-11-06","workId","held","title","이슈 없는 업무","jiraKey",""))));
@@ -590,7 +599,7 @@ class WebUiTest {
         state.set("meetings",Json.MAPPER.valueToTree(List.of(
             Json.obj("id","calendar:leave","googleEventId","leave","title","강규환 휴가","allDay",true,"date","2026-11-06","endDate","2026-11-08","calendarUrl","https://calendar.google.com/calendar/event?eid=leave"),
             Json.obj("id","calendar:meeting","googleEventId","meeting","title","배포 검증 결과와 후속 작업을 함께 확인하는 데일리 미팅","start","2026-11-06T09:00:00+09:00","end","2026-11-06T10:00:00+09:00","calendarUrl","https://calendar.google.com/calendar/event?eid=meeting"))));
-        page.reload();page.locator("[data-dismiss-followup='layout-followup']").waitFor();
+        page.reload();page.locator(".draft-followups>summary").click();page.locator("[data-dismiss-followup='layout-followup']").waitFor();
         String screenshots=System.getProperty("work.ui.actions.screenshots","");
         for(int width:List.of(1440,1000,760,390)) {
             page.setViewportSize(width,1000);
@@ -611,7 +620,11 @@ class WebUiTest {
     @Test void draftResultsAndProposalsShareOneSectionAndRequireExplicitSelection() {
         state.set("draftDigest",Json.obj("generatedAt","2026-11-05T22:30:00Z","from","2026-11-04T15:00:00Z","until","2026-11-05T22:30:00Z","errors",List.of(),"prs",List.of(Json.obj("id","draft","number",105,"title","CT-42 CI 구현","url","https://bitbucket.org/team/repo/pull-requests/105","summary","PR 설명 요약","reviewed",false,"reviewSuggestion",Json.obj("id","review-draft"),"suggestions",List.of(Json.obj("id","followup-draft","title","배포 문서 작성","reason","PR에 남은 작업으로 기록돼 있습니다."))))));
         page.reload();page.getByRole(AriaRole.HEADING,new Page.GetByRoleOptions().setName("작업 결과와 다음 할 일").setExact(true)).waitFor();
-        assertEquals(0,page.getByRole(AriaRole.HEADING,new Page.GetByRoleOptions().setName("후속 작업 제안").setExact(true)).count());
+        Locator proposals=page.locator(".draft-followups>summary");
+        assertEquals("후속 작업 제안 1건",proposals.innerText());
+        assertFalse(page.locator("[data-accept-followup='followup-draft']").isVisible());
+        assertEquals("PR 검토를 오늘 할 일에 추가",page.locator("[data-accept-followup='review-draft']").innerText());
+        proposals.click();
         assertFalse(page.locator(".proposal-evidence p").isVisible());
         assertTrue(page.locator("[data-accept-followup='followup-draft']").isVisible());
         page.locator(".proposal-evidence>summary").click();assertTrue(page.locator(".proposal-evidence p").isVisible());
@@ -691,7 +704,9 @@ class WebUiTest {
     }
     @Test void followupsRemainAfterPrReviewAndCanBeExcludedFromTheCombinedSection() {
         state.set("followups",Json.MAPPER.valueToTree(List.of(Json.obj("id","remaining","kind","followup","sourceDraftResultId","reviewed-pr","sourcePrUrl","https://bitbucket.org/team/repo/pull-requests/1","title","검토 뒤 남은 배포 문서","reason","PR에서 다음 작업으로 확인했습니다."))));
-        page.reload();page.locator("[data-accept-followup='remaining']").waitFor();assertTrue(page.locator(".side-stack").textContent().contains("남은 후속 작업"));
+        page.reload();Locator remaining=page.locator(".draft-followups>summary");remaining.waitFor();
+        assertEquals("남은 후속 작업 1건",remaining.innerText());
+        assertFalse(page.locator("[data-accept-followup='remaining']").isVisible());remaining.click();
         page.locator("[data-dismiss-followup='remaining']").click();page.waitForCondition(()->page.locator("[data-accept-followup='remaining']").count()==0);
     }
     @Test void longTaskOptionsCannotOverflowTheLinkingDialogAndSearchUsesFullWidthControls() throws Exception {
@@ -745,10 +760,12 @@ class WebUiTest {
         state.set("previousWork",Json.MAPPER.valueToTree(List.of(Json.obj("workId","local","taskId","local","title","어제 수행","planned",true,"outcome","progress"))));
         otherWorkDays.put("2026-11-04",List.of(Json.obj("workId","older","title","날짜 지정 업무","outcome","progress")));
         page.reload();assertFalse((Boolean)page.locator(".work-reconciliation").evaluate("el=>el.open"));
+        assertEquals("수행 기록",page.locator(".work-reconciliation>summary strong").innerText());
         assertTrue(page.locator("#today-list").boundingBox().y<page.locator(".work-reconciliation").boundingBox().y);
         assertTrue(page.locator("#today-list .today-task").first().boundingBox().y<700);
         page.setViewportSize(390,844);assertTrue(page.locator("#today-list .today-task").first().boundingBox().y<844);assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth<=innerWidth"));
         page.setViewportSize(1440,1000);page.locator(".review-summary").click();
+        assertEquals("계획에 없던 일 기록",page.locator("#add-previous-work").innerText());
         page.locator("[data-work-outcome='local']").selectOption("done");page.waitForCondition(()->workDayUpdates.size()==1);
         assertEquals("2026-11-06",Json.text(workDayUpdates.getFirst(),"date"));
         assertTrue((Boolean)page.locator(".work-reconciliation").evaluate("el=>el.open"));

@@ -102,7 +102,7 @@ final class DraftResults {
             JsonNode payload=Json.read(Json.required(action,"payload"));
             String title=Json.required(payload,"title"),reason=Json.required(payload,"reason");
             ObjectNode proposal=proposal("draft-followup:"+TranscriptImporter.hash(Json.text(row,"url")+":"+title),row,date,title,reason,"followup");
-            ObjectNode existing=service.store.list("followup").stream().filter(old->Json.text(old,"sourcePrUrl").equals(Json.text(row,"url")) && Json.text(old,"title").equals(Json.text(proposal,"title"))).findFirst().orElse(null);
+            ObjectNode existing=service.store.list("followup").stream().filter(old->Json.text(old,"sourcePrUrl").equals(Json.text(row,"url")) && followupTitle(old).equals(Json.text(proposal,"title"))).findFirst().orElse(null);
             if(existing!=null) {proposal.put("id",Json.text(existing,"id"));for(String field:List.of("acceptedTaskId","dismissed"))if(existing.has(field))proposal.set(field,existing.get(field));}
             proposals.add(proposal);
         }
@@ -124,7 +124,17 @@ final class DraftResults {
     private ObjectNode proposal(String id,ObjectNode row,LocalDate date,String title,String reason,String kind) {
         String key=row.path("issueKeys").isEmpty()?"":row.path("issueKeys").get(0).asText();
         if(kind.equals("followup"))title=(key.isBlank()?"PR #"+row.path("number").asInt():key)+" · "+title;
-        return Json.obj("id",id,"date",date.toString(),"kind",kind,"title",title,"reason",reason,"sourceDraftResultId",Json.text(row,"id"),"sourceTitle",Json.text(row,"title"),"sourceJiraKey",key,"sourceIssueUrl",key.isBlank()?"":service.jira.issueUrl(key),"sourcePrUrl",Json.text(row,"url"));
+        ObjectNode proposal = Json.obj("id",id,"date",date.toString(),"kind",kind,"title",title,"reason",reason,"sourceDraftResultId",Json.text(row,"id"),"sourceTitle",Json.text(row,"title"),"sourceJiraKey",key,"sourceIssueUrl",key.isBlank()?"":service.jira.issueUrl(key),"sourcePrUrl",Json.text(row,"url"));
+        return proposal.put("title", followupTitle(proposal));
+    }
+    static String followupTitle(JsonNode proposal) {
+        String title = Json.text(proposal, "title"), key = Json.text(proposal, "sourceJiraKey");
+        String prefix = key + " · ";
+        if (key.isBlank() || !Json.text(proposal, "kind").equals("followup") || !title.startsWith(prefix)) return title;
+        String detail = title.substring(prefix.length());
+        String repeatedKey = Pattern.quote(key) + "(?:\\s*[·:–—-]\\s*|\\s+|$)";
+        String cleaned = detail.replaceFirst("^(?:" + repeatedKey + ")+", "");
+        return cleaned.isBlank() ? key : prefix + cleaned;
     }
     static ObjectNode state(WorkService service,LocalDate date) {
         ObjectNode digest=service.store.get("draftDigest",date.toString());
@@ -135,7 +145,7 @@ final class DraftResults {
             row.put("summary",oneSentence(Json.text(row,"summary"),Json.text(row,"title")));
             row.set("reviewSuggestion",service.store.get("followup",Json.text(row,"reviewSuggestionId")));
             List<ObjectNode> suggestions=new ArrayList<>();
-            for(JsonNode suggestion:row.path("suggestionIds")) {ObjectNode item=service.store.get("followup",suggestion.asText());if(item!=null && !item.path("dismissed").asBoolean())suggestions.add(item);}
+            for(JsonNode suggestion:row.path("suggestionIds")) {ObjectNode item=service.store.get("followup",suggestion.asText());if(item!=null && !item.path("dismissed").asBoolean())suggestions.add(item.put("title", followupTitle(item)));}
             row.set("suggestions",Json.MAPPER.valueToTree(suggestions));prs.add(row);
         }
         result.set("prs",Json.MAPPER.valueToTree(prs));return result;
@@ -153,7 +163,7 @@ final class DraftResults {
         if(!pending)text.append(digest.path("errors").isEmpty()?"\n검토할 draft PR이 없습니다.\n":"\n확인된 draft PR이 없습니다. 조회하지 못한 자료를 확인하세요.\n");
         Set<String> visibleSuggestions=new HashSet<>();
         for(JsonNode row:digest.path("prs"))if(!row.path("reviewed").asBoolean())row.path("suggestions").forEach(suggestion->visibleSuggestions.add(Json.text(suggestion,"id")));
-        for(ObjectNode suggestion:service.store.list("followup"))if(Json.text(suggestion,"kind").equals("followup") && !suggestion.hasNonNull("acceptedTaskId") && !suggestion.path("dismissed").asBoolean() && !visibleSuggestions.contains(Json.text(suggestion,"id")))text.append("\n후속 제안: ").append(Json.text(suggestion,"title")).append('\n');
+        for(ObjectNode suggestion:service.store.list("followup"))if(Json.text(suggestion,"kind").equals("followup") && !suggestion.hasNonNull("acceptedTaskId") && !suggestion.path("dismissed").asBoolean() && !visibleSuggestions.contains(Json.text(suggestion,"id")))text.append("\n후속 제안: ").append(followupTitle(suggestion)).append('\n');
         for(JsonNode error:digest.path("errors"))text.append("확인 필요: ").append(error.asText()).append('\n');
         return text.append("\n업무 수첩의 ‘작업 결과와 다음 할 일’에서 오늘 할 일을 선택하세요.").toString();
     }

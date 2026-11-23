@@ -142,6 +142,23 @@ class DraftResultsTest {
         ObjectNode next=results().generate(service.time.today(),true);assertEquals(followupId,Json.text(next.path("prs").get(0).path("suggestions").get(0),"id"));
         assertEquals(followupTask,Json.text(next.path("prs").get(0).path("suggestions").get(0),"acceptedTaskId"));
     }
+    @Test void duplicateIssuePrefixIsRemovedFromExistingAndNewFollowups() throws Exception {
+        api.prs.add(pr(481,"2026-11-09T20:00:00Z"));
+        LocalDate date = service.time.today();
+        DraftResults drafts = new DraftResults(service,api,prompt -> Json.obj("reply","수동 확인이 남았습니다.","actions",List.of(
+                Json.obj("type","task","payload",Json.write(Json.obj("title","CT-481 수동 동작 확인","reason","PR에 적혀 있습니다."))))),config);
+        JsonNode proposal = drafts.generate(date,true).path("prs").get(0).path("suggestions").get(0);
+        String id = Json.text(proposal,"id"), title = "CT-481 · 수동 동작 확인";
+        assertEquals(title, Json.text(proposal,"title"));
+        store.put("followup",store.get("followup",id).put("title","CT-481 · CT-481 수동 동작 확인"));
+        ObjectNode state = service.state(date);
+        assertEquals(title,Json.text(state.path("draftDigest").path("prs").get(0).path("suggestions").get(0),"title"));
+        assertEquals(title,Json.text(service.acceptFollowup(Json.obj("id",id)),"title"));
+        ((ObjectNode)api.prs.getFirst().path("source").path("commit")).put("hash","new-head");
+        JsonNode latest = drafts.generate(date,true).path("prs").get(0).path("suggestions").get(0);
+        assertEquals(id,Json.text(latest,"id"));
+        assertTrue(latest.hasNonNull("acceptedTaskId"));
+    }
     @Test void excludedFollowupsStayExcludedWhenThePrHeadChanges() throws Exception {
         api.prs.add(pr(1,"2026-11-05T23:00:00Z"));ObjectNode first=results().generate(service.time.today(),true);
         service.dismissFollowup(Json.obj("id",Json.text(first.path("prs").get(0).path("suggestions").get(0),"id")));

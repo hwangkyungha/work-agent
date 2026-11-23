@@ -324,7 +324,7 @@ final class WorkService {
             if (existing != null) { planItem(Json.obj("date", day(input), "id", Json.text(existing, "id"), "included", true)); return existing; }
         }
         String id = "request:followup:" + Json.text(suggestion, "id");
-        ObjectNode result = task(Json.obj("id", id, "title", Json.required(suggestion, "title"), "today", true, "date", day(input)));
+        ObjectNode result = task(Json.obj("id", id, "title", DraftResults.followupTitle(suggestion), "today", true, "date", day(input)));
         result.put("sourceTaskId", Json.text(suggestion, "sourceTaskId"));
         result.put("followupReason", Json.text(suggestion, "reason")); store.put("task", result);
         if(suggestion.hasNonNull("sourceDraftResultId")) {result.put("sourceDraftResultId",Json.text(suggestion,"sourceDraftResultId")).put("sourcePrUrl",Json.text(suggestion,"sourcePrUrl"));store.put("task",result);}
@@ -404,7 +404,7 @@ final class WorkService {
                 "taskAliases", store.list("taskAlias"), "taskMergeConflicts", store.list("taskMergeConflict"), "todayWork", ledger.reviewRows(date), "previousWorkDate", previous.toString(), "previousWork", ledger.reviewRows(previous), "carryover", ledger.carryover(date),
                 "worklogCandidates", java.util.stream.IntStream.range(0, 7).boxed().flatMap(i -> ledger.worklogCandidates(monday.plusDays(i)).stream()).toList(),
                 "activities", activities(monday.minusDays(7), monday.plusDays(6)), "meetings", meetings(date),
-                "activityGroups", ledger.worklogEvidence(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> (Json.text(n,"kind").equals("followup") || Json.text(n, "date").equals(date.toString())) && !n.hasNonNull("acceptedTaskId") && !n.path("dismissed").asBoolean()).toList(),
+                "activityGroups", ledger.worklogEvidence(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> (Json.text(n,"kind").equals("followup") || Json.text(n, "date").equals(date.toString())) && !n.hasNonNull("acceptedTaskId") && !n.path("dismissed").asBoolean()).map(n -> n.put("title", DraftResults.followupTitle(n))).toList(),
                 "worklogs", store.list("worklog").stream().filter(n -> Json.text(n, "date").compareTo(monday.toString()) >= 0 && Json.text(n, "date").compareTo(monday.plusDays(6).toString()) <= 0).toList(),
                 "registeredWorklogs", registeredWorklogs(monday, monday.plusDays(6)), "worklogFavorites", store.list("worklogFavorite"), "recentWorklogIssues", recentWorklogIssues(),
                 "dailyNote", daily == null ? "" : Json.text(daily, "text"), "dailyDetails", daily == null ? Json.object() : daily, "jobs", store.list("job"),

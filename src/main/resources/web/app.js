@@ -194,18 +194,27 @@ function sideSheet(title,actions,content,blank=false){
   const header=`<h2>${title}</h2><div class="side-sheet-actions">${actions}</div>`;
   return blank?`<details class="sheet empty-sheet"><summary class="sheet-header">${header}</summary><div class="sheet-body">${content}</div></details>`:`<section class="sheet"><div class="sheet-header">${header}</div><div class="sheet-body">${content}</div></section>`;
 }
-function proposalButton(proposal){const task=proposal?.acceptedTaskId?findTask(proposal.acceptedTaskId):null,selected=task&&(task.status==='done'||planIds.includes(task.id));return proposal&&!proposal.dismissed?`<button class="button" data-accept-followup="${esc(proposal.id)}" ${selected?'disabled':''}>${selected?(task.status==='done'?'완료한 업무':'오늘 등록됨'):'오늘 할 일에 추가'}</button>${!proposal.acceptedTaskId&&proposal.kind==='followup'?`<button class="text-button" data-dismiss-followup="${esc(proposal.id)}">제안 제외</button>`:''}`:'';}
+function proposalButton(proposal,label='오늘 할 일에 추가'){const task=proposal?.acceptedTaskId?findTask(proposal.acceptedTaskId):null,selected=task&&(task.status==='done'||planIds.includes(task.id));return proposal&&!proposal.dismissed?`<button class="button" data-accept-followup="${esc(proposal.id)}" ${selected?'disabled':''}>${selected?(task.status==='done'?'완료한 업무':'오늘 등록됨'):label}</button>${!proposal.acceptedTaskId&&proposal.kind==='followup'?`<button class="text-button" data-dismiss-followup="${esc(proposal.id)}">제안 제외</button>`:''}`:'';}
 function proposalReason(proposal){
   const key='proposal:'+proposal.id;
   return proposal.reason?`<details class="proposal-evidence" data-ledger-detail="${esc(key)}" ${openLedgerDetails.has(key)?'open':''}><summary>제안 근거</summary><p>${esc(proposal.reason)}</p></details>`:'';
+}
+function draftFollowupGroup(proposals,key,label,showPrLink=false){
+  if(!proposals.length)return '';
+  return `<details class="draft-followups" data-ledger-detail="${esc(key)}" ${openLedgerDetails.has(key)?'open':''}>
+    <summary>${label} <span class="tag">${proposals.length}건</span></summary>
+    ${proposals.map(proposal=>`<article class="draft-next-task"><strong>${esc(proposal.title)}</strong>
+      ${proposalReason(proposal)}${showPrLink?prLink(proposal.sourcePrUrl,'관련 PR'):''}
+      <div class="form-actions">${proposalButton(proposal)}</div></article>`).join('')}
+  </details>`;
 }
 function draftResultsSheet(){
   const digest=state.draftDigest||{},prs=(digest.prs||[]).filter(row=>!row.reviewed),reviewed=(digest.prs||[]).filter(row=>row.reviewed),jobs=state.jobs.filter(job=>!job.reviewed);
   const timestamp=value=>new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(value));
   const period='매일 08:00 확인 · 날짜와 관계없이 미확인 또는 새 커밋이 있는 내 열린 Draft PR';
-  const cards=prs.map(row=>`<article class="job-row draft-result"><div class="draft-result-heading"><h3>${esc(row.title)}</h3><span class="tag">${row.reviewed?'검토 완료':'검토 대기'}</span></div><small>${(row.issueLinks||[]).map(issue=>issueLink(issue.key,issue.url)).join(' ')} · ${prLink(row.url,'PR #'+row.number+' 열기')}</small>${row.summary?`<p><strong>PR 설명 요약</strong> ${esc(row.summary)}</p>`:''}<div class="form-actions">${proposalButton(row.reviewSuggestion)}<button class="text-button" data-draft-reviewed="${esc(row.id)}" data-reviewed="${!row.reviewed}">${row.reviewed?'검토 대기로':'검토 완료로 표시'}</button></div>${(row.suggestions||[]).map(proposal=>`<div class="draft-next-task"><strong>${esc(proposal.title)}</strong>${proposalReason(proposal)}<div class="form-actions">${proposalButton(proposal)}</div></div>`).join('')}</article>`).join('');
+  const cards=prs.map(row=>`<article class="job-row draft-result"><div class="draft-result-heading"><h3>${esc(row.title)}</h3><span class="tag">${row.reviewed?'검토 완료':'검토 대기'}</span></div><small>${(row.issueLinks||[]).map(issue=>issueLink(issue.key,issue.url)).join(' ')} · ${prLink(row.url,'PR #'+row.number+' 열기')}</small>${row.summary?`<p><strong>PR 설명 요약</strong> ${esc(row.summary)}</p>`:''}<div class="form-actions">${proposalButton(row.reviewSuggestion,'PR 검토를 오늘 할 일에 추가')}<button class="text-button" data-draft-reviewed="${esc(row.id)}" data-reviewed="${!row.reviewed}">${row.reviewed?'검토 대기로':'검토 완료로 표시'}</button></div>${draftFollowupGroup(row.suggestions||[],'draft-followups:'+row.id,'후속 작업 제안')}</article>`).join('');
   const visibleIds=new Set(prs.flatMap(row=>(row.suggestions||[]).map(proposal=>proposal.id))),remaining=(state.followups||[]).filter(proposal=>proposal.sourceDraftResultId&&!visibleIds.has(proposal.id));
-  const nextTasks=remaining.length?`<h3 class="result-subtitle">남은 후속 작업</h3>${remaining.map(proposal=>`<article class="draft-next-task"><strong>${esc(proposal.title)}</strong>${proposalReason(proposal)}${prLink(proposal.sourcePrUrl,'관련 PR')}<div class="form-actions">${proposalButton(proposal)}</div></article>`).join('')}`:'';
+  const nextTasks=draftFollowupGroup(remaining,'remaining-draft-followups','남은 후속 작업',true);
   const manual=jobs.length?'<h3 class="result-subtitle">직접 등록한 작업 결과</h3>'+jobs.map(job=>`<article class="job-row"><h3>${esc(job.title)}</h3><p>${esc(job.result)}</p><small>${esc(job.verification||'검증 결과가 아직 없습니다.')}</small>${job.artifact?`<small>결과물: ${esc(job.artifact)}</small>`:''}<button class="text-button" data-review-job="${esc(job.id)}">검토 완료로 표시</button></article>`).join(''):'';
   return sideSheet('작업 결과와 다음 할 일','<button class="text-button" id="refresh-draft-results">다시 정리</button>',`<p class="hint">${esc(period)}</p>${(digest.errors||[]).map(error=>`<p class="hint error">${esc(error)}</p>`).join('')}${cards||`<p class="hint">${digest.generatedAt?((digest.errors||[]).length?'일부 자료를 확인하지 못했습니다. 다시 정리해서 확인해 주세요.':'아직 확인하지 않은 draft PR이 없습니다.'):'아직 정리하지 않았습니다. 다시 정리 버튼으로 지금 확인할 수 있습니다.'}</p>`}${reviewed.length?`<details><summary>확인한 열린 Draft PR ${reviewed.length}건</summary>${reviewed.map(row=>`<p>${prLink(row.url,row.title)} <button class="text-button" data-draft-reviewed="${esc(row.id)}" data-reviewed="false">다시 검토 대기로</button></p>`).join('')}</details>`:''}${nextTasks}${manual}`);
 }
@@ -213,7 +222,7 @@ const outcomeNames={unconfirmed:'확인 전', 'not-started':'진행하지 않음
 async function openPastWork(date=state.previousWorkDate){
   pastWorkCandidates=await api('/api/work-days/candidates?date='+encodeURIComponent(date));
   const choices=allTasks();
-  modal(shortDay(date)+' 수행한 일 추가',`<p class="hint">계획에 없던 업무만 추가하세요. 기록은 대화가 많았던 순서입니다. Jira 상태와 오늘 계획은 변경하지 않습니다.</p><details class="past-work-records" open><summary>작업 기록에서 선택 <span>${pastWorkCandidates.length}건</span></summary><label class="sr-only" for="past-work-search">작업 기록 검색</label><input type="search" id="past-work-search" placeholder="이슈 번호 또는 작업 제목"><div class="past-work-candidates">${pastWorkCandidates.map(row=>`<article class="past-work-candidate" data-past-work-option><div><strong>${esc(row.title)}</strong><small>${issueLink(row.jiraKey,row.issueUrl)} · 메시지 ${Number(row.evidence?.messageCount||0)}개${row.taskId?' · 기존 할 일과 연결됨':''}</small></div><button type="button" class="button" data-choose-past-work="${esc(row.workId)}">선택</button></article>`).join('')||'<p class="hint">추가로 확인한 작업 기록이 없습니다. 아래에서 업무를 선택하거나 직접 입력하세요.</p>'}</div></details><form id="past-work-form" data-date="${esc(date)}"><div class="field"><label for="past-work-task">기존 할 일 선택</label><select id="past-work-task" name="taskId" data-task-picker><option value="">직접 입력 또는 선택한 작업 기록</option>${choices.map(task=>`<option value="${esc(task.id)}">${esc([task.jiraKey,task.title].filter(Boolean).join(' '))}</option>`).join('')}</select></div><div class="field"><label for="past-work-title">수행한 일</label><input id="past-work-title" name="title" required maxlength="300" placeholder="기록이 없는 업무도 직접 입력하세요"><button type="button" class="text-button" id="reset-past-work">직접 새로 입력</button></div><div class="field"><label for="past-work-outcome">${esc(shortDay(date))} 수행 상태</label><select id="past-work-outcome" name="outcome"><option value="progress">진행 중</option><option value="done">완료</option></select></div><div class="form-actions"><button type="submit" class="button primary">수행한 일에 추가</button></div></form>`);
+  modal(shortDay(date)+' 계획에 없던 일 기록',`<p class="hint">계획에 없던 업무만 추가하세요. 기록은 대화가 많았던 순서입니다. Jira 상태와 오늘 계획은 변경하지 않습니다.</p><details class="past-work-records" open><summary>작업 기록에서 선택 <span>${pastWorkCandidates.length}건</span></summary><label class="sr-only" for="past-work-search">작업 기록 검색</label><input type="search" id="past-work-search" placeholder="이슈 번호 또는 작업 제목"><div class="past-work-candidates">${pastWorkCandidates.map(row=>`<article class="past-work-candidate" data-past-work-option><div><strong>${esc(row.title)}</strong><small>${issueLink(row.jiraKey,row.issueUrl)} · 메시지 ${Number(row.evidence?.messageCount||0)}개${row.taskId?' · 기존 할 일과 연결됨':''}</small></div><button type="button" class="button" data-choose-past-work="${esc(row.workId)}">선택</button></article>`).join('')||'<p class="hint">추가로 확인한 작업 기록이 없습니다. 아래에서 업무를 선택하거나 직접 입력하세요.</p>'}</div></details><form id="past-work-form" data-date="${esc(date)}"><div class="field"><label for="past-work-task">기존 할 일 선택</label><select id="past-work-task" name="taskId" data-task-picker><option value="">직접 입력 또는 선택한 작업 기록</option>${choices.map(task=>`<option value="${esc(task.id)}">${esc([task.jiraKey,task.title].filter(Boolean).join(' '))}</option>`).join('')}</select></div><div class="field"><label for="past-work-title">수행한 일</label><input id="past-work-title" name="title" required maxlength="300" placeholder="기록이 없는 업무도 직접 입력하세요"><button type="button" class="text-button" id="reset-past-work">직접 새로 입력</button></div><div class="field"><label for="past-work-outcome">${esc(shortDay(date))} 수행 상태</label><select id="past-work-outcome" name="outcome"><option value="progress">진행 중</option><option value="done">완료</option></select></div><div class="form-actions"><button type="submit" class="button primary">수행 기록에 추가</button></div></form>`);
 }
 function workDayRows(date){
   if(date===state.date)return state.todayWork||[];
@@ -225,7 +234,7 @@ async function fetchWorkDay(date){
 }
 function workReviewSheet(date=reviewDate||state.date,context='today'){
   const rows=workDayRows(date),key=context+'-review',planned=rows.filter(row=>row.planned).length,done=rows.filter(row=>row.outcome==='done').length;
-  return `<details class="sheet work-reconciliation" data-review-date="${esc(date)}" data-ledger-detail="${key}" ${openLedgerDetails.has(key)?'open':''}><summary class="review-summary"><span><strong>계획과 실제</strong><small>${esc(shortDay(date))} · 계획 ${planned}건 · 완료 ${done}건</small></span></summary><div class="sheet-body">${context==='today'?`<div class="review-date-toolbar"><div class="list-filters"><button class="filter ${date===state.date?'active':''}" data-review-day="${state.date}">오늘</button><button class="filter ${date===state.previousWorkDate?'active':''}" data-review-day="${state.previousWorkDate||dayAdd(state.date,-1)}">이전 근무일</button></div><label>날짜 <input type="date" id="work-review-date" value="${esc(date)}" max="${state.date}" aria-label="계획과 실제 확인 날짜"></label></div>`:''}<div class="review-intro"><p class="hint">수행 상태를 변경하면 자동 저장되고 이날의 워크로그에 반영됩니다. Jira 상태는 바꾸지 않습니다.</p><button class="button" id="add-previous-work" data-add-actual-date="${esc(date)}">수행한 일 추가</button></div>${rows.map(row=>`<article class="work-day-row"><div><h3>${row.taskId&&findTask(row.taskId)?`<button class="task-title" data-edit-task="${esc(row.taskId)}">${esc(row.title)}</button>`:esc(row.title)}</h3><small>${issueLink(row.jiraKey,row.issueUrl)} ${row.planned?(row.inInitialPlan?'처음 정한 계획':'업무 중 추가한 계획'):'계획 밖 활동'}${row.planned&&!row.inFinalPlan?' · 목록에서 제외됨':''}${row.priorityChanged?' · 중요도/긴급도 변경':''}${row.worklogSeconds>0?' · Jira 워크로그 등록':''}</small>${row.sourcePrUrl?`<p>${prLink(row.sourcePrUrl,'작성한 Draft PR')}</p>`:''}${row.note?`<p>${esc(row.note)}</p>`:''}${row.evidence?`<details class="work-evidence" data-ledger-detail="evidence:${esc(date)}:${esc(row.workId)}" ${openLedgerDetails.has('evidence:'+date+':'+row.workId)?'open':''}><summary>작업 근거 · 메시지 ${Number(row.evidence.messageCount||0)}개</summary>${groupedActivities([row.evidence])}</details>`:''}</div><div class="work-day-actions"><select data-work-outcome="${esc(row.workId)}" data-date="${esc(date)}" aria-label="${esc(row.title)} 수행 상태">${Object.entries(outcomeNames).map(([key,name])=>`<option value="${key}" ${row.outcome===key?'selected':''}>${name}</option>`).join('')}</select>${!row.taskId?`<button class="text-button" data-link-work="${esc(row.workId)}" data-date="${esc(date)}">업무에 연결</button>`:''}</div></article>`).join('')||'<p class="hint review-empty">등록한 계획이나 수행 내용이 없습니다. 수행한 일을 추가하세요.</p>'}</div></details>`;
+  return `<details class="sheet work-reconciliation" data-review-date="${esc(date)}" data-ledger-detail="${key}" ${openLedgerDetails.has(key)?'open':''}><summary class="review-summary"><span><strong>수행 기록</strong><small>${esc(shortDay(date))} · 계획 ${planned}건 · 완료 ${done}건</small></span></summary><div class="sheet-body">${context==='today'?`<div class="review-date-toolbar"><div class="list-filters"><button class="filter ${date===state.date?'active':''}" data-review-day="${state.date}">오늘</button><button class="filter ${date===state.previousWorkDate?'active':''}" data-review-day="${state.previousWorkDate||dayAdd(state.date,-1)}">이전 근무일</button></div><label>날짜 <input type="date" id="work-review-date" value="${esc(date)}" max="${state.date}" aria-label="수행 기록 날짜"></label></div>`:''}<div class="review-intro"><p class="hint">선택한 날짜에 실제로 한 일을 기록하세요. 수행 상태는 자동 저장되어 이날의 워크로그에 반영됩니다.</p><button class="button" id="add-previous-work" data-add-actual-date="${esc(date)}">계획에 없던 일 기록</button></div>${rows.map(row=>`<article class="work-day-row"><div><h3>${row.taskId&&findTask(row.taskId)?`<button class="task-title" data-edit-task="${esc(row.taskId)}">${esc(row.title)}</button>`:esc(row.title)}</h3><small>${issueLink(row.jiraKey,row.issueUrl)} ${row.planned?(row.inInitialPlan?'처음 정한 계획':'업무 중 추가한 계획'):'계획 밖 활동'}${row.planned&&!row.inFinalPlan?' · 목록에서 제외됨':''}${row.priorityChanged?' · 중요도/긴급도 변경':''}${row.worklogSeconds>0?' · Jira 워크로그 등록':''}</small>${row.sourcePrUrl?`<p>${prLink(row.sourcePrUrl,'작성한 Draft PR')}</p>`:''}${row.note?`<p>${esc(row.note)}</p>`:''}${row.evidence?`<details class="work-evidence" data-ledger-detail="evidence:${esc(date)}:${esc(row.workId)}" ${openLedgerDetails.has('evidence:'+date+':'+row.workId)?'open':''}><summary>작업 근거 · 메시지 ${Number(row.evidence.messageCount||0)}개</summary>${groupedActivities([row.evidence])}</details>`:''}</div><div class="work-day-actions"><select data-work-outcome="${esc(row.workId)}" data-date="${esc(date)}" aria-label="${esc(row.title)} 수행 상태">${Object.entries(outcomeNames).map(([key,name])=>`<option value="${key}" ${row.outcome===key?'selected':''}>${name}</option>`).join('')}</select>${!row.taskId?`<button class="text-button" data-link-work="${esc(row.workId)}" data-date="${esc(date)}">업무에 연결</button>`:''}</div></article>`).join('')||'<p class="hint review-empty">이날의 계획과 수행 기록이 없습니다.</p>'}</div></details>`;
 }
 function carryoverHtml(){return (state.carryover||[]).length?`<details class="candidate-group" open><summary>이어서 할 일 <span class="tag">${state.carryover.length}건</span></summary>${state.carryover.map(row=>`<article class="carryover-row"><div><strong>${esc(row.title)}</strong><small>${issueLink(row.jiraKey,row.issueUrl)}</small><p class="hint">${esc(row.date)} · ${esc(row.reason)}</p></div><button class="button" data-today-add="${esc(row.taskId)}">오늘 추가</button></article>`).join('')}</details>`:'';}
 function calendarLink(url,label='Google에서 보기'){
@@ -295,7 +304,7 @@ function durationSeconds(text) {
   const m=text.match(/^\s*(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+(?:\.\d+)?)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s)?\s*$/i);
   if(!m||!m.slice(1).some(Boolean))return NaN;
   const value=Number(m[1]||0)*3600+Number(m[2]||0)*60+Number(m[3]||0);
-  return value>0?value:NaN;
+  return Number.isInteger(value)&&value>0&&value<=2147483647?value:NaN;
 }
 const worklogStorageKey=day=>'work-agent.worklog-editor:'+day;
 function worklogEdit(day){
@@ -367,21 +376,37 @@ function worklogRow(row={}) {
     <input class="log-key" aria-label="Jira 이슈 번호" placeholder="${row.workId?'Jira 미연결 · 초안 저장 가능':'CT-123'}" value="${esc(row.jiraKey||'')}" ${row.workId?'':'required'} ${locked?'disabled':''}>
     <input class="log-duration" aria-label="작업 시간" aria-describedby="${errorId}" aria-invalid="false" placeholder="예: 2h 30m" value="${esc(row.duration??durationText(row.seconds||0))}" ${locked?'disabled':''}>
     ${locked?'':'<button class="icon-button" type="button" data-remove-worklog aria-label="시간 기록 삭제">×</button>'}
-    <small class="duration-error" id="${errorId}" hidden>예: 4h, 2.5h, 2h 30m</small>
+    <small class="duration-error" id="${errorId}" hidden>예: 1h, 2.5h, 2h 30m</small>
     ${locked?`<span class="worklog-post-status">${logStatus(row.state)}</span>`:''}
     <input class="log-comment" type="hidden" value="${esc(row.comment??'업무 기록')}">
     <input class="log-marker" type="hidden" value="${esc(row.marker||(locked?'':('work-agent:'+crypto.randomUUID())))}">
   </div>`;
 }
+function setWorklogTimeError(field,invalid){
+  field.setAttribute('aria-invalid',String(invalid));
+  $('.duration-error',field.closest('.worklog-input-row')).hidden=!invalid;
+}
+function validateWorklogTimes(form){
+  let firstInvalid;
+  for(const field of form.querySelectorAll('.log-duration:not(:disabled)')){
+    const invalid=!!field.value.trim()&&!Number.isFinite(durationSeconds(field.value));
+    setWorklogTimeError(field,invalid);
+    if(invalid&&!firstInvalid)firstInvalid=field;
+  }
+  firstInvalid?.focus();
+  return !firstInvalid;
+}
 function updateTotal() {
-  let total=0,invalid=false;
-  document.querySelectorAll('#worklog-rows .worklog-input-row').forEach(row=>{const field=$('.log-duration',row),seconds=durationSeconds(field.value),bad=!!field.value.trim()&&(!Number.isInteger(seconds)||seconds>2147483647);field.setAttribute('aria-invalid',String(bad));$('.duration-error',row).hidden=!bad;if(bad)invalid=true;else if(row.dataset.state!=='posted'&&Number.isFinite(seconds))total+=seconds;});
+  let total=0;
+  for(const row of document.querySelectorAll('#worklog-rows .worklog-input-row:not([hidden])')){
+    total+=durationSeconds($('.log-duration',row).value)||0;
+  }
   if($('#duration-total'))$('#duration-total').textContent=durationText(Math.round(total))||'0h';
   if($('#combined-worklog-total'))$('#combined-worklog-total').textContent=durationText(registeredSeconds(worklogDay)+Math.round(total))||'0h';
-  const save=$('#worklog-form [type="submit"]');if(save)save.disabled=invalid||$('#worklog-form').dataset.saving==='true';
+  const save=$('#worklog-form [type="submit"]');if(save)save.disabled=$('#worklog-form').dataset.saving==='true';
   const post=$('#post-worklog'),draft=state.worklogs.find(w=>w.date===worklogDay);
   const pending=(draft?.items||[]).filter(i=>i.state!=='posted'),ready=pending.filter(i=>i.seconds>0&&i.jiraKey),held=pending.length-ready.length;
-  if(post){post.disabled=invalid||worklogEdit(worklogDay)!==null||!settings.jiraConfigured||!ready.length;post.textContent=ready.length?`Jira에 등록 (${ready.length}건)`:'Jira에 등록';}
+  if(post){post.disabled=worklogEdit(worklogDay)!==null||!settings.jiraConfigured||!ready.length;post.textContent=ready.length?`Jira에 등록 (${ready.length}건)`:'Jira에 등록';}
   const hint=$('#worklog-post-hint');if(hint)hint.textContent=worklogEdit(worklogDay)!==null?'변경한 내용을 초안으로 저장한 뒤 등록하세요.':held?`Jira 미연결 또는 시간 미입력 ${held}건은 초안으로 남습니다. 등록 가능한 ${ready.length}건만 전송합니다.`:'';
 }
 async function renderTeam() {
@@ -555,7 +580,7 @@ document.addEventListener('change',async event=>{
     if(el.id==='select-all-tasks'){for(const task of filteredTasks())el.checked?selectedTasks.add(task.id):selectedTasks.delete(task.id);renderPlan();}
   }catch(e){notice(e.message);await load();}
 });
-document.addEventListener('input',event=>{const el=event.target;if(el.closest('#worklog-form')){rememberWorklog();updateTotal();}if(el.id==='review-local-path')$('#review-repository').dataset.localPathDirty='true';if(el.id==='review-repository-sources')$('#review-repository').dataset.sourcesDirty='true';if(el.id==='task-search'){taskSearch=el.value;if(!event.isComposing)updateTaskList();}if(el.id==='past-work-search'){document.querySelectorAll('[data-past-work-option]').forEach(row=>{row.hidden=!row.textContent.toLowerCase().includes(el.value.toLowerCase());});}if(el.id==='predecessor-search'){document.querySelectorAll('[data-predecessor-option]').forEach(label=>{label.hidden=!label.textContent.toLowerCase().includes(el.value.toLowerCase());});}});
+document.addEventListener('input',event=>{const el=event.target;if(el.closest('#worklog-form')){if(el.matches('.log-duration[aria-invalid="true"]'))setWorklogTimeError(el,false);rememberWorklog();updateTotal();}if(el.id==='review-local-path')$('#review-repository').dataset.localPathDirty='true';if(el.id==='review-repository-sources')$('#review-repository').dataset.sourcesDirty='true';if(el.id==='task-search'){taskSearch=el.value;if(!event.isComposing)updateTaskList();}if(el.id==='past-work-search'){document.querySelectorAll('[data-past-work-option]').forEach(row=>{row.hidden=!row.textContent.toLowerCase().includes(el.value.toLowerCase());});}if(el.id==='predecessor-search'){document.querySelectorAll('[data-predecessor-option]').forEach(label=>{label.hidden=!label.textContent.toLowerCase().includes(el.value.toLowerCase());});}});
 document.addEventListener('compositionend',event=>{if(event.target.id==='task-search'){taskSearch=event.target.value;updateTaskList();}});
 document.addEventListener('pointerdown',event=>{document.querySelectorAll('.task-menu[open]').forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});});
 document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.task-menu[open]').forEach(menu=>{menu.open=false;$('summary',menu).focus();});});
@@ -590,7 +615,7 @@ document.addEventListener('submit',async event=>{
     }
     if(form.id==='worklog-form'){
       form.dataset.saving='true';
-      updateTotal();if(document.querySelector('.log-duration[aria-invalid="true"]'))return;
+      if(!validateWorklogTimes(form))return;
       const date=worklogDay,rows=worklogFormRows(),snapshot=JSON.stringify(worklogEdit(date));
       await api('/api/worklogs',{date,items:rows.map(({state,...item})=>item)});
       if(JSON.stringify(worklogEdit(date))===snapshot)clearWorklogEdit(date);

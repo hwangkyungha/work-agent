@@ -145,6 +145,9 @@ small,.hint { font-size:12px; color:var(--muted); line-height:1.8; }
 .followup-row p,.job-row p,.observation p { font-size:13px; line-height:1.8; margin:8px 0; overflow-wrap:anywhere; }
 .draft-result-heading { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
 .draft-result-heading .tag { flex-shrink:0; }
+.draft-followups { margin-top:16px; padding-top:12px; border-top:1px solid var(--line); }
+.draft-followups>summary { cursor:pointer; font-weight:500; }
+.draft-followups>summary .tag { margin-left:4px; }
 .draft-next-task { margin-top:16px; padding-left:12px; border-left:2px solid var(--line); }
 .draft-next-task .form-actions { justify-content:flex-start; align-items:center; gap:12px; margin-top:12px; }
 .result-subtitle { margin-top:20px; }
