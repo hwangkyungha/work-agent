@@ -50,6 +50,7 @@ final class WorkLedger {
             row.put("outcome", Json.text(saved, "outcome")).put("note", Json.text(saved, "note")).put("confirmed",true);
             if(!Json.text(saved,"title").isBlank())row.put("title",Json.text(saved,"title"));
         }
+        addRegisteredWork(date, rows, links);
         for (ObjectNode row : rows.values()) {
             row.put("priorityChanged", row.has("initialImportant") && (row.path("initialImportant").asBoolean()!=row.path("finalImportant").asBoolean() || row.path("initialUrgent").asBoolean()!=row.path("finalUrgent").asBoolean()));
             String taskId = Json.text(row, "taskId");
@@ -59,6 +60,9 @@ final class WorkLedger {
                 row.put("issueUrl",Json.text(task,"issueUrl"));
                 if (Json.text(row, "jiraKey").isBlank()) row.put("jiraKey", Json.text(task, "jiraKey"));
             }
+            if (row.path("worklogSeconds").asLong() > 0 && Json.text(row, "title").isBlank()) {
+                row.put("title", task == null ? Json.text(row, "jiraKey") : Json.required(task, "title"));
+            }
             if(!Json.text(row,"jiraKey").isBlank() && Json.text(row,"issueUrl").isBlank())row.put("issueUrl",service.jira.issueUrl(Json.text(row,"jiraKey")));
             String outcome = Json.text(row, "outcome");
             row.put("performed", Set.of("progress", "done").contains(outcome) || row.path("observed").asBoolean() && !Set.of("not-started", "cancelled", "deferred").contains(outcome));
@@ -67,10 +71,35 @@ final class WorkLedger {
         days.put(date,rows.values().stream().map(ObjectNode::deepCopy).toList());
         return new ArrayList<>(rows.values());
     }
+    private void addRegisteredWork(LocalDate date, Map<String, ObjectNode> rows, ActivityLinks links) {
+        List<ObjectNode> worklogs = service.registeredWorklogs(date, date);
+        if (worklogs.isEmpty()) return;
+        Map<String, ObjectNode> byIssue = new HashMap<>();
+        for (ObjectNode row : rows.values()) {
+            String key = Json.text(row, "jiraKey");
+            if (!key.isBlank()) byIssue.putIfAbsent(key, row);
+        }
+        for (ObjectNode log : worklogs) {
+            String key = Json.text(log, "jiraKey");
+            long seconds = log.path("seconds").asLong();
+            if (key.isBlank() || seconds <= 0) continue;
+            ObjectNode row = byIssue.computeIfAbsent(key, issue -> {
+                String taskId = links.taskId(Json.object(), issue);
+                String id = taskId.isBlank() ? "jira:" + issue : taskId;
+                return rows.computeIfAbsent(id, unused -> make(Json.obj("taskId", taskId, "jiraKey", issue, "title", Json.text(log, "title")), id));
+            });
+            if (Json.text(row, "title").isBlank()) {
+                String title = Json.text(log, "title");
+                if (!title.isBlank()) row.put("title", title);
+            }
+            row.put("observed", true).put("worklogSeconds", row.path("worklogSeconds").asLong() + seconds);
+        }
+    }
     List<ObjectNode> reviewRows(LocalDate date) {
         Map<String,ObjectNode> issues=new HashMap<>();for(ObjectNode task:service.store.list("task"))if(!Json.text(task,"jiraKey").isBlank())issues.put(Json.text(task,"jiraKey"),task);
-        return day(date).stream().filter(row->row.path("planned").asBoolean() || row.path("confirmed").asBoolean() && !Json.text(row,"outcome").equals("unconfirmed") || row.path("userRecorded").asBoolean()).map(row->{
-            ObjectNode task=issues.get(titleKey(row));
+        return day(date).stream().filter(row->row.path("planned").asBoolean() || row.path("confirmed").asBoolean() && !Json.text(row,"outcome").equals("unconfirmed") || row.path("userRecorded").asBoolean() || row.path("worklogSeconds").asLong() > 0).map(row->{
+            String key = Json.text(row, "jiraKey");
+            ObjectNode task=issues.get(key.isBlank() ? titleKey(row) : key);
             if(Json.text(row,"taskId").isBlank() && task!=null)row.put("suggestedTaskId",Json.text(task,"id")).put("jiraKey",Json.text(task,"jiraKey")).put("issueUrl",service.jira.issueUrl(Json.text(task,"jiraKey")));
             return row;
         }).toList();

@@ -55,8 +55,15 @@ final class Reports {
         service.store.list("workDay").forEach(p -> days.add(LocalDate.parse(Json.required(p, "date"))));
         service.store.list("evidence").stream().filter(a -> !automated.contains(ActivitySummary.session(a)) && Json.text(a, "role").equals("assistant")).forEach(a -> days.add(LocalDate.parse(Json.required(a, "date"))));
         service.store.list("draftResult").stream().filter(row -> !Json.text(row,"createdAt").isBlank()).forEach(row -> days.add(KoreaTime.dateOf(Json.text(row,"createdAt"))));
-        return days.stream()
-                .filter(day -> !day.isAfter(last) && day.getDayOfWeek().getValue() <= 5).max(Comparator.naturalOrder()).orElse(last);
+        Optional<LocalDate> latest = days.stream()
+                .filter(day -> !day.isAfter(last) && day.getDayOfWeek().getValue() <= 5).max(Comparator.naturalOrder());
+        if (latest.filter(last::equals).isPresent()) return last;
+        LocalDate from = latest.map(day -> day.plusDays(1)).orElse(LocalDate.MIN);
+        return service.registeredWorklogs(from, last).stream()
+                .filter(log -> log.path("seconds").asLong() > 0 && !Json.text(log, "jiraKey").isBlank())
+                .map(log -> LocalDate.parse(Json.required(log, "date")))
+                .filter(day -> day.getDayOfWeek().getValue() <= 5)
+                .max(Comparator.naturalOrder()).orElseGet(() -> latest.orElse(last));
     }
     String worklog(LocalDate from, LocalDate to) {
         StringBuilder text = new StringBuilder(from + " ~ " + to + " 워크로그\n작업 시간은 3h, 2.5h, 2h 30m 형식으로 입력합니다.\n");
@@ -98,10 +105,13 @@ final class Reports {
     static String stateLabel(String state) { return switch (state) { case "posted" -> "등록 완료"; case "posting", "unknown" -> "결과 확인 필요"; case "failed" -> "등록 실패"; default -> "초안"; }; }
     private void appendPreviousWork(StringBuilder text, LocalDate date) {
         LinkedHashSet<String> lines = new LinkedHashSet<>();
+        Set<String> issues = new HashSet<>();
         for (ObjectNode work : new WorkLedger(service).reviewRows(date)) if (work.path("performed").asBoolean()) {
+            String key = Json.text(work, "jiraKey");
             String title = Json.text(work, "title");
-            if (title.equals("이름 없는 세션") || title.isBlank()) continue;
-            lines.add(workTitle(Json.text(work, "jiraKey"), title));
+            if (title.equals("이름 없는 세션")) title = "";
+            if (key.isBlank() && title.isBlank()) continue;
+            if (key.isBlank() || issues.add(key)) lines.add(workTitle(key, title));
         }
         if (lines.isEmpty()) text.append("- 확인된 수행 내용이 없습니다. 어제 계획과 실제 활동을 확인해 주세요.\n");
         lines.forEach(line -> text.append("- ").append(line).append('\n'));

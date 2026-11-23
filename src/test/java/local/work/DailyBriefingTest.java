@@ -83,6 +83,38 @@ class DailyBriefingTest {
         store.put("evidence", Json.obj("id", "judge-evidence", "date", "2026-11-05", "source", "claude", "session", "judge", "cwd", "D:/Git/lct/.ct-verify/run/work/project", "role", "assistant", "text", "평가 결과"));
         assertEquals(LocalDate.of(2026, 11, 4), reports.previousWorkDate(service.time.today()));
     }
+    @Test void registeredWorklogsProveWorkAndMergeWithThePlanAndSessionInTheBriefing() {
+        LocalDate friday = LocalDate.of(2026, 11, 20), monday = friday.plusDays(3);
+        ObjectNode planned = service.task(Json.obj("jiraKey", "CTS-1", "title", "계획에 적은 제목"));
+        service.plan(Json.obj("date", friday.toString(), "taskIds", List.of(Json.text(planned, "id"))));
+        store.put("workDay", Json.obj("id", "separate-session", "date", friday.toString(), "workId", "session:claude:extra",
+                "jiraKey", "CTS-1", "title", "세션에 적은 제목", "outcome", "progress"));
+        store.put("jiraWorklog", Json.obj("id", "remote-1", "jiraId", "1", "date", friday.toString(), "jiraKey", "CTS-1", "title", "Jira 제목", "seconds", 3600));
+        store.put("jiraWorklog", Json.obj("id", "remote-2", "jiraId", "2", "date", friday.toString(), "jiraKey", "CTS-1", "title", "Jira 제목", "seconds", 1800));
+        store.put("issue", Json.obj("id", "WOR-1", "title", "팀 회의"));
+        store.put("worklog", Json.obj("id", friday.toString(), "date", friday.toString(), "items", List.of(
+                Json.obj("jiraId", "3", "jiraKey", "WOR-1", "state", "posted", "seconds", 3600),
+                Json.obj("jiraKey", "CTS-9", "state", "draft", "seconds", 3600))));
+        store.put("jiraWorklog", Json.obj("id", "remote-4", "jiraId", "4", "date", monday.toString(), "jiraKey", "CTS-4", "seconds", 3600));
+
+        String text = reports.briefing(monday);
+        assertTrue(text.contains("- CTS-1 계획에 적은 제목\n"));
+        assertEquals(1, text.lines().filter(line -> line.startsWith("- CTS-1 ")).count());
+        assertTrue(text.contains("- WOR-1 팀 회의\n"));
+        assertFalse(text.contains("CTS-9"));
+        assertFalse(text.contains("CTS-4"));
+        ObjectNode work = new WorkLedger(service).reviewRows(friday).getFirst();
+        assertTrue(work.path("performed").asBoolean());
+        assertEquals(5400, work.path("worklogSeconds").asLong());
+        assertEquals("unconfirmed", Json.text(work, "outcome"));
+    }
+    @Test void worklogOnlyFridayIsSelectedAndCanBeReportedWithOnlyItsIssueKey() {
+        LocalDate friday = LocalDate.of(2026, 11, 20), monday = friday.plusDays(3);
+        service.activity(Json.obj("date", "2026-11-19", "title", "목요일 작업"));
+        store.put("jiraWorklog", Json.obj("id", "remote-1", "jiraId", "1", "date", friday.toString(), "jiraKey", "CTS-1", "seconds", 3600));
+        assertEquals(friday, reports.previousWorkDate(monday));
+        assertTrue(reports.briefing(monday).contains("- CTS-1\n"));
+    }
     private void session(String source, String id, String key) {
         store.put("evidence", Json.obj("id", source + id, "date", "2026-11-05", "source", source, "session", id, "role", "assistant", "text", "긴 대화 원문", "issueKeys", key.isBlank() ? List.of() : List.of(key)));
     }
