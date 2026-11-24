@@ -437,6 +437,7 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 .task-picker-popup[hidden] { display:none; }
 .task-picker-popup [role=listbox] { max-height:240px; overflow-y:auto; overscroll-behavior:contain; }
 .task-picker-popup [role=option] { display:block; width:100%; border:0; border-bottom:1px solid var(--line); padding:12px; background:#fff; color:var(--ink); text-align:left; font-size:13px; line-height:1.6; white-space:normal; overflow-wrap:anywhere; }
+.task-picker-popup [role=option] small { display:block; }
 .task-picker-popup [role=option]:last-child { border-bottom:0; }
 .task-picker-popup [role=option][aria-selected=true] { font-weight:600; color:var(--blue); }
 .task-picker-popup [role=option].active,.task-picker-popup [role=option]:hover { background:var(--blue-soft); }
@@ -457,13 +458,7 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 
 .today-add-tools { display:flex; gap:10px; align-items:stretch; }
 .today-add-tools .quick-task { flex:1; min-width:0; }
-.today-jira-lookup { margin-top:24px; padding-top:20px; border-top:1px solid var(--line); }
-.today-jira-lookup h3 { margin:0 0 8px; font-size:14px; }
-.today-jira-lookup .quick-task { margin-top:12px; }
-.today-jira-preview { display:flex; gap:16px; align-items:center; justify-content:space-between; margin-top:16px; padding:16px; border:1px solid var(--line); border-radius:8px; }
-.today-jira-preview div { min-width:0; overflow-wrap:anywhere; }
-.today-jira-preview small { display:block; margin-top:6px; color:var(--muted); }
-@media(max-width:700px) { .today-add-tools { flex-direction:column; } .today-add-tools>button { align-self:flex-start; } .today-jira-preview { flex-direction:column; align-items:stretch; } }
+@media(max-width:700px) { .today-add-tools { flex-direction:column; } .today-add-tools>button { align-self:flex-start; } }
 
 /* PR reading content stays separate from the work-day accordion header. */
 .review-card .sheet-header h2 { margin-top:6px; line-height:1.6; }

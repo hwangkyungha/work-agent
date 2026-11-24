@@ -79,7 +79,12 @@ class WebUiTest {
                     for (JsonNode task : state.path("tasks")) if (Json.text(task, "id").equals(Json.text(payload, "id"))) payload.fields().forEachRemaining(field -> ((ObjectNode) task).set(field.getKey(), field.getValue()));
                     refreshPlan();
                 }
-                case "/api/jira/issue" -> content=Json.write(Json.obj("id","CT-99","title","다른 담당자의 Jira 업무","product","개발","due","","jiraStatus","Backlog","assignee","다른 담당자","issueUrl","https://example.atlassian.net/browse/CT-99"));
+                case "/api/jira/issue-search" -> {
+                    String query=URI.create(route.request().url()).getQuery();
+                    ObjectNode matching=Json.obj("id","CT-99","title","다른 담당자의 Jira 업무","product","개발","due","","status","todo","assignee","다른 담당자");
+                    content=Json.write(query.equals("q=CT-42")?List.of(Json.obj("id","CT-42","title","CI 보고서 검토","status","todo"))
+                            :query.equals("q=다른 담당자")||query.equals("q=CT-99")?List.of(matching):List.of());
+                }
                 case "/api/tasks/transitions" -> content = Json.write(Json.obj("current", Json.obj("jiraStatus", "In Progress"), "transitions", List.of(Json.obj("id", "31", "name", "Complete", "to", Json.obj("name", "Done")))));
                 case "/api/tasks/status" -> {
                     JsonNode payload = Json.read(route.request().postData()); statusUpdates.add(payload);
@@ -402,31 +407,35 @@ class WebUiTest {
         page.reload(); page.locator("[data-view='worklog']").click();
         assertEquals("1h", page.locator(".log-duration").inputValue()); assertTrue(page.locator(".log-duration").isDisabled());assertFalse(page.locator(".worklog-input-row[data-state='posted']").isVisible());
     }
-    @Test void todayCanAddExistingTaskOrUnassignedJiraWithoutEditingTitle() throws Exception {
+    @Test void todayCanSearchLocalAndOtherAssigneesJiraIssuesInOnePicker() throws Exception {
         page.locator("#choose-today-issue").click();
-        page.locator("#today-existing-task-search").fill("CT-42");
-        page.locator("#today-existing-task-search").press("Enter");
+        Locator search=page.getByRole(AriaRole.COMBOBOX,new Page.GetByRoleOptions().setName("할 일 또는 Jira 이슈 검색"));
+        page.waitForResponse(r->r.url().contains("/api/jira/issue-search?q=CT-42"),()->search.fill("CT-42"));
+        page.waitForCondition(()->!page.locator(".task-picker-empty").isVisible());
+        assertEquals(1,page.locator("#today-existing-task-options [role=option]").filter(new Locator.FilterOptions().setHasText("CT-42")).count());
+        search.press("Enter");
         page.locator("#existing-today-form [type=submit]").click();
         page.waitForCondition(()->!planUpdates.isEmpty());
         assertEquals("jira:CT-42",planUpdates.getLast().path("taskIds").get(0).asText());
         assertTrue(state.path("plan").findValuesAsText("id").contains("jira:CT-42"));
         assertEquals(0,updates.size());
         page.locator("#choose-today-issue").click();
-        page.locator("#today-jira-key").fill("CT-99");
-        page.locator("#today-jira-form [type=submit]").click();
-        page.locator("#add-jira-today").waitFor();
-        assertTrue(page.locator("#today-jira-result").textContent().contains("다른 담당자의 Jira 업무"));
+        search.fill("다른 담당자");
+        Locator remote=page.locator("#today-existing-task-options [role=option]").filter(new Locator.FilterOptions().setHasText("CT-99"));
+        remote.waitFor();
+        assertTrue(remote.innerText().contains("담당 다른 담당자"));
+        assertEquals(0,page.locator("#today-jira-form").count());
         String screenshots=System.getProperty("work.ui.picker.screenshots","");
         if(!screenshots.isBlank()){Path dir=Files.createDirectories(Path.of(screenshots));page.screenshot(new Page.ScreenshotOptions().setPath(dir.resolve("today-issue-desktop.png")));}
         page.setViewportSize(390,844);
         assertTrue((Boolean)page.locator("#modal").evaluate("el=>el.scrollWidth<=el.clientWidth+1"));
         if(!screenshots.isBlank())page.screenshot(new Page.ScreenshotOptions().setPath(Path.of(screenshots).resolve("today-issue-mobile.png")));
         page.setViewportSize(1440,1000);
-        page.locator("#today-jira-key").fill("CT-98");
-        assertEquals(0,page.locator("#add-jira-today").count());
-        page.locator("#today-jira-key").fill("CT-99");
-        page.locator("#today-jira-form [type=submit]").click();
-        page.locator("#add-jira-today").click();
+        search.fill("CT-98");
+        assertEquals(0,remote.count());
+        search.fill("CT-99");
+        remote.click();
+        page.locator("#existing-today-form [type=submit]").click();
         page.waitForCondition(()->updates.size()==1);
         assertEquals("CT-99",Json.text(updates.getFirst(),"jiraKey"));
         assertEquals("다른 담당자의 Jira 업무",Json.text(updates.getFirst(),"title"));

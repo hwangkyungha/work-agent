@@ -45,6 +45,18 @@ class JiraHttpTest {
         assertEquals("/jira/rest/api/3/issue/CT-123/worklog",path);assertEquals("doc",Json.text(received.path("comment"),"type"));assertTrue(authorization.startsWith("Basic "));
         assertTrue(received.path("comment").toString().contains("원인 분석"));
     }
+    @Test void planningSearchUsesExactKeysOrTitleTermsWithoutAssigneeFilter() throws Exception {
+        JiraClient jira=client("cloud","user@example.com");
+        response=Json.write(Json.obj("isLast",true,"issues",List.of(Json.obj("key","CT-99","fields",
+                Json.obj("summary","설치 스크립트 검토","assignee",Json.obj("displayName","다른 담당자"))))));
+        JsonNode match=jira.searchPlanIssues("설치 \"스크립트\"").getFirst();
+        assertEquals("GET",method);
+        assertEquals("/jira/rest/api/3/search/jql",path);
+        assertTrue(URLDecoder.decode(query,StandardCharsets.UTF_8).contains("jql=summary ~ \"설치 스크립트\" AND statusCategory != Done ORDER BY updated DESC&maxResults=20"));
+        assertEquals("다른 담당자",Json.text(match,"assignee"));
+        jira.searchPlanIssues("ct-99");
+        assertTrue(URLDecoder.decode(query,StandardCharsets.UTF_8).startsWith("jql=key = \"CT-99\" AND statusCategory != Done"));
+    }
     @Test void clientErrorsAreDefiniteButServerErrorsRemainUncertain() throws Exception {
         JiraClient client=client("server","");status=403;
         assertThrows(JiraClient.Rejected.class,()->client.addWorklog(LocalDate.of(2026,11,4),item()));status=503;

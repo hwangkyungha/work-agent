@@ -259,7 +259,7 @@ function renderToday() {
 }
 function chooseTodayIssue(){
   todayJiraIssue=null;
-  modal('오늘 할 일에 추가',`<form id="existing-today-form"><div class="field"><label for="today-existing-task">기존 할 일 검색</label><select id="today-existing-task" name="taskId" data-task-picker><option value="">업무를 선택하세요</option>${state.tasks.filter(t=>t.status!=='done'&&!planIds.includes(t.id)).map(t=>`<option value="${esc(t.id)}">${esc([t.jiraKey,t.title].filter(Boolean).join(' '))}</option>`).join('')}</select></div><div class="form-actions"><button type="submit" class="button primary">선택한 업무 추가</button></div></form><section class="today-jira-lookup"><h3>목록에 없는 Jira 이슈</h3><p class="hint">담당자와 관계없이 이슈 번호로 찾아 추가하세요. Jira 담당자와 상태는 바뀌지 않습니다.</p><form id="today-jira-form" class="quick-task"><label class="sr-only" for="today-jira-key">Jira 이슈 번호</label><input id="today-jira-key" name="jiraKey" placeholder="예: CT2612-530" required pattern="[A-Za-z][A-Za-z0-9_]*-[0-9]+"><button type="submit" class="button">찾기</button></form><div id="today-jira-result" aria-live="polite"></div></section>`);
+  modal('오늘 할 일에 추가',`<form id="existing-today-form"><div class="field"><label for="today-existing-task">할 일 또는 Jira 이슈 검색</label><select id="today-existing-task" name="taskId" data-task-picker><option value="">업무를 선택하세요</option>${state.tasks.filter(t=>t.status!=='done'&&!planIds.includes(t.id)).map(t=>`<option value="${esc(t.id)}">${esc([t.jiraKey,t.title].filter(Boolean).join(' '))}</option>`).join('')}</select></div><div class="form-actions"><button type="submit" class="button primary">선택한 업무 추가</button></div></form>`);
 }
 function filteredTasks(){const source=filter==='hidden'?state.hiddenTasks:state.tasks;return sortTasks(source.filter(t=>(filter==='hidden'||filter==='all'||(filter==='done'?t.status==='done':t.status!=='done'))&&(!projectFilter||(t.jiraKey?t.jiraKey.split('-')[0]:'local')===projectFilter)&&(!productFilter||t.product===productFilter)&&(!workTypeFilter||t.workType===workTypeFilter)&&(!taskSearch||(t.title+' '+t.jiraKey+' '+workGroup(t)).toLowerCase().includes(taskSearch.toLowerCase()))),taskSort);}
 function selectableTask(t){return `<div class="selectable-task"><input type="checkbox" data-select-task="${esc(t.id)}" aria-label="${esc(t.title)} 선택" ${selectedTasks.has(t.id)?'checked':''}>${taskRow(t,0,`<div class="row-actions">${!t.hidden&&t.status!=='done'?`<button data-today-toggle="${esc(t.id)}">${planIds.includes(t.id)?'오늘에서 제외':'오늘 추가'}</button>`:''}<details class="task-menu"><summary aria-label="${esc(t.title)} 더보기">···</summary><div><button data-edit-task="${esc(t.id)}">업무 편집</button><button data-hide-task="${esc(t.id)}" class="${t.jiraKey?'':'delete-task'}">${t.jiraKey?(t.hidden?'복원':'숨기기'):'삭제'}</button></div></details></div>`)}</div>`;}
@@ -433,26 +433,58 @@ function taskPickers(root){
     labels.forEach(label=>label.htmlFor=inputId);
     const input=$('input',picker),toggle=$('button',picker),popup=$('.task-picker-popup',picker),list=$('[role=listbox]',picker),empty=$('.task-picker-empty',picker);
     list.setAttribute('aria-label',labels.map(label=>label.textContent).join(' ')+' 검색 결과');
-    const options=[...select.options].map((option,index)=>({value:option.value,title:option.textContent,index}));
-    let choices=[],active=-1;
+    const options=[...select.options].map(option=>({value:option.value,title:option.textContent}));
+    const todayPicker=select.id==='today-existing-task';
+    const localKeys=todayPicker?new Set(allTasks().map(task=>task.jiraKey)):null;
+    let choices=[],active=-1,searchTimer,searchVersion=0;
     function highlight(){
       [...list.children].forEach((node,index)=>{node.classList.toggle('active',index===active);});
       if(active>=0){input.setAttribute('aria-activedescendant',list.children[active].id);list.children[active].scrollIntoView({block:'nearest'});}else input.removeAttribute('aria-activedescendant');
     }
-    function show(query=''){
+    function show(query='',remote=[],message=''){
       const words=query.toLocaleLowerCase().normalize('NFC').trim().split(/\s+/).filter(Boolean);
-      choices=options.filter(option=>!option.value||words.every(word=>option.title.toLocaleLowerCase().normalize('NFC').includes(word)));
-      list.innerHTML=choices.map(option=>`<button type="button" role="option" tabindex="-1" id="${listId}-${option.index}" data-choice="${option.index}" aria-selected="${option.value===select.value}">${esc(option.title)}</button>`).join('');
-      empty.hidden=!words.length||choices.some(option=>option.value);
+      const local=options.filter(option=>!option.value||words.every(word=>option.title.toLocaleLowerCase().normalize('NFC').includes(word)));
+      choices=local.concat(remote);
+      list.innerHTML=choices.map((option,index)=>`<button type="button" role="option" tabindex="-1" id="${listId}-${index}" data-choice="${index}" aria-selected="${option.value===select.value}">${esc(option.title)}${option.issue?`<small>Jira${option.issue.assignee?' · 담당 '+esc(option.issue.assignee):''}</small>`:''}</button>`).join('');
+      empty.textContent=message||'검색 결과가 없습니다. 검색어를 바꿔 보세요.';
+      empty.hidden=!message&&(!words.length||choices.some(option=>option.value));
       active=words.length?choices.findIndex(option=>option.value):choices.findIndex(option=>option.value===select.value);
       popup.hidden=false;input.setAttribute('aria-expanded','true');highlight();
     }
-    function close(){popup.hidden=true;input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');syncTaskPicker(select);}
-    function choose(option){select.value=option.value;close();select.dispatchEvent(new Event('change',{bubbles:true}));}
+    function search(){
+      const query=input.value.trim(),version=++searchVersion;
+      clearTimeout(searchTimer);
+      if(todayPicker){select.value='';todayJiraIssue=null;}
+      if(!todayPicker||!settings.jiraConfigured||query.length<2||query.length>160){show(query);return;}
+      show(query,[],'Jira에서도 검색하고 있습니다.');
+      const stale=()=>version!==searchVersion||!select.isConnected||!$('#modal').open;
+      searchTimer=setTimeout(async()=>{
+        if(stale())return;
+        try{
+          const issues=await api('/api/jira/issue-search?q='+encodeURIComponent(query));
+          if(stale())return;
+          const remote=issues.filter(issue=>!localKeys.has(issue.id)&&issue.status!=='done')
+            .map(issue=>({value:'remote:'+issue.id,title:issue.id+' '+issue.title,issue}));
+          show(query,remote);
+        }catch{if(!stale())show(query,[],'Jira 검색에 실패했습니다. 잠시 후 다시 검색하세요.');}
+      },350);
+    }
+    function close(){clearTimeout(searchTimer);searchVersion++;popup.hidden=true;input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');syncTaskPicker(select);}
+    function choose(option){
+      if(todayPicker){
+        todayJiraIssue=option.issue||null;
+        if(option.issue){
+          $('option[data-remote]',select)?.remove();
+          const selected=new Option(option.title,option.value);
+          selected.dataset.remote='true';select.add(selected);
+        }
+      }
+      select.value=option.value;close();select.dispatchEvent(new Event('change',{bubbles:true}));
+    }
     input.addEventListener('focus',()=>input.select());
     input.addEventListener('click',()=>{if(popup.hidden)show();});
-    input.addEventListener('input',event=>{if(!event.isComposing)show(input.value);});
-    input.addEventListener('compositionend',()=>show(input.value));
+    input.addEventListener('input',event=>{if(!event.isComposing)search();});
+    input.addEventListener('compositionend',search);
     input.addEventListener('blur',event=>{if(!event.relatedTarget||!$('#modal').contains(event.relatedTarget))close();});
     picker.addEventListener('task-picker-close',close);
     input.addEventListener('keydown',event=>{
@@ -468,7 +500,7 @@ function taskPickers(root){
     toggle.addEventListener('pointerdown',event=>event.preventDefault());
     toggle.addEventListener('click',()=>{if(popup.hidden){input.focus();show();}else close();});
     list.addEventListener('pointerdown',event=>event.preventDefault());
-    list.addEventListener('click',event=>{const option=event.target.closest('[data-choice]');if(option)choose(options[Number(option.dataset.choice)]);});
+    list.addEventListener('click',event=>{const option=event.target.closest('[data-choice]');if(option)choose(choices[Number(option.dataset.choice)]);});
     select.addEventListener('change',()=>syncTaskPicker(select));syncTaskPicker(select);
   });
 }
@@ -550,7 +582,6 @@ document.addEventListener('click',async event=>{
     if(b.dataset.addLogIssue)addWorklogIssue(b.dataset.addLogIssue);
     if(b.dataset.logFavorite){b.disabled=true;await api('/api/worklogs/favorite',{jiraKey:b.dataset.logFavorite,favorite:!favoriteIssue(b.dataset.logFavorite)});await load();}
     if(b.id==='choose-today-issue')chooseTodayIssue();
-    if(b.id==='add-jira-today'){if(!todayJiraIssue)throw new Error('Jira 이슈를 먼저 찾으세요.');b.disabled=true;const issue=todayJiraIssue;await api('/api/tasks',{title:issue.title,jiraKey:issue.id,product:issue.product,due:issue.due||'',today:true,date:state.date});$('#modal').close();await load();notice('오늘 할 일에 추가했습니다.');}
     if(b.id==='add-worklog'){$('#worklog-rows').insertAdjacentHTML('beforeend',worklogRow());rememberWorklog();updateTotal();}
     if(b.hasAttribute('data-remove-worklog')){b.closest('.worklog-input-row').remove();rememberWorklog();updateTotal();}
     if(b.id==='post-worklog'){b.disabled=true;await api('/api/worklogs/post',{date:worklogDay});await load();notice('등록 가능한 워크로그를 Jira에 등록했습니다. 미연결·시간 미입력 항목은 초안으로 유지됩니다.');}
@@ -596,8 +627,13 @@ document.addEventListener('submit',async event=>{
     if(form.id==='review-request'){await api('/api/reviews/request',{url:new FormData(form).get('url'),referenceUrls:String(new FormData(form).get('references')||'').split(/\r?\n/).map(url=>url.trim()).filter(Boolean)});await updateReviews();notice('PR 검토를 요청했습니다. 결과가 나오면 목록에 표시합니다.');}
     if(form.id==='pr-session-form'){await api('/api/reviews/session',{url:form.dataset.url,sessionId:form.elements.sessionId.value});$('#modal').close();await updateReviews();notice('PR 작업 세션 연결을 저장했습니다.');}
     if(form.id==='review-edit'){await api('/api/reviews/edit',{id:form.dataset.id,findingId:form.dataset.findingId,text:new FormData(form).get('text')});$('#modal').close();await updateReviews();notice('초안을 저장했습니다.');}
-    if(form.id==='existing-today-form'){const id=form.elements.taskId.value;if(!id)throw new Error('추가할 업무를 선택하세요.');await api('/api/plan/items',{date:state.date,taskIds:[id]});$('#modal').close();await load();notice('오늘 할 일에 추가했습니다.');}
-    if(form.id==='today-jira-form'){todayJiraIssue=null;$('#today-jira-result').textContent='이슈를 확인하고 있습니다.';try{const issue=await api('/api/jira/issue?key='+encodeURIComponent(form.elements.jiraKey.value.trim().toUpperCase()));todayJiraIssue=issue;$('#today-jira-result').innerHTML=`<article class="today-jira-preview"><div><strong>${esc(issue.title)}</strong><small>${issueLink(issue.id,issue.issueUrl)} · ${esc(issue.jiraStatus)}${issue.assignee?' · 담당 '+esc(issue.assignee):''}</small></div><button type="button" class="button primary" id="add-jira-today">오늘 추가</button></article>`;}catch(error){$('#today-jira-result').textContent='이슈를 찾지 못했습니다. 번호와 Jira 접근 권한을 확인하세요.';throw error;}}
+    if(form.id==='existing-today-form'){
+      const id=form.elements.taskId.value,issue=todayJiraIssue;
+      if(!id)throw new Error('추가할 업무를 선택하세요.');
+      if(issue)await api('/api/tasks',{title:issue.title,jiraKey:issue.id,product:issue.product,due:issue.due||'',today:true,date:state.date});
+      else await api('/api/plan/items',{date:state.date,taskIds:[id]});
+      $('#modal').close();await load();notice('오늘 할 일에 추가했습니다.');
+    }
     if(form.id==='quick-task-form'){await api('/api/tasks',{title:$('#quick-task-title').value.trim(),today:true,date:state.date});await load();notice('오늘 할 일에 추가했습니다.');}
     if(form.id==='worklog-favorite-form'){await api('/api/worklogs/favorite',{jiraKey:form.elements.jiraKey.value.trim().toUpperCase(),favorite:true});await load();notice('워크로그 즐겨찾기에 추가했습니다.');}
     if(form.id==='group-form'){const data={taskIds:JSON.parse(form.dataset.taskIds)},group=form.elements.workGroup.value.trim(),type=form.elements.workType.value;if(group!==form.dataset.initialGroup||form.dataset.clearGroup==='true')data.workGroup=group;if(type!=='__keep__')data.workType=type;if(!Object.hasOwn(data,'workGroup')&&!Object.hasOwn(data,'workType'))throw new Error('변경할 묶음이나 업무 성격을 지정하세요.');await api('/api/tasks/group',data);$('#modal').close();await load();notice('선택한 업무의 분류를 변경했습니다.');}
@@ -641,5 +677,3 @@ setInterval(async()=>{
 },30000);
 
 document.addEventListener('toggle',event=>{const group=event.target;if(group.matches('[data-ledger-detail]')){group.open?openLedgerDetails.add(group.dataset.ledgerDetail):openLedgerDetails.delete(group.dataset.ledgerDetail);if(group.open&&group.matches('[data-review-date]')&&group.dataset.reviewDate!==state.date&&group.dataset.reviewDate!==state.previousWorkDate&&!workDayCache.has(group.dataset.reviewDate)){fetchWorkDay(group.dataset.reviewDate).then(()=>{if(view==='worklog')renderWorklog();else if(view==='today')renderToday();}).catch(e=>notice(e.message));}}if(group.matches('[data-candidate-group]')){expandedCandidates.set(group.dataset.candidateGroup,group.open);}if(group.matches('[data-work-group]')){group.open?collapsedWorkGroups.delete(group.dataset.workGroup):collapsedWorkGroups.add(group.dataset.workGroup);}if(group.matches('.task-menu[open]'))document.querySelectorAll('.task-menu[open]').forEach(other=>{if(other!==group)other.open=false;});},true);
-
-document.addEventListener('input',event=>{if(event.target.id==='today-jira-key'){todayJiraIssue=null;$('#today-jira-result').replaceChildren();}});

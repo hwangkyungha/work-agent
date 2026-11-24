@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.*;
 import java.net.*;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.time.*;
 import java.util.*;
 
@@ -150,15 +151,35 @@ class JiraClient {
         return search(jql, "summary,status,assignee,created,updated,duedate,project,fixVersions,parent,issuetype,issuelinks");
     }
     List<JsonNode> search(String jql, String fields) throws Exception {
+        return search(jql, fields, Integer.MAX_VALUE);
+    }
+    List<ObjectNode> searchPlanIssues(String query) throws Exception {
+        String input = Normalizer.normalize(query, Normalizer.Form.NFC).strip();
+        if (input.length() < 2) return List.of();
+        if (input.length() > 160) throw new IllegalArgumentException("Jira 검색어는 160자 이내로 입력하세요.");
+        String key = input.toUpperCase(Locale.ROOT);
+        String terms = input.replaceAll("[^\\p{L}\\p{M}\\p{N}]+", " ").strip();
+        if (terms.length() < 2) return List.of();
+        String condition = WorkService.ISSUE.matcher(key).matches() ? "key = \"" + key + "\"" : "summary ~ \"" + terms + "\"";
+        loadSiteUrl();
+        return search(condition + " AND statusCategory != Done ORDER BY updated DESC", "summary,status,assignee,project,duedate", 20)
+                .stream().map(this::summarize).toList();
+    }
+    private List<JsonNode> search(String jql, String fields, int limit) throws Exception {
         List<JsonNode> rows = new ArrayList<>();
         int offset = 0;
         String token = "";
         while (true) {
-            String path = cloud() ? "/search/jql?jql=" + encode(jql) + "&maxResults=100&fields=" + encode(fields) + (token.isBlank() ? "" : "&nextPageToken=" + encode(token))
-                    : "/search?jql=" + encode(jql) + "&startAt=" + offset + "&maxResults=100&fields=" + encode(fields);
+            int pageSize = Math.min(100, limit - rows.size());
+            String options = "&maxResults=" + pageSize + "&fields=" + encode(fields);
+            String path = cloud() ? "/search/jql?jql=" + encode(jql) + options + (token.isBlank() ? "" : "&nextPageToken=" + encode(token))
+                    : "/search?jql=" + encode(jql) + "&startAt=" + offset + options;
             JsonNode result = request("GET", path, null);
             JsonNode page = result.path("issues");
-            for (JsonNode issue : page) rows.add(issue);
+            for (JsonNode issue : page) {
+                rows.add(issue);
+                if (rows.size() == limit) return rows;
+            }
             offset += page.size();
             if (cloud()) {
                 token = Json.text(result, "nextPageToken");
