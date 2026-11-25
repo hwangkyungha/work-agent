@@ -14,6 +14,7 @@ final class PullRequestReview implements AutoCloseable {
     @FunctionalInterface interface Model {
         JsonNode complete(String prompt) throws Exception;
         default Model forReview(ObjectNode job, JsonNode metadata) throws Exception { return this; }
+        default String equivalentBase(ObjectNode previous, ObjectNode current, JsonNode metadata) throws Exception { return ""; }
     }
     private final WorkService service;
     private final BitbucketClient api;
@@ -84,6 +85,7 @@ final class PullRequestReview implements AutoCloseable {
         ObjectNode row = Json.obj("id", id, "url", pr.url(), "title", Json.text(metadata, "title"), "sourceCommit", source, "destinationCommit", destination,
                 "parentCommentId", parent, "commentRevision", commentRevision, "kind", parent > 0 ? "reply" : "review", "status", "queued", "automatic", automatic && !validation, "validation", validation,
                 "createdAt", service.time.instant().toString(), "findings", List.of(), "limitations", List.of(), "summary", "", "referenceUrls", references);
+        if (rerun) row.put("rerun", true);
         row.set("repositorySources", sources.configured(pr.workspace() + "/" + pr.repository()).deepCopy());
         service.store.put("prReview", row);
         enqueue(row);
@@ -100,7 +102,7 @@ final class PullRequestReview implements AutoCloseable {
         if (active.add(id)) worker.submit(() -> {
             try {
                 if (!needsAutomaticSave(row)) run(id);
-                if (row.path("automatic").asBoolean()) savePending(id);
+                if (row.path("automatic").asBoolean() && !required(id).hasNonNull("reusedReviewId")) savePending(id);
             }
             catch (Exception e) { ObjectNode current = service.store.get("prReview", id); if (!Set.of("delivery-unknown", "stale").contains(Json.text(current, "status"))) current.put("status", "failed"); current.put("error", SlackConnection.friendly(e)); save(current); }
             finally { active.remove(id); }
@@ -113,13 +115,16 @@ final class PullRequestReview implements AutoCloseable {
         }
     }
     private static boolean needsAutomaticSave(JsonNode row) {
-        return Json.text(row, "status").equals("ready") && row.path("automatic").asBoolean() && hasDraft(row);
+        return Json.text(row, "status").equals("ready") && row.path("automatic").asBoolean() && !row.hasNonNull("reusedReviewId") && hasDraft(row);
     }
     static boolean inProgress(JsonNode row) {
         return Set.of("queued", "running", "saving").contains(Json.text(row, "status")) || needsAutomaticSave(row);
     }
     static boolean succeeded(JsonNode row) {
         return Set.of("ready", "saved").contains(Json.text(row, "status"));
+    }
+    static boolean replyNotNeeded(JsonNode row) {
+        return row.path("parentCommentId").asLong() > 0 && succeeded(row) && Json.text(row, "replyKind").equals("none");
     }
     private static boolean hasDraft(JsonNode row) {
         return row.path("parentCommentId").asLong() > 0 ? !Json.text(row, "reply").isBlank() : !row.path("findings").isEmpty();
@@ -138,7 +143,7 @@ final class PullRequestReview implements AutoCloseable {
             case "saved" -> reply ? "Bitbucket에 답변 초안을 저장했습니다." : "Bitbucket에 비공개 리뷰 초안 " + row.path("findings").size() + "건을 저장했습니다.";
             case "ready" -> hasDraft(row)
                     ? (reply ? "답변 초안을 작성했습니다." : "검토 결과 " + row.path("findings").size() + "건을 정리했습니다.") + " 업무 수첩의 PR 리뷰에서 확인할 수 있습니다."
-                    : reply ? "근거가 충분한 답변을 만들지 못했습니다." : "현재 확인한 자료에서 확정한 신규 지적은 없습니다.";
+                    : replyNotNeeded(row) ? "답변이 필요한 댓글이 아닙니다." : reply ? "답변에 필요한 근거를 업무 수첩에 남겼습니다." : "현재 확인한 자료에서 확정한 신규 지적은 없습니다.";
             case "stale" -> "검토 중 PR이나 댓글이 바뀌었습니다. 다시 검토해 주세요.";
             case "delivery-unknown" -> "초안 저장 결과를 확인하지 못했습니다. Bitbucket에서 확인해 주세요.";
             default -> "검토를 완료하지 못했습니다. 업무 수첩의 PR 리뷰에서 원인을 확인해 주세요.";
@@ -174,51 +179,64 @@ final class PullRequestReview implements AutoCloseable {
         pinCommits(row,metadata);
         if(!Json.text(metadata,"state").equals("OPEN")||!Json.text(metadata.path("source").path("commit"),"hash").equals(Json.text(row,"sourceCommit")))throw new IllegalStateException("PR head가 바뀌었거나 닫혔습니다. 다시 요청하세요.");
         row.put("destinationCommit",Json.text(metadata.path("destination").path("commit"),"hash"));
+        List<JsonNode> comments = api.comments(pr);
+        long parent = row.path("parentCommentId").asLong();
+        if (parent == 0) {
+            row.put("reviewBackground", ReviewReuse.background(metadata, comments));
+            if (reuseReview(row, metadata)) return;
+        }
+        JsonNode incoming = parent == 0 ? Json.object() : commentWithLocation(comments, parent);
         Model prepared = model.forReview(row,metadata);
         Model execution = prompt -> {
             JsonNode result = prepared.complete(prompt);
             if (result.hasNonNull("modelInfo")) row.set("modelInfo", result.get("modelInfo"));
             return result;
         };
-        boolean project=Json.text(row,"executionMode").equals("project-session")&&row.path("parentCommentId").asLong()==0;
-        ReviewContext context = new ReviewContext(api, pr, service.store, true,project?java.nio.file.Path.of(Json.required(row,"reviewDirectory")):null,metadata);
+        boolean project=Json.text(row,"executionMode").equals("project-session");
+        ReviewContext context = new ReviewContext(api, pr, service.store, parent == 0, project?java.nio.file.Path.of(Json.required(row,"reviewDirectory")):null, metadata,
+                parent == 0 ? null : Json.text(incoming.path("inline"), "path"));
         if (!context.sourceCommit.equals(Json.text(row, "sourceCommit"))) throw new IllegalStateException("PR head가 바뀌었습니다. 다시 요청하세요.");
         row.put("destinationCommit", context.destinationCommit);
         Set<String> referencePaths = new LinkedHashSet<>();
         for (JsonNode reference : row.path("referenceUrls")) referencePaths.add(context.includeReference(api, reference.asText()));
         referencePaths.addAll(sources.attach(context, row, execution));
-        List<JsonNode> comments = api.comments(pr);
         String owner = Json.required(api.get("/user"), "uuid");
-        long parent = row.path("parentCommentId").asLong();
         List<ObjectNode> accepted = new ArrayList<>(); List<String> summaries = new ArrayList<>(), limitations = new ArrayList<>(context.limitations);
         int checked = 0, rejected = 0;
         if (parent > 0) {
-            JsonNode incoming = comments.stream().filter(comment -> comment.path("id").asLong() == parent && !comment.path("deleted").asBoolean()).findFirst().orElseThrow(() -> new IllegalArgumentException("답변할 댓글을 찾지 못했습니다."));
             if (!Json.text(context.metadata.path("author"), "uuid").equals(owner) || Json.text(incoming.path("user"), "uuid").equals(owner)) throw new IllegalArgumentException("내 PR에 다른 사람이 남긴 댓글에만 답변할 수 있습니다.");
-            context.includeCommentFile(api, incoming);
             JsonNode result = reviewReply(context, comments, incoming, execution);
             includeCitations(context, result);
             String kind = Json.text(result, "replyKind");
             row.put("replyKind", kind);
             boolean valid = Set.of("fact", "design").contains(kind) && !Json.text(result, "reply").isBlank()
                     && Json.text(result, "replyConfidence").equals("high") && result.path("replyEvidence").isArray() && !result.path("replyEvidence").isEmpty();
+            List<JsonNode> checkedEvidence = new ArrayList<>();
             for (JsonNode evidence : result.path("replyEvidence")) {
-                if (context.validEvidence(evidence)) continue;
+                if (context.validEvidence(evidence)) { checkedEvidence.add(evidence); continue; }
                 valid = false;
                 limitations.add("답변의 인용을 현재 자료에서 확인하지 못했습니다. " + Json.text(evidence, "path") + ":" + evidence.path("line").asInt());
             }
             if (valid) row.put("reply", Json.text(result, "reply"));
             else {
                 row.remove("reply");
-                limitations.add("현재 근거만으로 확신할 수 있는 답변을 만들지 못했습니다.");
+                if (!kind.equals("none")) {
+                    List<String> missing = new ArrayList<>();
+                    result.path("limitations").forEach(value -> missing.add(value.asText()));
+                    missing.addAll(limitations);
+                    if (missing.isEmpty()) missing.add(checkedEvidence.isEmpty() ? "답변을 뒷받침할 코드나 명세의 인용을 확인하지 못했습니다." : "확인한 인용만으로 질문의 결론까지 판단하기 어렵습니다.");
+                    row.set("replyAssessment", Json.obj("confirmed", checkedEvidence.isEmpty() ? "" : Json.text(result, "summary"),
+                            "evidence", checkedEvidence, "files", context.documents.stream().map(doc -> Json.text(doc, "path")).distinct().limit(8).toList(), "missing", missing.stream().distinct().limit(8).toList()));
+                }
             }
             row.set("replyEvidence", valid ? result.path("replyEvidence") : Json.MAPPER.createArrayNode());
             if (valid) row.put("slackSummary", Json.text(result, "slackSummary"));
-            summaries.add(Json.text(result, "summary"));
+            if (valid) summaries.add(Json.text(result, "summary"));
             result.path("limitations").forEach(value -> limitations.add(value.asText()));
         } else if(project) {
             row.put("projectDirect",true);save(row);
             JsonNode result=projectReview(row,context,comments,referencePaths,execution);
+            ReviewReuse.rememberEvidence(row, context, result);
             row.put("slackSummary", Json.text(result, "slackSummary"));
             rejected=row.path("rejectedCount").asInt();
             Set<String> seen=existingAnchors(comments,owner);
@@ -282,6 +300,30 @@ final class PullRequestReview implements AutoCloseable {
         row.put("finishedAt",service.time.instant().toString());
         save(row);
     }
+    private boolean reuseReview(ObjectNode row, JsonNode metadata) throws Exception {
+        if (!row.path("automatic").asBoolean() || row.path("rerun").asBoolean() || !ReviewReuse.comparable(row)) return false;
+        String url = Json.text(row,"url"), head = Json.text(row,"sourceCommit");
+        ObjectNode previous = service.store.list("prReview").reversed().stream().filter(candidate -> url.equals(Json.text(candidate,"url"))
+                && candidate.path("parentCommentId").asLong() == 0 && !candidate.path("validation").asBoolean()
+                && !head.equals(Json.text(candidate,"sourceCommit")) && succeeded(candidate) && !inProgress(candidate)).findFirst().orElse(null);
+        if (previous == null || !previous.path("reviewEvidencePaths").isArray()) return false;
+        String base;
+        try { base = model.equivalentBase(previous, row, metadata); }
+        catch (IllegalStateException | java.io.IOException e) { return false; }
+        if (base.isBlank()) return false;
+        JsonNode latest = api.reviewPullRequest(BitbucketClient.PullRequest.parse(url));
+        if (!Json.text(latest,"state").equals("OPEN") || !head.equals(Json.text(latest.path("source").path("commit"),"hash"))
+                || !Json.text(row,"destinationCommit").equals(Json.text(latest.path("destination").path("commit"),"hash"))) return false;
+        for (String field : List.of("status","findings","limitations","summary","readingGuide","slackSummary","modelInfo","reviewEvidencePaths","fileCount","rejectedCount"))
+            if (previous.has(field)) row.set(field, previous.get(field));
+        Set<String> equivalent = new LinkedHashSet<>();
+        previous.path("equivalentHeads").forEach(value -> equivalent.add(value.asText()));
+        equivalent.add(Json.text(previous,"sourceCommit"));
+        row.set("equivalentHeads",Json.MAPPER.valueToTree(equivalent));
+        row.put("baseCommit",base).put("reusedReviewId",Json.text(previous,"id")).put("notified",true).put("finishedAt",service.time.instant().toString());
+        save(row);
+        return true;
+    }
     private static Set<String> existingAnchors(List<JsonNode> comments,String owner) {
         Set<String> seen=new HashSet<>();
         for(JsonNode comment:comments)if(!comment.path("deleted").asBoolean()&&owner.equals(Json.text(comment.path("user"),"uuid"))&&Json.text(comment.path("content"),"raw").contains("<!-- work-agent-review:")) {
@@ -298,11 +340,11 @@ final class PullRequestReview implements AutoCloseable {
         row.put("reviewInputDirectory",inputs.toString());
         String request="프로젝트에서 PR 전체를 직접 검토하세요. 변경 내용을 크기별 묶음으로 나누지 않습니다. Read/Grep/Glob으로 아래 diff 본문과 경로 목록을 먼저 확인하세요. diff가 길면 범위를 나누어 읽고, 검색 결과만으로 검토를 끝내지 마세요. 동작이나 계약이 바뀌는 부분은 현재 코드·현행 명세·실제 호출부·관련 테스트 본문을 직접 열어 대조하세요. 어떤 파일을 얼마나 읽을지는 스스로 선택하되 읽지 않은 내용은 확인했다고 쓰지 마세요. 같은 문구 치환·이름 변경은 패턴으로 확인하고 동작이나 계약이 달라질 수 있는 부분에 집중하세요. 파일 전체와 이전 대화 내용을 반복해서 복사하지 마세요.\n"
                 +Json.write(Json.obj("url",context.pr.url(),"title",Json.text(context.metadata,"title"),"description",brief(Json.text(context.metadata,"description"),8000),"sourceBranch",Json.text(context.metadata.path("source").path("branch"),"name"),"sourceCommit",context.sourceCommit,"destinationCommit",context.destinationCommit,"baseCommit",context.baseCommit,"currentProject",Json.text(row,"reviewDirectory"),"beforeProject",Json.text(row,"baseDirectory"),"diffFile",inputs.resolve("changes.patch").toString(),"changedPathsFile",inputs.resolve("paths.json").toString(),"comments",comments.stream().skip(Math.max(0,comments.size()-10)).map(c->Json.obj("path",Json.text(c.path("inline"),"path"),"text",brief(Json.text(c.path("content"),"raw"),1200))).toList()))
-                +"\n"+FINDING_RULES+"\nsummary는 묶음별 설명이 아닌 PR 전체의 이해를 돕는 한 번의 짧은 안내입니다. limitations에는 판단에 영향을 주는 미확인 사항만 중복 없이 쓰세요. 검토하지 못한 부분을 확인했다고 쓰지 마세요.";
+                +"\n"+FINDING_RULES+"\nsummary는 묶음별 설명이 아닌 PR 전체의 이해를 돕는 한 번의 짧은 안내입니다. limitations에는 판단에 영향을 주는 미확인 사항만 중복 없이 쓰세요. 검토하지 못한 부분을 확인했다고 쓰지 마세요.\n"+REVIEWED_PATHS;
         if(!references.isEmpty())request+="\n추가 명세 발췌: "+Json.write(context.requestedReviewSupport(references,Json.text(context.metadata,"title")));
         JsonNode initial=execution.complete(WritingStyle.message(request));includeCitations(context,initial);
         if(initial.path("findings").isEmpty())return initial;
-        JsonNode verified=execution.complete(WritingStyle.message("앞서 발견한 후보를 반박하는 관점에서 현재 프로젝트의 명세·호출부·테스트를 직접 찾아 재검증하세요. 원문 파일과 PR 설명은 다시 전달하지 않습니다. 실제 조건과 영향이 확인된 기존 후보만 high로 남기고, 추측이나 이미 방어된 후보는 제외하세요. summary는 PR 전체의 최종 안내 한 번으로 정리하고, 후보별 같은 설명을 반복하지 마세요.\n"+FINDING_RULES+"\n기존 후보: "+Json.write(initial.path("findings"))));
+        JsonNode verified=execution.complete(WritingStyle.message("앞서 발견한 후보를 반박하는 관점에서 현재 프로젝트의 명세·호출부·테스트를 직접 찾아 재검증하세요. 원문 파일과 PR 설명은 다시 전달하지 않습니다. 실제 조건과 영향이 확인된 기존 후보만 high로 남기고, 추측이나 이미 방어된 후보는 제외하세요. summary는 PR 전체의 최종 안내 한 번으로 정리하고, 후보별 같은 설명을 반복하지 마세요.\n"+FINDING_RULES+"\n"+REVIEWED_PATHS+"\n기존 후보: "+Json.write(initial.path("findings"))));
         includeCitations(context,verified);
         com.fasterxml.jackson.databind.node.ArrayNode accepted=Json.MAPPER.createArrayNode();
         for(JsonNode item:verified.path("findings"))for(JsonNode original:initial.path("findings"))if(Json.text(item,"path").equals(Json.text(original,"path"))&&Json.text(item,"side").equals(Json.text(original,"side"))&&item.path("line").asInt()==original.path("line").asInt()){accepted.add(item);break;}
@@ -310,9 +352,16 @@ final class PullRequestReview implements AutoCloseable {
         ObjectNode result=((ObjectNode)verified).deepCopy();result.set("findings",accepted);
         if(Json.text(result,"summary").isBlank())result.put("summary",Json.text(initial,"summary"));
         if(Json.text(result,"slackSummary").isBlank())result.put("slackSummary",Json.text(initial,"slackSummary"));
+        if (initial.path("reviewedPaths").isArray() && verified.path("reviewedPaths").isArray()) {
+            Set<String> paths = new LinkedHashSet<>();
+            initial.path("reviewedPaths").forEach(path -> paths.add(path.asText()));
+            verified.path("reviewedPaths").forEach(path -> paths.add(path.asText()));
+            result.set("reviewedPaths",Json.MAPPER.valueToTree(paths));
+        } else result.remove("reviewedPaths");
         Set<String> limits=new LinkedHashSet<>();initial.path("limitations").forEach(v->limits.add(v.asText()));verified.path("limitations").forEach(v->limits.add(v.asText()));result.set("limitations",Json.MAPPER.valueToTree(limits));
         return result;
     }
+    private static final String REVIEWED_PATHS = "reviewedPaths에는 결론과 남은 판단에 실제로 사용한 저장소 파일의 상대 경로를 빠짐없이 적으세요. 줄 번호와 절대 경로는 쓰지 마세요. diff만으로 판단한 경우 빈 배열, 증거 파일을 모두 열거할 수 없으면 null을 쓰세요.";
     private static final String FINDING_RULES = """
             summary에는 결함 유무와 별개로 PR의 목적, 주요 변경 흐름과 읽을 파일 순서, 확인한 테스트와 실행하지 않은 테스트, 결정이 필요한 설계 사항을 간결하게 설명하세요. 코드로 확인한 사실과 설계 제안 및 미확인 내용을 구분하세요.
             slackSummary는 Slack 읽는 사람이 이 변경이 무엇을 하는지 알 수 있도록 핵심 동작을 1~2문장으로 씁니다. 제목·소제목·파일 목록·검토 결과 건수·결함 판정은 생략하세요. 결함 판정과 의견은 findings에서 따로 확인합니다.
@@ -367,7 +416,8 @@ final class PullRequestReview implements AutoCloseable {
     private JsonNode reviewReply(ReviewContext context, List<JsonNode> comments, JsonNode incoming, Model execution) throws Exception {
         String background = replyBackground(context, comments, incoming);
         String requirements = """
-                수정이나 테스트를 실행했다고 말하지 마세요. 답할 근거가 부족하면 reply를 비우고 limitations에 부족한 정보를 쓰세요.
+                댓글이 달린 파일의 줄과 그 동작을 부르는 코드부터 확인하세요. 수정이나 테스트를 실행했다고 말하지 마세요.
+                답할 근거가 부족하면 reply를 비우세요. 그래도 원문을 확인한 사실이 있으면 summary에 적고, 그 사실의 정확한 줄을 replyEvidence에 넣으세요. 결론을 내려면 어떤 호출부·명세·실행 조건이 더 필요한지 limitations에 구체적으로 적으세요.
                 replyEvidence에는 판단에 실제로 사용한 코드나 명세의 파일 경로, side, 줄 번호와 그 줄 전체를 그대로 인용하세요.
                 replyConfidence=high는 답변이 말하는 사실과 제시한 판단을 근거로 뒷받침할 수 있을 때만 사용하세요.
                 답변을 작성하는 경우 slackSummary에는 reply의 결론과 핵심 근거를 소제목 없이 1~2문장으로 쓰세요. reply가 비어 있으면 slackSummary도 비우세요.
@@ -376,25 +426,34 @@ final class PullRequestReview implements AutoCloseable {
         JsonNode classification = execution.complete(background + """
 
                 댓글 유형만 분류하세요. 현재 동작 확인이면 replyKind=fact, 변경 의견이나 선택을 묻는 댓글이면 replyKind=design,
-                답변할 질문이나 제안이 없으면 replyKind=none을 출력하세요. reply, findings, replyEvidence, relatedPaths는 비우세요.
+                답변할 질문이나 제안이 없으면 replyKind=none을 출력하세요. 확인했다는 인사나 진행 예정 안내도 none입니다. reply, findings, replyEvidence, relatedPaths는 비우세요.
                 """);
         String kind = Json.text(classification, "replyKind");
         if (!Set.of("fact", "design").contains(kind)) return classification;
+        context.includeCommentFile(api, incoming);
+        String inlinePath = Json.text(incoming.path("inline"), "path");
+        if (inlinePath.isBlank()) {
+            String comment = Json.text(incoming.path("content"),"raw").toLowerCase(Locale.ROOT);
+            for (String path : context.currentPaths.stream().distinct().sorted(Comparator.comparing((String path) -> !comment.contains(path.substring(path.lastIndexOf('/')+1).toLowerCase(Locale.ROOT)))).limit(4).toList())
+                context.includeCurrent(api,path);
+        }
         Set<String> related = Set.of();
         String instructions = "replyKind=fact로 답하고, 현재 동작을 근거로 확인한 사실만 설명하세요.";
         String verification = "질문에 답했는지 확인하고, 확인할 수 없는 동작이나 실행하지 않은 결과를 사실처럼 썼으면 reply를 비우세요.";
-        if (kind.equals("design")) {
+        if (kind.equals("design") || (!inlinePath.isBlank() && !context.usesLocalProject())) {
             Set<String> paths = context.relatedFileCandidates(api, incoming);
             List<String> changed = context.changed.keySet().stream().filter(key -> key.startsWith("new:")).map(key -> key.substring(4)).toList();
             JsonNode plan = execution.complete(background + "\n변경 파일 경로(JSON):\n" + Json.write(changed)
                     + "\n선택 가능한 현재 커밋의 파일 경로(JSON):\n" + Json.write(paths) + """
 
-                    댓글의 변경 제안을 판단하려면 어떤 명세와 호출부를 읽어야 하는지 고르세요.
+                    댓글에 답하려면 어떤 명세와 호출부를 읽어야 하는지 고르세요.
                     변경 파일 경로와 댓글을 참고해, 결론을 바꿀 수 있는 현행 명세와 변경되지 않은 호출부를 우선 고르세요.
                     같은 내용을 설명하는 자료가 여럿이면 가장 직접적인 근거만 고르세요.
-                    위 목록에 있는 정확한 파일 경로를 최대 4개 relatedPaths에 넣으세요. replyKind=design으로 출력하고 reply와 findings는 비우세요.
-                    """);
+                    위 목록에 있는 정확한 파일 경로를 최대 4개 relatedPaths에 넣으세요. reply와 findings는 비우세요.
+                    """ + "replyKind=" + kind + "로 출력하세요.");
             related = context.includeRelatedFiles(api, paths, plan.path("relatedPaths"));
+        }
+        if (kind.equals("design")) {
             instructions = """
                     replyKind=design으로 답하세요. 댓글이 제안한 변경을 수용할지, 조건부로 수용할지, 보류할지와 판단 근거를 먼저 쓰세요.
                     제안에 여러 동작이나 계약 변경이 포함되면 각각 판단하세요. 현행 명세, 호출부와 다른 경로에 미치는 영향을 확인하세요.
@@ -416,6 +475,7 @@ final class PullRequestReview implements AutoCloseable {
         JsonNode candidate = execution.complete(WritingStyle.message(background + "\n검토 자료(JSON):\n" + Json.write(documents) + "\n" + requirements + instructions));
         if (!Json.text(candidate, "replyKind").equals(kind)) return Json.obj("replyKind", kind);
         if (Json.text(candidate, "reply").isBlank()) return candidate;
+        includeCitations(context, candidate);
         String draft = Json.write(Json.obj("reply", candidate.path("reply"), "replyEvidence", candidate.path("replyEvidence")));
         List<ObjectNode> excerpts = context.replyExcerpts(candidate.path("replyEvidence"), related,
                 Json.text(incoming.path("content"), "raw"), Json.text(candidate, "reply"));
@@ -427,6 +487,21 @@ final class PullRequestReview implements AutoCloseable {
             return Json.obj("replyKind", kind, "limitations", List.of("답변 검증 중 댓글 유형이 바뀌었습니다."));
         }
         return result;
+    }
+    private static JsonNode commentWithLocation(List<JsonNode> comments, long id) {
+        Map<Long,JsonNode> byId = new HashMap<>();
+        comments.stream().filter(comment -> !comment.path("deleted").asBoolean()).forEach(comment -> byId.put(comment.path("id").asLong(),comment));
+        JsonNode incoming = byId.get(id);
+        if (incoming == null) throw new IllegalArgumentException("답변할 댓글을 찾지 못했습니다.");
+        Set<Long> visited = new HashSet<>();
+        for (JsonNode ancestor = incoming; ancestor != null && visited.add(ancestor.path("id").asLong()); ancestor = byId.get(ancestor.path("parent").path("id").asLong())) {
+            if (Json.text(ancestor.path("inline"),"path").isBlank()) continue;
+            if (ancestor == incoming) return incoming;
+            ObjectNode located = ((ObjectNode)incoming).deepCopy();
+            located.set("inline",ancestor.path("inline"));
+            return located;
+        }
+        return incoming;
     }
     private String replyBackground(ReviewContext context, List<JsonNode> comments, JsonNode incoming) {
         long parent = incoming.path("parent").path("id").asLong();
@@ -493,6 +568,7 @@ final class PullRequestReview implements AutoCloseable {
     synchronized ObjectNode savePending(String id) throws Exception {
         ObjectNode row = required(id);
         if (row.path("validation").asBoolean()) throw new IllegalArgumentException("검증용 실행은 Bitbucket에 저장할 수 없습니다.");
+        if (row.hasNonNull("reusedReviewId")) throw new IllegalArgumentException("이전 검토를 재사용했습니다. 새 초안은 다시 검토한 뒤 저장하세요.");
         if (!Set.of("ready", "saved", "delivery-unknown").contains(Json.text(row, "status"))) return row;
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.text(row, "url"));
         JsonNode current = api.reviewPullRequest(pr);
@@ -534,6 +610,7 @@ final class PullRequestReview implements AutoCloseable {
     }
     synchronized ObjectNode edit(JsonNode input) {
         ObjectNode row = required(Json.required(input, "id"));
+        if (row.hasNonNull("reusedReviewId")) throw new IllegalArgumentException("이전 검토를 재사용했습니다. 초안을 편집하려면 다시 검토하세요.");
         if (!Json.text(row, "status").equals("ready")) throw new IllegalArgumentException("Bitbucket에 저장하기 전 초안만 편집할 수 있습니다.");
         if (row.path("parentCommentId").asLong() > 0) row.put("reply", Json.required(input, "text"));
         else { boolean found = false; for (JsonNode finding : row.path("findings")) if (Json.text(finding, "id").equals(Json.text(input, "findingId"))) { ((ObjectNode) finding).put("comment", Json.required(input, "text")); found = true; } if (!found) throw new IllegalArgumentException("수정할 댓글을 찾지 못했습니다."); }

@@ -114,6 +114,73 @@ class ProjectReviewModelTest {
         assertEquals(base,ReviewWorkspaces.git(clone,"rev-parse","HEAD").trim());
         assertEquals("keep me",Files.readString(clone.resolve("owner-uncommitted.txt")));
     }
+    @Test void automaticReviewReusesUnchangedInputsAfterRebaseAndChangeCleanup() throws Exception {
+        Path plan = clone.resolve("openspec/changes/example/brief.md");
+        Files.createDirectories(plan.getParent());
+        Files.writeString(plan,"working notes");
+        Files.writeString(clone.resolve("caller.go"),"unchanged caller");
+        base = commitPaths("caller", "caller.go");
+        String originalBase = base;
+        Files.writeString(clone.resolve("file.txt"),"after\n");
+        head = commitPaths("change with notes", "file.txt", "openspec/changes/example/brief.md");
+        String url = "https://bitbucket.org/team/repo/pull-requests/1";
+        int[] calls = {0};
+        ProjectReviewModel model = new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,dir,engine,session,fork,saved)->{
+            calls[0]++;
+            return Json.obj("summary","review summary","findings",List.of(),"reviewedPaths",List.of("caller.go"));
+        });
+        BitbucketClient api = projectApi(new int[]{0});
+        try (PullRequestReview reviews = new PullRequestReview(service,api,model)) {
+            List<String> notices = new ArrayList<>();
+            try (ReviewMonitor monitor = new ReviewMonitor(service,api,reviews,config,(text,review)->notices.add(text))) {
+                ObjectNode first = awaitReview(reviews.request(url,0,true));
+                assertEquals("ready",Json.text(first,"status"),Json.text(first,"error"));
+                reviews.list.mark(Json.obj("id",Json.text(first,"id"),"reviewed",true));
+                monitor.notifyCompleted();
+
+                ReviewWorkspaces.git(clone,"checkout","--detach",originalBase);
+                Files.writeString(clone.resolve("unrelated.txt"),"unrelated change");
+                base = commitPaths("new baseline", "unrelated.txt");
+                Files.writeString(clone.resolve("file.txt"),"after\n");
+                head = commitPaths("same change without notes", "file.txt");
+                ObjectNode reused = awaitReview(reviews.request(url,0,true));
+                assertEquals(Json.text(first,"id"),Json.text(reused,"reusedReviewId"),Json.text(reused,"error"));
+                assertEquals(head,Json.text(reused,"sourceCommit"));
+                assertTrue(reviews.list.decorate(List.of(reused)).getFirst().path("userReviewed").asBoolean());
+                assertEquals(1,calls[0]);
+                monitor.notifyCompleted();
+                assertEquals(1,notices.size());
+                assertThrows(IllegalArgumentException.class,()->reviews.savePending(Json.text(reused,"id")));
+
+                ReviewWorkspaces.git(clone,"checkout","--detach",base);
+                Files.writeString(clone.resolve("caller.go"),"changed evidence");
+                base = commitPaths("different caller", "caller.go");
+                Files.writeString(clone.resolve("file.txt"),"after\n");
+                head = commitPaths("same change with different caller", "file.txt");
+                ObjectNode rerun = awaitReview(reviews.request(url,0,true));
+                assertEquals("ready", Json.text(rerun,"status"),Json.text(rerun,"error"));
+                assertFalse(rerun.has("reusedReviewId"));
+                assertEquals(2,calls[0]);
+            }
+        }
+    }
+    private String commitPaths(String message, String... paths) throws Exception {
+        List<String> add = new ArrayList<>(List.of("add","--"));
+        add.addAll(List.of(paths));
+        ReviewWorkspaces.git(clone,add.toArray(String[]::new));
+        ReviewWorkspaces.git(clone,"commit","-m",message);
+        return ReviewWorkspaces.git(clone,"rev-parse","HEAD").trim();
+    }
+    private ObjectNode awaitReview(ObjectNode job) throws Exception {
+        String id = Json.required(job,"id");
+        long deadline = System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(12);
+        ObjectNode row = store.get("prReview",id);
+        while (PullRequestReview.inProgress(row) && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+            row = store.get("prReview",id);
+        }
+        return row;
+    }
     @Test void authorReplyForksTheOriginalToolSessionThenResumesTheReplySession() throws Exception {
         store.put("session",Json.obj("id","codex:original","source","codex","session","original","cwd",clone.toString(),"name","CT-42 기능 개선"));
         List<String> sessions=new ArrayList<>();List<Boolean> forks=new ArrayList<>();

@@ -289,6 +289,67 @@ class PullRequestReviewTest {
         assertEquals(Json.text(first, "id"), Json.text(reviews.request(url, 7, true), "id"));
         assertEquals(answeredCalls, calls.get());
     }
+    @Test void largePrCommentUsesItsFileAndCallerAndKeepsPartialEvidenceLocal() throws Exception {
+        AtomicInteger diffRequests = new AtomicInteger(), statsRequests = new AtomicInteger();
+        String caller = "caller.go", callerLine = "return loadConfig(root)";
+        api = new FakeApi(new Config(temporary.resolve("none"),Map.of())) {
+            @Override String request(String method,String path,JsonNode body) {
+                diffRequests.incrementAndGet();
+                return "x".repeat(1_500_001);
+            }
+            @Override List<JsonNode> pages(String path) {
+                statsRequests.incrementAndGet();
+                return super.pages(path);
+            }
+            @Override JsonNode sourceDirectory(String repository,String commit,String directory,int depth) {
+                return Json.obj("values",List.of(Json.obj("type","commit_file","path",caller)));
+            }
+            @Override String source(String repository,String commit,String path) throws Exception {
+                return path.equals(caller) ? callerLine : super.source(repository,commit,path);
+            }
+        };
+        api.author = "owner";
+        api.comments.add(Json.obj("id",6,"user",Json.obj("uuid","other"),"inline",Json.obj("path","foo.java","to",1),"content",Json.obj("raw","호출부 확인")));
+        api.comments.add(Json.obj("id",7,"parent",Json.obj("id",6),"user",Json.obj("uuid","other"),"content",Json.obj("raw","이 오류는 어디서 처리하나요?")));
+        reviews = new PullRequestReview(service,api,prompt -> {
+            ObjectNode output = result(List.of());
+            if (prompt.contains("댓글 유형만 분류")) return output;
+            if (prompt.contains("어떤 명세와 호출부를 읽어야 하는지")) {
+                output.set("relatedPaths",Json.MAPPER.valueToTree(List.of(caller)));
+                return output;
+            }
+            assertTrue(prompt.contains("1: return null;"));
+            assertTrue(prompt.contains(callerLine));
+            output.put("summary","호출부가 설정 로드 결과를 반환합니다.");
+            output.set("replyEvidence",Json.MAPPER.valueToTree(List.of(Json.obj("path",caller,"side","new","line",1,"quote",callerLine))));
+            output.set("limitations",Json.MAPPER.valueToTree(List.of("호출자가 이 오류를 처리하는 분기를 확인해야 합니다.")));
+            return output;
+        });
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1",7,true));
+        assertEquals("ready",Json.text(row,"status"),Json.text(row,"error"));
+        assertTrue(Json.text(row,"reply").isBlank());
+        assertTrue(row.path("replyEvidence").isEmpty());
+        JsonNode assessment = row.path("replyAssessment");
+        assertEquals("호출부가 설정 로드 결과를 반환합니다.",Json.text(assessment,"confirmed"));
+        assertEquals(caller,Json.text(assessment.path("evidence").get(0),"path"));
+        assertEquals("호출자가 이 오류를 처리하는 분기를 확인해야 합니다.",assessment.path("missing").get(0).asText());
+        reviews.savePending(Json.text(row,"id"));
+        assertEquals(0,api.writes);
+        assertEquals(0,diffRequests.get());
+        assertEquals(0,statsRequests.get());
+    }
+    @Test void commentsThatNeedNoReplyDoNotSendSlackNotices() throws Exception {
+        api.author = "owner";
+        api.comments.add(Json.obj("id",7,"user",Json.obj("uuid","other"),"content",Json.obj("raw","검토 결과를 확인했습니다.")));
+        reviews = new PullRequestReview(service,api,prompt -> result(List.of()).put("replyKind","none"));
+        ObjectNode row = await(reviews.request("https://bitbucket.org/team/repo/pull-requests/1",7,true));
+        assertTrue(PullRequestReview.replyNotNeeded(row));
+        assertFalse(row.has("replyAssessment"));
+        try (ReviewMonitor monitor = new ReviewMonitor(service,api,reviews,new Config(temporary.resolve("none"),Map.of()),text->fail("Slack notice for a non-question"))) {
+            monitor.notifyCompleted();
+        }
+        assertEquals(0,api.writes);
+    }
     @Test void validationCannotPostDraftsOrReplaceTheOperationalHead() throws Exception {
         reviews = new PullRequestReview(service, api, prompt -> result(List.of(finding())));
         String url = "https://bitbucket.org/team/repo/pull-requests/1";

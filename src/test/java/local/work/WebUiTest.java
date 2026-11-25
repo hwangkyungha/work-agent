@@ -187,6 +187,19 @@ class WebUiTest {
         for (JsonNode old : state.path("plan")) for (JsonNode task : state.path("tasks")) if (Json.text(old, "id").equals(Json.text(task, "id"))) plan.add(task);
         state.set("plan", plan);
     }
+    @Test void replyAssessmentShowsCheckedEvidenceWithoutDraftControls() {
+        reviewJobs.add(Json.obj("id","assessment","kind","reply","replyKind","fact","status","ready","title","댓글 확인",
+                "url","https://bitbucket.org/team/repo/pull-requests/105","sourceCommit","head","replyAssessment",
+                Json.obj("confirmed","호출부가 값을 반환합니다.","evidence",List.of(Json.obj("path","caller.go","line",12,"quote","return result")),
+                        "missing",List.of("호출자가 실패를 처리하는 방식 확인"))));
+        page.locator("[data-view='reviews']").click();
+        Locator card = page.locator("[data-review-id='assessment']");
+        card.getByRole(AriaRole.HEADING,new Locator.GetByRoleOptions().setName("확인한 내용")).waitFor();
+        assertTrue(card.getByText("호출부가 값을 반환합니다.").isVisible());
+        assertTrue(card.getByText("caller.go:12").isVisible());
+        assertTrue(card.getByText("호출자가 실패를 처리하는 방식 확인").isVisible());
+        assertEquals(0,card.locator("[data-save-review], [data-edit-review]").count());
+    }
     void structuredTasks() {
         ObjectNode first = task("jira:CT-41", "CT-41", "출력 구조 정리").put("workGroup", "CI 리포트 개선").put("status", "done");
         ObjectNode second = task("jira:CT-42", "CT-42", "결과 화면 구현").put("workGroup", "CI 리포트 개선").put("status", "in-progress"); second.set("predecessorIds", Json.MAPPER.valueToTree(List.of("jira:CT-41")));

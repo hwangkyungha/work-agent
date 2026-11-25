@@ -130,7 +130,7 @@ final class ReviewMonitor implements AutoCloseable {
     }
     synchronized void notifyCompleted() throws Exception {
         for (ObjectNode row : service.store.list("prReview")) {
-            if (row.path("validation").asBoolean() || row.path("notified").asBoolean() || PullRequestReview.inProgress(row)) continue;
+            if (row.path("validation").asBoolean() || row.path("notified").asBoolean() || PullRequestReview.inProgress(row) || PullRequestReview.replyNotNeeded(row)) continue;
             if (!Set.of("ready", "saved", "failed", "stale", "delivery-unknown").contains(Json.text(row, "status"))) continue;
             String key = PullRequestReview.notificationKey(row);
             boolean sent = service.store.get("prReviewNotice", key) != null || service.store.list("prReview").stream()

@@ -27,17 +27,24 @@ final class ReviewContext {
         this(api,pr,cache,full,null,null);
     }
     ReviewContext(BitbucketClient api,BitbucketClient.PullRequest pr,Store cache,boolean full,Path project,JsonNode metadata) throws Exception {
+        this(api,pr,cache,full,project,metadata,null);
+    }
+    ReviewContext(BitbucketClient api,BitbucketClient.PullRequest pr,Store cache,boolean full,Path project,JsonNode metadata,String commentPath) throws Exception {
         this.pr = pr; this.metadata = metadata==null?api.reviewPullRequest(pr):metadata;metadata=this.metadata;this.project=project;
         this.cache = cache;
         sourceCommit = Json.required(metadata.path("source").path("commit"), "hash");
         destinationCommit = Json.required(metadata.path("destination").path("commit"), "hash");
         if (full && !Json.text(metadata, "state").equals("OPEN")) throw new IllegalArgumentException("열려 있는 PR만 검토할 수 있습니다.");
-        baseCommit = project!=null?ReviewWorkspaces.git(project,"merge-base",sourceCommit,destinationCommit).trim():full ? api.fullCommit(BitbucketClient.repository(metadata,"destination",pr),Json.required(api.get("/repositories/" + BitbucketClient.segment(pr.workspace()) + "/" + BitbucketClient.segment(pr.repository()) + "/merge-base/" + sourceCommit + ".." + destinationCommit), "hash")) : "";
-        diff = project!=null?ReviewWorkspaces.git(project,"diff","--no-ext-diff","--no-textconv",baseCommit,sourceCommit,"--"):full ? api.request("GET", pr.api() + "/diff", null) : "";
+        baseCommit = project!=null?ReviewWorkspaces.git(project,"merge-base",sourceCommit,destinationCommit).trim():full || commentPath != null ? api.fullCommit(BitbucketClient.repository(metadata,"destination",pr),Json.required(api.get("/repositories/" + BitbucketClient.segment(pr.workspace()) + "/" + BitbucketClient.segment(pr.repository()) + "/merge-base/" + sourceCommit + ".." + destinationCommit), "hash")) : "";
+        diff = !full?"":project!=null?ReviewWorkspaces.git(project,"diff","--no-ext-diff","--no-textconv",baseCommit,sourceCommit,"--"):api.request("GET", pr.api() + "/diff", null);
         if (diff.length() > 1_500_000) throw new IllegalArgumentException("PR 변경이 너무 큽니다. PR을 나눈 뒤 다시 검토하세요.");
         parseChanges(diff);
         sourceRepository = Json.required(metadata.path("source").path("repository"), "full_name");
         String destinationRepository = Json.required(metadata.path("destination").path("repository"), "full_name");
+        if (commentPath != null && !commentPath.isBlank()) {
+            currentPaths.add(commentPath);
+            return;
+        }
         String snapshot = TranscriptImporter.hash(pr.url() + ":" + sourceCommit + ":" + destinationCommit);
         ObjectNode saved = cache == null ? null : cache.get("prFileIndex", snapshot);
         List<JsonNode> stats = new ArrayList<>();
@@ -77,6 +84,7 @@ final class ReviewContext {
     private static String sourceKey(String repository, String commit, String path) {
         return TranscriptImporter.hash(Json.write(List.of(repository, commit, path)));
     }
+    boolean usesLocalProject() { return project != null; }
     void includeProjectEvidence(BitbucketClient api,JsonNode evidence) throws Exception {
         String side=Json.text(evidence,"side"),path=Json.text(evidence,"path");
         if(project==null||files.containsKey(side+":"+path)||!Set.of("new","old").contains(side)||path.isBlank()||path.startsWith("/")||path.contains("\\")||Arrays.asList(path.split("/")).contains(".."))return;
@@ -102,16 +110,24 @@ final class ReviewContext {
     }
     boolean includeCurrent(BitbucketClient api, String path) throws Exception {
         if (files.containsKey("new:" + path)) return false;
-        if (!currentPaths.contains(path) && !path.matches("(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.(?:json|md|go|java|kt|rs|py|cs|c|cpp|h|hpp|js|ts|yaml|yml|toml)")) return false;
+        if (!currentPaths.contains(path) && !path.matches("(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.(?:json|md|go|java|kt|rs|py|cs|c|cpp|h|hpp|js|ts|yaml|yml|toml|sh|ps1)")) return false;
         try { load(api, sourceRepository, sourceCommit, path, "new"); }
         catch (BitbucketClient.Rejected e) { if (e.status != 404) throw e; }
+        catch (IllegalStateException missing) { if (project == null) throw missing; }
         return files.containsKey("new:" + path);
     }
     void includeCommentFile(BitbucketClient api, JsonNode comment) throws Exception {
-        String path = Json.text(comment.path("inline"), "path");
+        JsonNode inline = comment.path("inline");
+        String path = Json.text(inline, "path");
         if (!path.isBlank() && !files.containsKey("new:" + path)) {
             try { load(api, sourceRepository, sourceCommit, path, "new"); }
             catch (BitbucketClient.Rejected e) { if (e.status != 404) throw e; limitations.add(path + ": 현재 소스에 없는 파일의 댓글입니다."); }
+            catch (IllegalStateException missing) { if (project == null) throw missing; limitations.add(path + ": 현재 소스에 없는 파일의 댓글입니다."); }
+        }
+        if (!path.isBlank() && !baseCommit.isBlank() && inline.hasNonNull("from") && !files.containsKey("old:" + path)) {
+            try { load(api, BitbucketClient.repository(metadata,"destination",pr), baseCommit, path, "old"); }
+            catch (BitbucketClient.Rejected e) { if (e.status != 404) throw e; limitations.add(path + ": 변경 전 파일을 비교 기준에서 찾지 못했습니다."); }
+            catch (IllegalStateException missing) { limitations.add(path + ": 변경 전 파일을 비교 기준에서 찾지 못했습니다."); }
         }
     }
     Set<String> relatedFileCandidates(BitbucketClient api, JsonNode incoming) throws Exception {

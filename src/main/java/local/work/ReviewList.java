@@ -11,7 +11,13 @@ final class ReviewList {
     ReviewList(WorkService service,BitbucketClient api){this.service=service;this.api=api;}
     private static boolean sameHead(String a,String b){return !a.isBlank()&&(a.equals(b)||a.matches("[0-9a-f]{12,64}")&&b.matches("[0-9a-f]{12,64}")&&(a.startsWith(b)||b.startsWith(a)));}
     private static String scope(JsonNode row){return Json.text(row,"url")+":"+row.path("parentCommentId").asLong()+":"+row.path("validation").asBoolean();}
-    private static boolean matches(JsonNode decision,JsonNode job){return scope(decision).equals(scope(job))&&sameHead(Json.text(decision,"sourceCommit"),Json.text(job,"sourceCommit"))&&Json.text(decision,"commentRevision").equals(Json.text(job,"commentRevision"));}
+    private static boolean matches(JsonNode decision,JsonNode job){
+        if(!scope(decision).equals(scope(job))||!Json.text(decision,"commentRevision").equals(Json.text(job,"commentRevision")))return false;
+        String head=Json.text(decision,"sourceCommit");
+        if(sameHead(head,Json.text(job,"sourceCommit")))return true;
+        for(JsonNode previous:job.path("equivalentHeads"))if(sameHead(head,previous.asText()))return true;
+        return false;
+    }
     ObjectNode mark(JsonNode input){
         ObjectNode job=service.store.get("prReview",Json.required(input,"id"));
         if(job==null)throw new IllegalArgumentException("리뷰 기록을 찾지 못했습니다.");

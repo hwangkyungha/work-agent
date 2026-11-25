@@ -22,6 +22,11 @@ final class ProjectReviewModel implements PullRequestReview.Model {
         this.service=service;this.config=config;this.fallback=fallback;this.runner=runner;this.workspaces=new ReviewWorkspaces(config,service.store);
     }
     @Override public JsonNode complete(String prompt) throws Exception { return fallback.complete(prompt); }
+    @Override public String equivalentBase(ObjectNode previous, ObjectNode current, JsonNode metadata) throws Exception {
+        if (!ReviewReuse.comparable(previous) || !Json.text(previous,"reviewBackground").equals(Json.text(current,"reviewBackground"))) return "";
+        Path clone = workspaces.repositoryWithCommits(current,metadata);
+        return clone == null ? "" : ReviewReuse.equivalentBase(clone,previous,current);
+    }
     ObjectNode bind(JsonNode input) throws Exception {
         String url=BitbucketClient.PullRequest.parse(Json.required(input,"url")).url(),id=Json.text(input,"sessionId");
         if(id.isBlank()){service.store.delete("prSessionBinding",url);return Json.obj("url",url);}
