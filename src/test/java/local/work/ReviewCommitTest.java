@@ -76,6 +76,6 @@ class ReviewCommitTest {
         String url="https://bitbucket.org/team/repo/pull-requests/119";
         store.put("prReview",Json.obj("id","old","url",url,"sourceCommit",HEAD.substring(0,12),"destinationCommit",BASE.substring(0,12),"status","ready","summary","이전 검토 요약"));
         PrQuestion question=new PrQuestion(store,api,prompt->{assertTrue(prompt.contains("이전 검토 요약"));return Json.obj("reply","현재 foo.java는 new입니다.","replyKind","fact","replyConfidence","high","replyEvidence",List.of(Json.obj("path","foo.java","side","new","line",1,"quote","new")),"relatedPaths",List.of(),"findings",List.of(),"limitations",List.of());});
-        ObjectNode answer=question.answer(url,"foo.java 설명해줘",HEAD.substring(0,12));assertFalse(Json.text(answer,"text").contains("리뷰 이후 PR이 바뀌어"));
+        ObjectNode answer=question.answer(url,"foo.java 설명해줘",HEAD.substring(0,12),true);assertFalse(Json.text(answer,"message").contains("최신 커밋"));
     }
 }

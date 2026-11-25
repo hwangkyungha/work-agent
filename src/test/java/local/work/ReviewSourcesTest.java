@@ -112,7 +112,7 @@ class ReviewSourcesTest {
             return Json.obj("reply", "저장한 계약을 확인했습니다.", "relatedPaths", List.of(), "replyEvidence",
                     List.of(Json.obj("path", path, "side", "new", "line", 1, "quote", "runner contract")));
         });
-        ObjectNode answer = questions.answer(Json.text(review, "url"), "runner의 계약을 알려줘", "source");
+        ObjectNode answer = questions.answer(Json.text(review, "url"), "runner의 계약을 알려줘", "source", true);
         assertTrue(Json.text(answer, "message").contains("저장한 계약을 확인했습니다."));
     }
 }

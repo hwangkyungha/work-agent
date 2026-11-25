@@ -176,7 +176,7 @@ final class SlackConnection implements AutoCloseable {
     void notifyReview(String text, ObjectNode review) throws Exception {
         if (!configured()) return;
         String channel = ownerChannel();
-        String timestamp = send(channel, text + "\n이 PR에 관한 질문은 이 메시지의 스레드에 남겨 주세요.", "");
+        String timestamp = send(channel, text + "\n후속 질문은 이 스레드에 남겨 주세요.", "");
         if (!timestamp.isBlank()) store.put("prSlackThread", Json.obj("id", channel + ":" + timestamp,
                 "url", Json.text(review, "url"), "sourceCommit", Json.text(review, "sourceCommit"),
                 "reviewId", Json.text(review, "id")));

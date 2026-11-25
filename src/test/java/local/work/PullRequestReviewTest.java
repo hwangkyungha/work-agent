@@ -325,9 +325,13 @@ class PullRequestReviewTest {
         missing.remove("actual");
         assertFalse(context.validFinding(missing));
         String message = PullRequestReview.resultMessage(Json.obj("url", "https://bitbucket.org/team/repo/pull-requests/1",
-                "status", "ready", "findings", List.of(finding())));
+                "status", "ready", "findings", List.of(finding()), "slackSummary", "반환 처리 방식을 바꿉니다.",
+                "readingGuide", "## 목적\n업무 수첩에 표시할 상세 안내", "modelInfo", Json.obj("engine", "claude", "requested", "opus", "reported", List.of("claude-opus-5-5"))));
+        assertTrue(message.contains("반환 처리 방식을 바꿉니다."));
         assertTrue(message.contains("반환값 누락"));
         assertTrue(message.contains("호출한 코드 실패"));
+        assertTrue(message.contains("사용 모델 · claude-opus-5-5"));
+        assertFalse(message.contains("업무 수첩에 표시할 상세 안내"));
     }
     @Test void gathersSupportAcrossBatchesWithoutPresentingOldCodeAsCurrent() throws Exception {
         ReviewContext context = new ReviewContext(api, BitbucketClient.PullRequest.parse("https://bitbucket.org/team/repo/pull-requests/1"));

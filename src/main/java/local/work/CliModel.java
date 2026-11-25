@@ -1,6 +1,7 @@
 package local.work;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -21,12 +22,12 @@ final class CliModel implements Agent.Model {
         return result;
     }
     JsonNode review(String prompt) throws Exception {
-        return complete(prompt, config.get("AGENT_ENGINE", "codex"), config.get("AGENT_EXECUTABLE", ""), config.get("AGENT_MODEL", ""), config.number("REVIEW_TIMEOUT_SECONDS", 600), "review-schema.json");
+        return reviewInSession(prompt, null, config.reviewEngine(), "", false, id -> {});
     }
     JsonNode reviewInSession(String prompt, Path workspace, String engine, String session, boolean fork, java.util.function.Consumer<String> saved) throws Exception {
         String executable = engine.equals(config.get("AGENT_ENGINE", "codex")) ? config.get("AGENT_EXECUTABLE", "") : "";
-        String model = engine.equals(config.get("AGENT_ENGINE", "codex")) ? config.get("AGENT_MODEL", "") : "";
-        return complete(prompt, engine, executable, model, config.number("REVIEW_TIMEOUT_SECONDS", 600), "review-schema.json", workspace, session, fork, saved);
+        if (executable.isBlank() && engine.equals("claude")) executable = config.get("CLAUDE_EXECUTABLE", "");
+        return complete(prompt, engine, executable, config.reviewModel(engine), config.number("REVIEW_TIMEOUT_SECONDS", 600), "review-schema.json", workspace, session, fork, saved);
     }
     void startSession(String engine) throws Exception {
         String executable = switch (engine) {
@@ -90,14 +91,21 @@ final class CliModel implements Agent.Model {
             }
             if (process.exitValue() != 0 || Files.size(output) == 0) throw failure(engine, process.exitValue(), Files.readString(stderr, StandardCharsets.UTF_8));
             JsonNode result = Json.read(Files.readString(output));
+            Set<String> reportedModels = new LinkedHashSet<>();
             if (engine.equals("claude")) {
+                result.path("modelUsage").fieldNames().forEachRemaining(reportedModels::add);
                 if (result.path("is_error").asBoolean()) throw new IllegalStateException("Claude 요청에 실패했습니다. CLI 로그인 상태를 확인하세요.");
                 if (workspace != null && !Json.text(result, "session_id").isBlank()) saved.accept(Json.text(result, "session_id"));
                 if (result.hasNonNull("structured_output")) result = result.get("structured_output");
                 else result = Json.read(Json.required(result, "result"));
             } else if (workspace != null) {
-                for (String line : Files.readAllLines(events, StandardCharsets.UTF_8)) { JsonNode event = Json.read(line); if (Json.text(event, "type").equals("thread.started")) saved.accept(Json.required(event, "thread_id")); }
+                for (String line : Files.readAllLines(events, StandardCharsets.UTF_8)) {
+                    JsonNode event = Json.read(line);
+                    if (Json.text(event, "type").equals("thread.started")) saved.accept(Json.required(event, "thread_id"));
+                }
             }
+            if (schemaName.equals("review-schema.json") && result instanceof ObjectNode review)
+                review.set("modelInfo", Json.obj("engine", engine, "requested", model, "reported", reportedModels));
             return result;
         } finally {
             if (process != null && process.isAlive()) { process.descendants().forEach(ProcessHandle::destroyForcibly); process.destroyForcibly(); }

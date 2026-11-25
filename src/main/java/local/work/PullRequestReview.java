@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.regex.Pattern;
+import java.util.stream.StreamSupport;
 
 /** Generates and checks review/reply drafts, retaining commit pins and pending-comment delivery state. */
 final class PullRequestReview implements AutoCloseable {
@@ -34,7 +35,8 @@ final class PullRequestReview implements AutoCloseable {
                 .filter(url -> url.endsWith("/" + number)).forEach(urls::add);
         if (urls.size() != 1) return Json.obj("message", "어느 PR을 확인할까요? Bitbucket PR 주소를 알려 주세요.");
         String url = urls.iterator().next();
-        return new PrQuestion(service.store, api, model).answer(url, question, url.equals(boundUrl) ? reviewedCommit : "");
+        boolean inThread = url.equals(boundUrl);
+        return new PrQuestion(service.store, api, model).answer(url, question, inThread ? reviewedCommit : "", inThread);
     }
     synchronized ObjectNode request(String url, long parent, boolean automatic) throws Exception {
         return request(url, parent, automatic, false);
@@ -142,15 +144,28 @@ final class PullRequestReview implements AutoCloseable {
             default -> "검토를 완료하지 못했습니다. 업무 수첩의 PR 리뷰에서 원인을 확인해 주세요.";
         };
         String title = Json.text(row, "title");
-        StringBuilder message = new StringBuilder("PR #" + number + (title.isBlank() ? "" : " · " + title) + "\n" + outcome);
-        if (!Json.text(row,"executionNote").isBlank()) message.append("\n").append(Json.text(row,"executionNote"));
-        if (succeeded(row) && !Json.text(row,"readingGuide").isBlank()) message.append("\n\n검토 안내\n").append(brief(Json.text(row,"readingGuide"),500));
-        for (JsonNode finding : row.path("findings")) {
-            if (message.length() > 2000) break;
-            message.append("\n• ").append(Json.text(finding, "title")).append(" — ").append(brief(Json.text(finding, "impact"), 180));
+        StringBuilder message = new StringBuilder("PR #" + number + (title.isBlank() ? "" : " · " + title));
+        String summary = Json.text(row,"slackSummary").strip();
+        if (succeeded(row) && (!reply || hasDraft(row)) && !summary.isBlank()) message.append("\n\n").append(brief(summary.replaceAll("\\s+", " "), 320));
+        message.append("\n").append(outcome);
+        if (succeeded(row)) {
+            List<JsonNode> findings = StreamSupport.stream(row.path("findings").spliterator(), false)
+                    .sorted(Comparator.comparing(finding -> !Json.text(finding, "severity").equals("high"))).limit(2).toList();
+            for (JsonNode finding : findings) {
+                message.append("\n• ").append(Json.text(finding, "title"));
+                String impact = Json.text(finding, "impact");
+                if (!impact.isBlank()) message.append(" — ").append(brief(impact, 120));
+            }
         }
-        if (!row.path("limitations").isEmpty()) message.append("\n확인하지 못한 사항 ").append(row.path("limitations").size()).append("건은 업무 수첩에 남겼습니다.");
-        return message.append("\n").append(url).toString();
+        return message.append(modelFooter(row.path("modelInfo"))).append("\n").append(url).toString();
+    }
+    static String modelFooter(JsonNode info) {
+        List<String> reported = StreamSupport.stream(info.path("reported").spliterator(), false)
+                .map(JsonNode::asText).filter(value -> !value.isBlank()).toList();
+        if (!reported.isEmpty()) return "\n사용 모델 · " + String.join(", ", reported);
+        String requested = Json.text(info, "requested"), engine = Json.text(info, "engine");
+        if (!requested.isBlank()) return "\n요청 모델 · " + requested;
+        return engine.isBlank() ? "" : "\n요청 모델 · " + engine + " CLI 기본값";
     }
     void run(String id) throws Exception {
         ObjectNode row = required(id); row.put("status", "running").put("startedAt",service.time.instant().toString()); save(row);
@@ -159,7 +174,12 @@ final class PullRequestReview implements AutoCloseable {
         pinCommits(row,metadata);
         if(!Json.text(metadata,"state").equals("OPEN")||!Json.text(metadata.path("source").path("commit"),"hash").equals(Json.text(row,"sourceCommit")))throw new IllegalStateException("PR head가 바뀌었거나 닫혔습니다. 다시 요청하세요.");
         row.put("destinationCommit",Json.text(metadata.path("destination").path("commit"),"hash"));
-        Model execution = model.forReview(row,metadata);
+        Model prepared = model.forReview(row,metadata);
+        Model execution = prompt -> {
+            JsonNode result = prepared.complete(prompt);
+            if (result.hasNonNull("modelInfo")) row.set("modelInfo", result.get("modelInfo"));
+            return result;
+        };
         boolean project=Json.text(row,"executionMode").equals("project-session")&&row.path("parentCommentId").asLong()==0;
         ReviewContext context = new ReviewContext(api, pr, service.store, true,project?java.nio.file.Path.of(Json.required(row,"reviewDirectory")):null,metadata);
         if (!context.sourceCommit.equals(Json.text(row, "sourceCommit"))) throw new IllegalStateException("PR head가 바뀌었습니다. 다시 요청하세요.");
@@ -193,11 +213,13 @@ final class PullRequestReview implements AutoCloseable {
                 limitations.add("현재 근거만으로 확신할 수 있는 답변을 만들지 못했습니다.");
             }
             row.set("replyEvidence", valid ? result.path("replyEvidence") : Json.MAPPER.createArrayNode());
+            if (valid) row.put("slackSummary", Json.text(result, "slackSummary"));
             summaries.add(Json.text(result, "summary"));
             result.path("limitations").forEach(value -> limitations.add(value.asText()));
         } else if(project) {
             row.put("projectDirect",true);save(row);
             JsonNode result=projectReview(row,context,comments,referencePaths,execution);
+            row.put("slackSummary", Json.text(result, "slackSummary"));
             rejected=row.path("rejectedCount").asInt();
             Set<String> seen=existingAnchors(comments,owner);
             for(JsonNode finding:result.path("findings")) {
@@ -287,11 +309,13 @@ final class PullRequestReview implements AutoCloseable {
         row.put("rejectedCount",Math.max(0,initial.path("findings").size()-accepted.size()));
         ObjectNode result=((ObjectNode)verified).deepCopy();result.set("findings",accepted);
         if(Json.text(result,"summary").isBlank())result.put("summary",Json.text(initial,"summary"));
+        if(Json.text(result,"slackSummary").isBlank())result.put("slackSummary",Json.text(initial,"slackSummary"));
         Set<String> limits=new LinkedHashSet<>();initial.path("limitations").forEach(v->limits.add(v.asText()));verified.path("limitations").forEach(v->limits.add(v.asText()));result.set("limitations",Json.MAPPER.valueToTree(limits));
         return result;
     }
     private static final String FINDING_RULES = """
             summary에는 결함 유무와 별개로 PR의 목적, 주요 변경 흐름과 읽을 파일 순서, 확인한 테스트와 실행하지 않은 테스트, 결정이 필요한 설계 사항을 간결하게 설명하세요. 코드로 확인한 사실과 설계 제안 및 미확인 내용을 구분하세요.
+            slackSummary는 Slack 읽는 사람이 이 변경이 무엇을 하는지 알 수 있도록 핵심 동작을 1~2문장으로 씁니다. 제목·소제목·파일 목록·검토 결과 건수·결함 판정은 생략하세요. 결함 판정과 의견은 findings에서 따로 확인합니다.
             변경으로 생긴 실제 결함을 검토하세요. 기존 문제·취향·일반적 권장은 제외하세요.
             trigger에는 실제로 가능한 호출, 입력값이나 실패 응답을 쓰고 expected에는 명세나 호출자와의 계약상 기대 결과를 쓰세요.
             actual에는 그 조건에서 실행되는 코드 경로와 실제 결과를, reasoning에는 결과에 도달하는 이유와 기존 방어·테스트로 막히지 않는 근거를 쓰세요.
@@ -346,6 +370,7 @@ final class PullRequestReview implements AutoCloseable {
                 수정이나 테스트를 실행했다고 말하지 마세요. 답할 근거가 부족하면 reply를 비우고 limitations에 부족한 정보를 쓰세요.
                 replyEvidence에는 판단에 실제로 사용한 코드나 명세의 파일 경로, side, 줄 번호와 그 줄 전체를 그대로 인용하세요.
                 replyConfidence=high는 답변이 말하는 사실과 제시한 판단을 근거로 뒷받침할 수 있을 때만 사용하세요.
+                답변을 작성하는 경우 slackSummary에는 reply의 결론과 핵심 근거를 소제목 없이 1~2문장으로 쓰세요. reply가 비어 있으면 slackSummary도 비우세요.
                 findings는 빈 배열로 출력하세요. 관련 파일을 고르는 단계에서만 relatedPaths에 값을 넣으세요.
                 """;
         JsonNode classification = execution.complete(background + """
@@ -397,7 +422,7 @@ final class PullRequestReview implements AutoCloseable {
         JsonNode result = execution.complete(WritingStyle.message(background + "\n검증 자료(JSON):\n" + Json.write(excerpts) + "\n" + requirements
                 + "\n검증할 답변(JSON):\n" + draft
                 + "\n답변을 반박하는 검증자 역할입니다. replyKind=" + kind + "를 유지하세요. " + verification
-                + "\n인용과 설명이 일치하는지 확인하세요. 근거로 뒷받침한 답변만 남기고, 고칠 수 없다면 reply를 비우세요."));
+                + "\n인용과 설명이 일치하는지 확인하세요. 근거로 뒷받침한 답변만 남기고, 고칠 수 없다면 reply를 비우세요. slackSummary는 최종 reply의 결론과 근거를 1~2문장으로 요약하고 reply가 비어 있으면 함께 비우세요."));
         if (!Json.text(result, "replyKind").equals(kind)) {
             return Json.obj("replyKind", kind, "limitations", List.of("답변 검증 중 댓글 유형이 바뀌었습니다."));
         }

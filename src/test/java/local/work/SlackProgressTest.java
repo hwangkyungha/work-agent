@@ -109,7 +109,8 @@ class SlackProgressTest {
         try (PullRequestReview reviews = new PullRequestReview(service, api, prompt -> {
             if (!prompt.contains("현재 질문")) return Json.obj("findings", List.of(), "limitations", List.of());
             assertTrue(prompt.contains("1: return null;"));
-            return Json.obj("reply", "현재 null을 반환합니다.", "replyEvidence",
+            assertTrue(prompt.contains("질문에 직접 답하는 결론으로 시작"));
+            return Json.obj("reply", "현재 null을 반환합니다.", "modelInfo", Json.obj("engine", "claude", "requested", "opus", "reported", List.of("claude-opus-5-5")), "replyEvidence",
                     List.of(Json.obj("path", "foo.java", "side", "new", "line", 1, "quote", "return null;")));
         })) {
             var review = reviews.request(url, 0, false);
@@ -127,8 +128,7 @@ class SlackProgressTest {
             try (SlackConnection restarted = new SlackConnection(config, store, agent, apiRoot)) {
                 restarted.handleEvent(event("foo.java에서 뭘 반환해?"));
             }
-            assertTrue(messages.getLast().contains("현재 null을 반환합니다."));
-            assertTrue(messages.getLast().contains("foo.java:1"));
+            assertEquals("현재 null을 반환합니다.\n\n근거 · `foo.java:1`\n사용 모델 · claude-opus-5-5", messages.getLast());
             assertEquals(readsAfterReview, sourceReads.get());
             assertEquals(0, api.writes);
         }

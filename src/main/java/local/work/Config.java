@@ -18,6 +18,15 @@ final class Config {
     String environment(String key) { return environment.getOrDefault(key, "").trim(); }
     String agentName() { return has("AGENT_NAME") ? get("AGENT_NAME", "") : "work-agent"; }
     String agentCallName() { return has("AGENT_CALL_NAME") ? get("AGENT_CALL_NAME", "") : agentName(); }
+    String reviewEngine() {
+        if (get("AGENT_ENGINE", "codex").equals("off")) return "off";
+        return has("REVIEW_ENGINE") ? get("REVIEW_ENGINE", "") : "claude";
+    }
+    String reviewModel(String engine) {
+        if (engine.equals(reviewEngine()) && has("REVIEW_MODEL")) return get("REVIEW_MODEL", "");
+        if (engine.equals("claude")) return "opus";
+        return engine.equals(get("AGENT_ENGINE", "codex")) ? get("AGENT_MODEL", "") : "";
+    }
     int number(String key, int fallback) { return Integer.parseInt(get(key, "" + fallback)); }
     List<String> workTypes() {
         return Arrays.stream(get("WORK_TYPES", String.join(",", DEFAULT_WORK_TYPES)).split(","))

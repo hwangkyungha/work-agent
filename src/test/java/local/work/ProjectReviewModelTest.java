@@ -39,13 +39,17 @@ class ProjectReviewModelTest {
         int[] sourceReads={0},calls={0};
         BitbucketClient api=projectApi(sourceReads);
         ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,engine,session,fork,saved)->{
+            assertEquals("claude",engine);
+            assertEquals("opus",config.reviewModel(engine));
             calls[0]++;if(prompt.contains("WHOLE_FILE_PAYLOAD"))throw new IllegalStateException("whole file content was sent");
-            assertTrue(prompt.contains(head));return Json.obj("summary","PR 전체 안내","findings",List.of(),"limitations",List.of());
+            assertTrue(prompt.contains(head));return Json.obj("summary","PR 전체 안내","slackSummary","Slack 변경 요약","modelInfo",Json.obj("engine","claude","requested","opus","reported",List.of("claude-opus-5-5")),"findings",List.of(),"limitations",List.of());
         });
         try(PullRequestReview reviews=new PullRequestReview(service,api,model)) {
             ObjectNode row=reviews.request("https://bitbucket.org/team/repo/pull-requests/1",0,false);long until=System.nanoTime()+5_000_000_000L;
             do{row=store.get("prReview",Json.text(row,"id"));if(!PullRequestReview.inProgress(row))break;Thread.sleep(10);}while(System.nanoTime()<until);
             assertEquals("ready",Json.text(row,"status"));assertEquals(0,sourceReads[0]);assertEquals(1,calls[0]);assertEquals("PR 전체 안내",Json.text(row,"readingGuide"));
+            assertEquals("Slack 변경 요약",Json.text(row,"slackSummary"));
+            assertEquals("claude-opus-5-5",row.path("modelInfo").path("reported").get(0).asText());
         }
     }
     @Test void projectFindingsAreRecheckedAndCitationsAreVerifiedFromPinnedFiles()throws Exception {
@@ -139,9 +143,11 @@ class ProjectReviewModelTest {
         Config installed=new Config(Path.of("config.properties"));
         Config nativeConfig=new Config(temporary.resolve("none"),Map.of("WORK_AGENT_DATA",temporary.resolve("native-data").toString(),"REPOSITORY_ROOT",temporary.toString(),"AGENT_ENGINE",installed.get("AGENT_ENGINE","claude"),"AGENT_MODEL",installed.get("AGENT_MODEL",""),"REVIEW_TIMEOUT_SECONDS","120"));
         ProjectReviewModel model=new ProjectReviewModel(service,new CliModel(nativeConfig),nativeConfig);
-        String request="현재 작업 폴더의 file.txt를 파일 조회 도구로 읽으세요. summary에는 확인한 파일 이름을 쓰고 reply에는 파일의 첫 줄만 그대로 쓰세요. replyKind=fact,replyConfidence=high로 쓰고 replyEvidence에는 파일 첫 줄을 인용하세요. findings,relatedPaths,limitations는 빈 배열로 출력하세요.";
+        String request="현재 작업 폴더의 file.txt를 파일 조회 도구로 읽으세요. summary에는 확인한 파일 이름을 쓰고 slackSummary에는 파일 내용에 대한 한 문장 요약을 쓰세요. reply에는 파일의 첫 줄만 그대로 쓰세요. replyKind=fact,replyConfidence=high로 쓰고 replyEvidence에는 파일 첫 줄을 인용하세요. findings,relatedPaths,limitations는 빈 배열로 출력하세요.";
         JsonNode first=model.forReview(job("review"),metadata()).complete(request);
         assertEquals("after",Json.text(first,"reply").trim());
+        assertFalse(Json.text(first,"slackSummary").isBlank());
+        assertTrue(PullRequestReview.modelFooter(first.path("modelInfo")).contains("사용 모델 · claude-opus"));
         String session=Json.required(store.list("reviewSession").getFirst(),"session");
         JsonNode next=model.forReview(job("question"),metadata()).complete("앞선 대화에서 읽은 file.txt의 첫 줄을 다시 reply에만 쓰세요. replyKind=fact,replyConfidence=high로 쓰고 replyEvidence에 첫 줄을 인용하세요. findings,relatedPaths,limitations는 비우고 summary에는 이 질문의 요지를 쓰세요.");
         assertEquals("after",Json.text(next,"reply").trim());assertEquals(session,Json.text(store.list("reviewSession").getFirst(),"session"));
