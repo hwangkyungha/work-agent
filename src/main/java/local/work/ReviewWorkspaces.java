@@ -2,6 +2,7 @@ package local.work;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
@@ -9,6 +10,8 @@ import java.util.concurrent.TimeUnit;
 
 /** Prepares an isolated checkout at the PR head without changing the owner's working branch. */
 final class ReviewWorkspaces {
+    private static final long GIT_TIMEOUT_SECONDS = 45;
+    private static final long CHECKOUT_TIMEOUT_SECONDS = 300;
     private final Config config;
     private final Store store;
     ReviewWorkspaces(Config config, Store store) { this.config = config; this.store = store; }
@@ -46,6 +49,17 @@ final class ReviewWorkspaces {
     synchronized Path prepare(ObjectNode job, JsonNode metadata) throws Exception {
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.required(job, "url"));
         String repository = pr.workspace() + "/" + pr.repository();
+        Path clone = repositoryWithCommits(job, metadata);
+        if (clone == null) return null;
+        String head = Json.required(job, "sourceCommit");
+        Path directory = config.data().resolve("review-worktrees").resolve(TranscriptImporter.hash(repository)).resolve(head).toAbsolutePath().normalize();
+        directory = prepareCheckout(clone, directory, head, "검토용 작업 폴더가 변경돼 있습니다. 내용을 확인한 뒤 다시 검토하세요.");
+        job.put("localRepository", clone.toString()).put("reviewDirectory", directory.toString()).put("executionMode", "project-session");
+        return directory;
+    }
+    Path repositoryWithCommits(ObjectNode job, JsonNode metadata) throws Exception {
+        BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.required(job, "url"));
+        String repository = pr.workspace() + "/" + pr.repository();
         Path clone = repository(repository);
         if (clone == null) return null;
         String head = Json.required(job, "sourceCommit"), base = Json.required(job, "destinationCommit");
@@ -54,27 +68,38 @@ final class ReviewWorkspaces {
         if (sourceRepository.isBlank()) sourceRepository = repository;
         BitbucketClient.PullRequest.parse("https://bitbucket.org/" + sourceRepository + "/pull-requests/1");
         ensureCommit(clone, sourceRepository, head); ensureCommit(clone, repository, base);
-        Path directory = config.data().resolve("review-worktrees").resolve(TranscriptImporter.hash(repository)).resolve(head).toAbsolutePath().normalize();
-        if (Files.exists(directory.resolve(".git"))) {
-            if (!git(directory, "rev-parse", "HEAD").trim().equals(head) || !git(directory, "status", "--porcelain").isBlank()) throw new IllegalStateException("검토용 작업 폴더가 변경돼 있습니다. 내용을 확인한 뒤 다시 검토하세요.");
-        } else {
-            Files.createDirectories(directory.getParent());
-            git(clone, "worktree", "add", "--detach", directory.toString(), head);
-        }
-        job.put("localRepository", clone.toString()).put("reviewDirectory", directory.toString()).put("executionMode", "project-session");
-        return directory;
+        return clone;
     }
     private void ensureCommit(Path clone, String repository, String commit) throws Exception {
         try { git(clone, "cat-file", "-e", commit + "^{commit}"); }
         catch (IllegalStateException e) { String remote=remoteName(clone,repository);git(clone, "fetch", "--no-tags", remote.isBlank()?"https://bitbucket.org/" + repository + ".git":remote, commit); }
     }
-    Path prepareBase(ObjectNode job) throws Exception {
+    synchronized Path prepareBase(ObjectNode job) throws Exception {
         Path head=Path.of(Json.required(job,"reviewDirectory")),clone=Path.of(Json.required(job,"localRepository"));
         String base=git(head,"merge-base",Json.required(job,"sourceCommit"),Json.required(job,"destinationCommit")).trim();
-        Path directory=head.resolveSibling("base-"+base);
-        if(!Files.exists(directory.resolve(".git")))git(clone,"worktree","add","--detach",directory.toString(),base);
-        if(!git(directory,"rev-parse","HEAD").trim().equals(base)||!git(directory,"status","--porcelain").isBlank())throw new IllegalStateException("비교 기준 작업 폴더가 변경됐습니다.");
+        Path directory = prepareCheckout(clone, head.resolveSibling("base-" + base), base, "비교 기준 작업 폴더가 변경됐습니다.");
         job.put("baseDirectory",directory.toString()).put("baseCommit",base);return directory;
+    }
+    private Path prepareCheckout(Path clone, Path directory, String commit, String changedMessage) throws Exception {
+        Path candidate = directory;
+        for (int attempt = 1; Files.exists(candidate.resolve(".git")); attempt++) {
+            if (!git(candidate, "rev-parse", "HEAD").trim().equals(commit)) throw new IllegalStateException(changedMessage);
+            if (!interruptedCheckout(candidate)) {
+                if (!git(candidate, "status", "--porcelain").isBlank()) throw new IllegalStateException(changedMessage);
+                return candidate;
+            }
+            candidate = directory.resolveSibling(directory.getFileName() + "-retry-" + attempt);
+        }
+        Files.createDirectories(candidate.getParent());
+        git(clone, CHECKOUT_TIMEOUT_SECONDS, "worktree", "add", "--detach", candidate.toString(), commit);
+        return candidate;
+    }
+    private boolean interruptedCheckout(Path directory) throws Exception {
+        Path gitDir = Path.of(git(directory, "rev-parse", "--absolute-git-dir").trim());
+        Path lock = gitDir.resolve("locked");
+        // Git's worktree creation lock distinguishes a partial checkout from ordinary edits.
+        return Files.notExists(gitDir.resolve("index")) && Files.isRegularFile(lock)
+                && Files.readString(lock).strip().equals("initializing");
     }
     private boolean matches(Path path, String repository) throws Exception {
         return !remoteName(path,repository).isBlank();
@@ -89,6 +114,9 @@ final class ReviewWorkspaces {
         return "";
     }
     static String git(Path directory, String... arguments) throws Exception {
+        return git(directory, GIT_TIMEOUT_SECONDS, arguments);
+    }
+    private static String git(Path directory, long timeoutSeconds, String... arguments) throws Exception {
         List<String> command = new ArrayList<>(List.of("git", "--no-optional-locks", "-C", directory.toString())); command.addAll(List.of(arguments));
         Path hooks = Files.createTempDirectory("work-agent-no-hooks-");
         command.addAll(1, List.of("-c", "core.hooksPath=" + hooks));
@@ -98,9 +126,25 @@ final class ReviewWorkspaces {
             builder.environment().put("GIT_TERMINAL_PROMPT", "0");
             builder.environment().put("GCM_INTERACTIVE", "Never");
             process = builder.start();
-            if (!process.waitFor(45, TimeUnit.SECONDS)) { process.descendants().forEach(ProcessHandle::destroyForcibly); process.destroyForcibly(); throw new IllegalStateException("로컬 저장소 확인 시간이 초과됐습니다."); }
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) throw new IllegalStateException(timeoutSeconds == CHECKOUT_TIMEOUT_SECONDS
+                    ? "검토용 작업 폴더 준비가 5분을 넘었습니다. 다시 검토하세요."
+                    : "로컬 저장소 확인 시간이 초과됐습니다.");
             if (process.exitValue() != 0) throw new IllegalStateException("로컬 저장소에서 " + arguments[0] + " 작업을 완료하지 못했습니다.");
             return Files.readString(output, StandardCharsets.UTF_8);
-        } finally { if (process != null && process.isAlive()) process.destroyForcibly(); Files.deleteIfExists(output); Files.deleteIfExists(hooks); }
+        } finally {
+            try {
+                if (process != null && process.isAlive()) {
+                    process.descendants().forEach(ProcessHandle::destroyForcibly);
+                    process.destroyForcibly();
+                    process.waitFor(5, TimeUnit.SECONDS);
+                }
+            } finally {
+                removeTempFile(output);
+                removeTempFile(hooks);
+            }
+        }
+    }
+    private static void removeTempFile(Path path) {
+        try { Files.deleteIfExists(path); } catch (IOException e) { path.toFile().deleteOnExit(); }
     }
 }

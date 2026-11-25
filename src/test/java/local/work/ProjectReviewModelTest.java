@@ -83,6 +83,33 @@ class ProjectReviewModelTest {
         assertEquals(base,ReviewWorkspaces.git(clone,"rev-parse","HEAD").trim());assertEquals("keep me",Files.readString(clone.resolve("owner-uncommitted.txt")));
         assertEquals("new-session",Json.text(store.list("reviewSession").getFirst(),"session"));
     }
+    @Test void retriesInterruptedCheckoutInANewDirectoryAndKeepsExistingFiles() throws Exception {
+        Path interrupted = config.data().resolve("review-worktrees").resolve(TranscriptImporter.hash("team/repo")).resolve(head);
+        Files.createDirectories(interrupted.getParent());
+        ReviewWorkspaces.git(clone,"worktree","add","--no-checkout","--detach",interrupted.toString(),head);
+        Path metadataDir = Path.of(ReviewWorkspaces.git(interrupted,"rev-parse","--absolute-git-dir").trim());
+        assertFalse(Files.exists(metadataDir.resolve("index")));
+        Files.writeString(metadataDir.resolve("locked"),"initializing\n");
+        Files.createFile(metadataDir.resolve("index.lock"));
+        Files.writeString(interrupted.resolve("file.txt"),"partial");
+
+        ReviewWorkspaces workspaces = new ReviewWorkspaces(config,store);
+        ObjectNode job = job("review");
+        Path recovered = workspaces.prepare(job,metadata());
+        assertNotEquals(interrupted,recovered);
+        assertEquals(recovered,workspaces.prepare(job,metadata()));
+        assertEquals(recovered.toString(),Json.text(job,"reviewDirectory"));
+        assertEquals(head,ReviewWorkspaces.git(recovered,"rev-parse","HEAD").trim());
+        assertEquals("after\n",Files.readString(recovered.resolve("file.txt")));
+        assertTrue(ReviewWorkspaces.git(recovered,"status","--porcelain").isBlank());
+        assertEquals("partial",Files.readString(interrupted.resolve("file.txt")));
+
+        Files.writeString(recovered.resolve("file.txt"),"user change");
+        assertThrows(IllegalStateException.class,()->workspaces.prepare(job,metadata()));
+        assertEquals("user change",Files.readString(recovered.resolve("file.txt")));
+        assertEquals(base,ReviewWorkspaces.git(clone,"rev-parse","HEAD").trim());
+        assertEquals("keep me",Files.readString(clone.resolve("owner-uncommitted.txt")));
+    }
     @Test void authorReplyForksTheOriginalToolSessionThenResumesTheReplySession() throws Exception {
         store.put("session",Json.obj("id","codex:original","source","codex","session","original","cwd",clone.toString(),"name","CT-42 기능 개선"));
         List<String> sessions=new ArrayList<>();List<Boolean> forks=new ArrayList<>();
