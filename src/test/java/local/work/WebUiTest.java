@@ -196,6 +196,58 @@ class WebUiTest {
         state.set("plan", Json.MAPPER.valueToTree(List.of(second, local)));
         page.reload(); page.locator("#today-list [data-today-id='jira:CT-42']").waitFor();
     }
+    @Test void returningToOpenTabLoadsNewKoreanDateAndRenewsLocalSession() {
+        page.clock().setFixedTime("2026-11-06T23:59:00+09:00");
+        page.locator("#toggle-chat").click();
+        page.locator("#chat-text").fill("아직 보내지 않은 요청");
+        page.locator("#chat-text").blur();
+        state.put("date", "2026-11-07");
+        state.set("plan", Json.MAPPER.valueToTree(List.of(task("jira:CT-42", "CT-42", "새 날짜의 할 일"))));
+        List<String> requests = new ArrayList<>();
+        page.route("**/api/state", route -> {
+            requests.add("state");
+            if (requests.size() == 1) route.fulfill(new Route.FulfillOptions().setStatus(401).setContentType("application/json").setBody("{\"error\":\"업무 관리 화면을 다시 열어 주세요.\"}"));
+            else route.fallback();
+        });
+        page.route(ORIGIN + "/", route -> { requests.add("home"); route.fallback(); });
+        page.clock().setFixedTime("2026-11-07T08:00:00+09:00");
+        page.evaluate("window.dispatchEvent(new Event('focus'))");
+        page.locator("#today-list").getByText("새 날짜의 할 일").waitFor();
+        assertEquals("2026-11-07", page.locator("#selected-date").inputValue());
+        assertEquals("아직 보내지 않은 요청", page.locator("#chat-text").inputValue());
+        assertEquals(List.of("state", "home", "state"), requests);
+    }
+    @Test void rolloverWaitsForUnsubmittedTodayTask() {
+        page.clock().install(new Clock.InstallOptions().setTime("2026-11-06T23:59:45+09:00"));
+        Locator title = page.locator("#quick-task-title");
+        title.fill("아직 추가하지 않은 업무");
+        title.blur();
+        state.put("date", "2026-11-07");
+        page.clock().fastForward(30_000);
+        assertEquals("2026-11-06", page.locator("#selected-date").inputValue());
+        assertEquals("아직 추가하지 않은 업무", title.inputValue());
+        title.fill("");
+        title.blur();
+        page.clock().fastForward(30_000);
+        page.waitForCondition(() -> page.locator("#selected-date").inputValue().equals("2026-11-07"));
+    }
+    @Test void rolloverKeepsAnExplicitlySelectedPastDate() {
+        page.clock().setFixedTime("2026-11-06T23:59:00+09:00");
+        List<String> requestedDates = new ArrayList<>();
+        page.route("**/api/state**", route -> {
+            String query=URI.create(route.request().url()).getQuery();
+            String date=query==null?"2026-11-07":query.substring("date=".length());
+            requestedDates.add(date);
+            route.fulfill(new Route.FulfillOptions().setContentType("application/json").setBody(Json.write(state.deepCopy().put("date",date))));
+        });
+        page.locator("#selected-date").fill("2026-11-05");
+        page.waitForCondition(() -> page.locator("#date-label").textContent().contains("11월 5일"));
+        page.locator("#selected-date").blur();
+        page.clock().setFixedTime("2026-11-07T08:00:00+09:00");
+        page.evaluate("refreshPage()");
+        assertEquals("2026-11-05", page.locator("#selected-date").inputValue());
+        assertEquals(List.of("2026-11-05", "2026-11-05"), requestedDates);
+    }
     @Test void koreanCompositionKeepsOriginalInputAndFiltersAfterCommit() {
         page.getByRole(AriaRole.BUTTON, new Page.GetByRoleOptions().setName("전체 할 일").setExact(true)).click();
         page.locator("#task-search").focus();

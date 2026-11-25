@@ -2,6 +2,7 @@
 const $ = (s, root = document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 let state, settings, team, view = 'today', filter = 'open', planIds = [], selectedMember = '', worklogDay = '';
+let followToday=true, loading=0, refreshingPage=false;
 let productFilter='',workTypeFilter='';
 let noticeTimer, projectFilter='', taskSearch='', taskSort='priority', todayStatus='open', draggedId='', dragCrossedGroup=false, savingPlan=false, dragOriginY=0, didDrag=false;
 const selectedTasks=new Set(),expandedCandidates=new Map();
@@ -16,6 +17,7 @@ const statusName = status => ({'todo':'todo','in-progress':'in-progress','done':
 const logStatus = status => ({draft:'초안',posted:'Jira 등록 완료',posting:'등록 결과 확인 필요',unknown:'등록 결과 확인 필요',failed:'등록 실패'}[status] || '미작성');
 const hours = seconds => Number((seconds / 3600).toFixed(2)).toString();
 const clock = value => new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(value));
+const koreanDate = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'});
 function dayAdd(day, n) {const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0,10);}
 function monday(day) {return dayAdd(day, -(new Date(day + 'T00:00:00Z').getUTCDay() + 6) % 7);}
 function weekday(day) {return new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',weekday:'short'}).format(new Date(day+'T12:00:00+09:00'));}
@@ -23,7 +25,7 @@ function shortDay(day) {return `${Number(day.slice(5,7))}월 ${Number(day.slice(
 function notice(text) {const el=$('#notice');el.textContent=text;el.hidden=false;clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>el.hidden=true,6500);}
 async function api(path, body) {
   const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const data=await response.json(); if(!response.ok) throw new Error(data.error||'요청을 완료하지 못했습니다.'); return data;
+  const data=await response.json(); if(!response.ok) throw Object.assign(new Error(data.error||'요청을 완료하지 못했습니다.'),{status:response.status}); return data;
 }
 function empty(title,text='',button='') {return `<div class="empty"><strong>${esc(title)}</strong>${esc(text)}${button}</div>`;}
 function heading(title,description,actions='') {return `<div class="page-heading"><div><h1>${esc(title)}</h1><p>${esc(description)}</p></div><div class="heading-actions">${actions}</div></div>`;}
@@ -85,10 +87,31 @@ function groupedActivities(groups) {
 }
 async function load() {
   const date=$('#selected-date').value;
-  [state,settings]=await Promise.all([api('/api/state'+(date?'?date='+date:'')),api('/api/settings')]);
+  loading++;
+  try {
+    const [next,nextSettings]=await Promise.all([api('/api/state'+(date?'?date='+date:'')),api('/api/settings')]);
+    settings=nextSettings;
+    await showState(next);
+  } finally { loading--; }
+}
+async function showState(next,{renderView=true,canApply=()=>true}={}) {
+  const previousDate=state?.date;
+  const changedDay=next.date!==previousDate;
+  const nextReviewDate=changedDay&&reviewDate===previousDate?'':reviewDate;
+  const nextWorklogDay=!worklogDay||monday(worklogDay)!==monday(next.date)||
+    (changedDay&&worklogDay===previousDate&&worklogEdit(worklogDay)===null)?next.date:worklogDay;
+  const olderDays=new Map();
+  const dates=new Set([nextReviewDate,view==='worklog'&&openLedgerDetails.has('worklog-review')?nextWorklogDay:'']);
+  for(const date of dates){
+    if(!date||date===next.date||date===next.previousWorkDate)continue;
+    try{await fetchWorkDay(date,next,olderDays);}catch(e){if(canApply())notice(e.message);}
+  }
+  if(!canApply())return;
+  state=next;
+  reviewDate=nextReviewDate;
+  worklogDay=nextWorklogDay;
   workDayCache.clear();
-  if(reviewDate&&reviewDate!==state.date&&reviewDate!==state.previousWorkDate)await fetchWorkDay(reviewDate);
-  if(view==='worklog'&&worklogDay&&worklogDay!==state.date&&worklogDay!==state.previousWorkDate&&openLedgerDetails.has('worklog-review'))await fetchWorkDay(worklogDay);
+  for(const [date,rows] of olderDays)workDayCache.set(date,rows);
   document.title=`${settings.agentName} | work-agent`;
   $('#agent-name').textContent=settings.agentName;
   $('#agent-heading').textContent=settings.agentName;
@@ -99,8 +122,7 @@ async function load() {
   $('#connection-dot').classList.toggle('ready',settings.slackConnected&&settings.jiraConfigured);
   planIds=state.plan.map(t=>t.id);
   const available=new Set([...state.tasks,...state.hiddenTasks].map(t=>t.id));for(const id of selectedTasks)if(!available.has(id))selectedTasks.delete(id);
-  if(!worklogDay||monday(worklogDay)!==monday(state.date))worklogDay=state.date;
-  render();
+  if(renderView)render();
 }
 function render() {
   $('#content').classList.toggle('readable-page',['today','worklog','reviews'].includes(view));
@@ -229,8 +251,8 @@ function workDayRows(date){
   if(date===state.previousWorkDate)return state.previousWork||[];
   return workDayCache.get(date)||[];
 }
-async function fetchWorkDay(date){
-  if(date!==state.date&&date!==state.previousWorkDate)workDayCache.set(date,await api('/api/work-days?date='+encodeURIComponent(date)));
+async function fetchWorkDay(date,snapshot=state,cache=workDayCache){
+  if(date!==snapshot.date&&date!==snapshot.previousWorkDate)cache.set(date,await api('/api/work-days?date='+encodeURIComponent(date)));
 }
 function workReviewSheet(date=reviewDate||state.date,context='today'){
   const rows=workDayRows(date),key=context+'-review',planned=rows.filter(row=>row.planned).length,done=rows.filter(row=>row.outcome==='done').length;
@@ -601,7 +623,7 @@ document.addEventListener('change',async event=>{
     if(el.dataset.workOutcome){el.disabled=true;await api('/api/work-days',{date:el.dataset.date,workId:el.dataset.workOutcome,outcome:el.value});await load();}
     if(el.id==='work-review-date'&&el.value){reviewDate=el.value;await fetchWorkDay(reviewDate);renderToday();}
     if(el.id==='group-today'){groupToday=el.checked;renderToday();}
-    if(el.id==='selected-date'){worklogDay='';await load();}
+    if(el.id==='selected-date'){followToday=!el.value||el.value===koreanDate.format(new Date());worklogDay='';await load();}
     if(el.id==='today-sort')await saveTodayOrder(planIds,el.value);
     if(el.id==='project-filter'){projectFilter=el.value;selectedTasks.clear();renderPlan();}
     if(el.id==='product-filter'){productFilter=el.value;selectedTasks.clear();renderPlan();}
@@ -671,9 +693,37 @@ $('#close-modal').addEventListener('click',()=>$('#modal').close());
 $('#refresh').addEventListener('click',async()=>{const b=$('#refresh');b.disabled=true;b.textContent='확인 중…';try{const result=await api('/api/sync',{kind:'all'});await load();const failed=state.sync.filter(s=>s.ok===false);notice(failed.length?'일부 연결을 확인하지 못했습니다. 연결 상태를 확인하세요.':'새 기록을 확인했습니다.');}catch(e){notice(e.message);}finally{b.disabled=false;b.textContent='기록 새로 확인';}});
 $('#connections').addEventListener('click',()=>modal('연결 상태',`<div class="connection-row"><div><strong>Slack</strong><small>SLACK_APP_TOKEN · SLACK_BOT_TOKEN · SLACK_USER_ID</small></div><span class="${settings.slackConnected?'':'muted'}">${settings.slackConnected?'연결됨':settings.slackConfigured?'연결 확인 중':'설정 필요'}</span></div><div class="connection-row"><div><strong>Jira</strong><small>JIRA_URL · JIRA_EMAIL · JIRA_TOKEN_ENV에 지정한 환경변수</small></div><span>${settings.jiraConfigured?'설정됨':'설정 필요'}</span></div><div class="connection-row"><div><strong>캘린더</strong><small>CALENDAR_ICS_URL 또는 CALENDAR_ICS_FILE</small></div><span>${settings.calendarConfigured?'설정됨':'설정 필요'}</span></div><div class="connection-row"><div><strong>자연어 처리</strong><small>로그인한 ${esc(settings.engine)} CLI를 사용합니다.</small></div><span>${esc(settings.engine)}</span></div><div class="connection-row"><div><strong>정기 브리핑</strong><small>평일 ${esc(settings.briefingTime||'꺼짐')} · 금요일 워크로그 ${esc(settings.fridayTime||'꺼짐')}<br>Asia/Seoul · 프로그램이 실행 중일 때 동작합니다.</small></div></div>${[['Claude',settings.claudeSessionTime,settings.claudeSession],['Codex',settings.codexSessionTime,settings.codexSession]].map(([name,time,session])=>`<div class="connection-row"><div><strong>${name} 예약 요청</strong><small>매일 한국 시간 ${esc(time||'꺼짐')} · 주말 포함<br>최근 결과: ${esc(({complete:'완료',failed:'실패',running:'결과 확인 필요'})[session?.status]||'실행 전')}</small></div></div>`).join('')}<p class="hint">프로젝트의 config.properties에 값을 입력한 뒤 프로그램을 다시 시작하세요. 자세한 절차는 README.md에 있습니다.</p>${settings.slackError?`<p class="hint error">${esc(settings.slackError)}</p>`:''}`));
 load().catch(e=>{$('#content').innerHTML=empty('업무 기록을 불러오지 못했습니다.',e.message);});
-setInterval(async()=>{
-  if(!state||document.hidden||savingPlan||draggedId||$('#modal').open||document.querySelector('.task-menu[open]')||!['today','plan'].includes(view)||document.activeElement.matches('input,textarea,select'))return;
-  try{const next=await api('/api/state?date='+state.date);if(JSON.stringify([next.tasks,next.hiddenTasks,next.planVersion,next.jobs,next.followups,next.todayGroups,next.draftDigest,next.todayWork,next.previousWork,next.carryover])!==JSON.stringify([state.tasks,state.hiddenTasks,state.planVersion,state.jobs,state.followups,state.todayGroups,state.draftDigest,state.todayWork,state.previousWork,state.carryover])){state=next;planIds=state.plan.map(t=>t.id);render();}}catch{}
-},30000);
+function canRefreshPage(rollover){
+  return !loading&&!document.hidden&&!savingPlan&&!draggedId&&!$('#modal').open&&!$('.task-menu[open]')
+    && !document.activeElement?.matches('input,textarea,select')&&!$('#quick-task-title')?.value.trim()
+    && (rollover?view!=='worklog'||(!syncingWorklogs&&worklogEdit(worklogDay)===null&&!$('#favorite-issue-key')?.value.trim()):['today','plan'].includes(view));
+}
+async function refreshPage(rolloverOnly=false){
+  if(!state||refreshingPage)return;
+  const current=state,currentView=view,currentReviewDate=reviewDate,currentWorklogDay=worklogDay;
+  const rollover=followToday&&current.date!==koreanDate.format(new Date());
+  if((rolloverOnly&&!rollover)||!canRefreshPage(rollover))return;
+  const canApply=()=>state===current&&view===currentView&&reviewDate===currentReviewDate&&worklogDay===currentWorklogDay
+    &&canRefreshPage(rollover)&&(!rollover||followToday);
+  refreshingPage=true;
+  try {
+    const path='/api/state'+(rollover?'':'?date='+current.date);
+    let next;
+    try{next=await api(path);}catch(e){
+      if(e.status!==401)throw e;
+      if(!(await fetch('/')).ok)return;
+      next=await api(path);
+    }
+    if(!canApply())return;
+    if(next.date!==current.date){
+      await showState(next,{renderView:['today','plan','worklog'].includes(view),canApply});
+    }else if(['plan','tasks','hiddenTasks','planVersion','jobs','followups','todayGroups','draftDigest','todayWork','previousWork','carryover','meetings','dailyDetails'].some(key=>JSON.stringify(next[key])!==JSON.stringify(current[key]))){
+      state=next;planIds=state.plan.map(t=>t.id);render();
+    }
+  }catch{}finally{refreshingPage=false;}
+}
+setInterval(refreshPage,30000);
+document.addEventListener('visibilitychange',()=>refreshPage(true));
+window.addEventListener('focus',()=>refreshPage(true));
 
 document.addEventListener('toggle',event=>{const group=event.target;if(group.matches('[data-ledger-detail]')){group.open?openLedgerDetails.add(group.dataset.ledgerDetail):openLedgerDetails.delete(group.dataset.ledgerDetail);if(group.open&&group.matches('[data-review-date]')&&group.dataset.reviewDate!==state.date&&group.dataset.reviewDate!==state.previousWorkDate&&!workDayCache.has(group.dataset.reviewDate)){fetchWorkDay(group.dataset.reviewDate).then(()=>{if(view==='worklog')renderWorklog();else if(view==='today')renderToday();}).catch(e=>notice(e.message));}}if(group.matches('[data-candidate-group]')){expandedCandidates.set(group.dataset.candidateGroup,group.open);}if(group.matches('[data-work-group]')){group.open?collapsedWorkGroups.delete(group.dataset.workGroup):collapsedWorkGroups.add(group.dataset.workGroup);}if(group.matches('.task-menu[open]'))document.querySelectorAll('.task-menu[open]').forEach(other=>{if(other!==group)other.open=false;});},true);
