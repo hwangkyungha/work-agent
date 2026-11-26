@@ -64,6 +64,8 @@ final class TranscriptImporter {
         long position = saved == null ? 0 : saved.path("position").asLong();
         String session = saved == null ? file.getFileName().toString() : Json.text(saved, "session");
         String cwd = saved == null ? "" : Json.text(saved, "cwd");
+        String checkedSession = null;
+        boolean reviewSession = false;
         int count = 0;
         if (position > Files.size(file)) position = 0;
         try (InputStream raw = Files.newInputStream(file)) {
@@ -82,6 +84,11 @@ final class TranscriptImporter {
                 }
                 if (row.hasNonNull("cwd")) cwd = Json.text(row, "cwd");
                 if (row.hasNonNull("sessionId")) session = Json.text(row, "sessionId");
+                if (!session.equals(checkedSession)) {
+                    checkedSession = session;
+                    reviewSession = service.store.get("automatedReviewSession", source + ":" + session) != null;
+                }
+                if (reviewSession) continue;
                 if (Json.text(row, "type").equals("custom-title") && !Json.text(row, "customTitle").isBlank()) {
                     service.store.put("session", Json.obj("id", source + ":" + session, "name", Json.text(row, "customTitle"))); continue;
                 }
@@ -102,6 +109,11 @@ final class TranscriptImporter {
                 String role = Json.text(message, "role");
                 if (!Set.of("user", "assistant").contains(role)) continue;
                 String text = messageText(message.path("content"));
+                if (role.equals("user") && text.startsWith(ProjectReviewModel.SESSION_MARKER + "\n")) {
+                    service.store.put("automatedReviewSession", Json.obj("id", source + ":" + session));
+                    reviewSession = true;
+                    continue;
+                }
                 if (text.isBlank() || text.startsWith("<environment_context>") || text.startsWith("# AGENTS.md instructions") || text.startsWith("<external_codex_apps")) continue;
                 String date = occurred.atZone(KoreaTime.ZONE).toLocalDate().toString();
                 String id = hash(source + ":" + session + ":" + begin);

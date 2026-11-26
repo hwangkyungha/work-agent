@@ -11,10 +11,12 @@ import java.util.stream.StreamSupport;
 final class PullRequestReview implements AutoCloseable {
     static final Pattern PR_LINK = Pattern.compile("https://bitbucket\\.org/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull-requests/[1-9][0-9]*");
     private static final Pattern PR_NUMBER = Pattern.compile("(?i)\\bPR\\s*#?\\s*([1-9][0-9]*)");
-    @FunctionalInterface interface Model {
+    @FunctionalInterface interface Model extends AutoCloseable {
         JsonNode complete(String prompt) throws Exception;
         default Model forReview(ObjectNode job, JsonNode metadata) throws Exception { return this; }
         default String equivalentBase(ObjectNode previous, ObjectNode current, JsonNode metadata) throws Exception { return ""; }
+        default void cleanWorkspaces() throws Exception {}
+        @Override default void close() {}
     }
     private final WorkService service;
     private final BitbucketClient api;
@@ -186,25 +188,34 @@ final class PullRequestReview implements AutoCloseable {
             if (reuseReview(row, metadata)) return;
         }
         JsonNode incoming = parent == 0 ? Json.object() : commentWithLocation(comments, parent);
-        Model prepared = model.forReview(row,metadata);
+        String owner = Json.required(api.get("/user"), "uuid");
+        boolean ownPr = owner.equals(Json.text(metadata.path("author"), "uuid"));
+        row.put("ownPr", ownPr);
+        if (parent > 0 && (!ownPr || Json.text(incoming.path("user"), "uuid").equals(owner))) throw new IllegalArgumentException("내 PR에 다른 사람이 남긴 댓글에만 답변할 수 있습니다.");
+        try (Model prepared = model.forReview(row,metadata)) {
+            runPrepared(row, pr, metadata, comments, incoming, owner, prepared);
+        }
+    }
+    void cleanWorkspaces() throws Exception { model.cleanWorkspaces(); }
+    private void runPrepared(ObjectNode row, BitbucketClient.PullRequest pr, JsonNode metadata, List<JsonNode> comments, JsonNode incoming, String owner, Model prepared) throws Exception {
+        String id = Json.required(row, "id");
+        long parent = row.path("parentCommentId").asLong();
         Model execution = prompt -> {
             JsonNode result = prepared.complete(prompt);
             if (result.hasNonNull("modelInfo")) row.set("modelInfo", result.get("modelInfo"));
             return result;
         };
         boolean project=Json.text(row,"executionMode").equals("project-session");
-        ReviewContext context = new ReviewContext(api, pr, service.store, parent == 0, project?java.nio.file.Path.of(Json.required(row,"reviewDirectory")):null, metadata,
+        ReviewContext context = new ReviewContext(api, pr, service.store, parent == 0, project?java.nio.file.Path.of(Json.required(row,"reviewRepository")):null, metadata,
                 parent == 0 ? null : Json.text(incoming.path("inline"), "path"));
         if (!context.sourceCommit.equals(Json.text(row, "sourceCommit"))) throw new IllegalStateException("PR head가 바뀌었습니다. 다시 요청하세요.");
         row.put("destinationCommit", context.destinationCommit);
         Set<String> referencePaths = new LinkedHashSet<>();
         for (JsonNode reference : row.path("referenceUrls")) referencePaths.add(context.includeReference(api, reference.asText()));
         referencePaths.addAll(sources.attach(context, row, execution));
-        String owner = Json.required(api.get("/user"), "uuid");
         List<ObjectNode> accepted = new ArrayList<>(); List<String> summaries = new ArrayList<>(), limitations = new ArrayList<>(context.limitations);
         int checked = 0, rejected = 0;
         if (parent > 0) {
-            if (!Json.text(context.metadata.path("author"), "uuid").equals(owner) || Json.text(incoming.path("user"), "uuid").equals(owner)) throw new IllegalArgumentException("내 PR에 다른 사람이 남긴 댓글에만 답변할 수 있습니다.");
             JsonNode result = reviewReply(context, comments, incoming, execution);
             includeCitations(context, result);
             String kind = Json.text(result, "replyKind");
@@ -333,11 +344,9 @@ final class PullRequestReview implements AutoCloseable {
         return seen;
     }
     private JsonNode projectReview(ObjectNode row,ReviewContext context,List<JsonNode> comments,Set<String> references,Model execution) throws Exception {
-        java.nio.file.Path inputs=java.nio.file.Path.of(Json.required(row,"reviewDirectory")).resolveSibling("inputs-"+Json.required(row,"id"));
-        java.nio.file.Files.createDirectories(inputs);
+        java.nio.file.Path inputs=java.nio.file.Path.of(Json.required(row,"reviewInputDirectory"));
         java.nio.file.Files.writeString(inputs.resolve("changes.patch"),context.diff,java.nio.charset.StandardCharsets.UTF_8);
         java.nio.file.Files.writeString(inputs.resolve("paths.json"),Json.write(context.fileChanges),java.nio.charset.StandardCharsets.UTF_8);
-        row.put("reviewInputDirectory",inputs.toString());
         String request="프로젝트에서 PR 전체를 직접 검토하세요. 변경 내용을 크기별 묶음으로 나누지 않습니다. Read/Grep/Glob으로 아래 diff 본문과 경로 목록을 먼저 확인하세요. diff가 길면 범위를 나누어 읽고, 검색 결과만으로 검토를 끝내지 마세요. 동작이나 계약이 바뀌는 부분은 현재 코드·현행 명세·실제 호출부·관련 테스트 본문을 직접 열어 대조하세요. 어떤 파일을 얼마나 읽을지는 스스로 선택하되 읽지 않은 내용은 확인했다고 쓰지 마세요. 같은 문구 치환·이름 변경은 패턴으로 확인하고 동작이나 계약이 달라질 수 있는 부분에 집중하세요. 파일 전체와 이전 대화 내용을 반복해서 복사하지 마세요.\n"
                 +Json.write(Json.obj("url",context.pr.url(),"title",Json.text(context.metadata,"title"),"description",brief(Json.text(context.metadata,"description"),8000),"sourceBranch",Json.text(context.metadata.path("source").path("branch"),"name"),"sourceCommit",context.sourceCommit,"destinationCommit",context.destinationCommit,"baseCommit",context.baseCommit,"currentProject",Json.text(row,"reviewDirectory"),"beforeProject",Json.text(row,"baseDirectory"),"diffFile",inputs.resolve("changes.patch").toString(),"changedPathsFile",inputs.resolve("paths.json").toString(),"comments",comments.stream().skip(Math.max(0,comments.size()-10)).map(c->Json.obj("path",Json.text(c.path("inline"),"path"),"text",brief(Json.text(c.path("content"),"raw"),1200))).toList()))
                 +"\n"+FINDING_RULES+"\nsummary는 묶음별 설명이 아닌 PR 전체의 이해를 돕는 한 번의 짧은 안내입니다. limitations에는 판단에 영향을 주는 미확인 사항만 중복 없이 쓰세요. 검토하지 못한 부분을 확인했다고 쓰지 마세요.\n"+REVIEWED_PATHS;

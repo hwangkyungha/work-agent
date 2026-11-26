@@ -31,6 +31,10 @@ final class ReviewMonitor implements AutoCloseable {
         reviews.resume();
         if (api.configured() && config.get("BITBUCKET_AUTO_REVIEW", "true").equals("true")) scheduleNextScan();
         worker.scheduleWithFixedDelay(() -> { try { notifyCompleted(); } catch (Exception e) { System.err.println("PR 알림을 보내지 못했습니다: " + SlackConnection.friendly(e)); } }, 30, 30, TimeUnit.SECONDS);
+        worker.scheduleWithFixedDelay(() -> {
+            try { reviews.cleanWorkspaces(); }
+            catch (Exception e) { System.err.println("PR 검토 폴더를 정리하지 못했습니다: " + SlackConnection.friendly(e)); }
+        }, 1, 30, TimeUnit.MINUTES);
     }
     ObjectNode refresh() {
         if (beginScan()) worker.submit(this::tick);

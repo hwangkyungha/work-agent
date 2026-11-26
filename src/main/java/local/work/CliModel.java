@@ -22,12 +22,12 @@ final class CliModel implements Agent.Model {
         return result;
     }
     JsonNode review(String prompt) throws Exception {
-        return reviewInSession(prompt, null, config.reviewEngine(), "", false, id -> {});
+        return reviewInSession(prompt, null, List.of(), config.reviewEngine(), "", false, id -> {});
     }
-    JsonNode reviewInSession(String prompt, Path workspace, String engine, String session, boolean fork, java.util.function.Consumer<String> saved) throws Exception {
+    JsonNode reviewInSession(String prompt, Path workspace, List<Path> materials, String engine, String session, boolean fork, java.util.function.Consumer<String> saved) throws Exception {
         String executable = engine.equals(config.get("AGENT_ENGINE", "codex")) ? config.get("AGENT_EXECUTABLE", "") : "";
         if (executable.isBlank() && engine.equals("claude")) executable = config.get("CLAUDE_EXECUTABLE", "");
-        return complete(prompt, engine, executable, config.reviewModel(engine), config.number("REVIEW_TIMEOUT_SECONDS", 600), "review-schema.json", workspace, session, fork, saved);
+        return complete(prompt, engine, executable, config.reviewModel(engine), config.number("REVIEW_TIMEOUT_SECONDS", 600), "review-schema.json", workspace, materials, session, fork, saved);
     }
     void startSession(String engine) throws Exception {
         String executable = switch (engine) {
@@ -39,9 +39,9 @@ final class CliModel implements Agent.Model {
         if (!Json.text(result, "reply").trim().equals("2") || !result.path("actions").isArray() || !result.path("actions").isEmpty()) throw new IllegalStateException("예약 요청의 응답을 확인하지 못했습니다.");
     }
     private JsonNode complete(String prompt, String engine, String executable, String model, int timeout, String schemaName) throws Exception {
-        return complete(prompt, engine, executable, model, timeout, schemaName, null, "", false, id -> {});
+        return complete(prompt, engine, executable, model, timeout, schemaName, null, List.of(), "", false, id -> {});
     }
-    private JsonNode complete(String prompt, String engine, String executable, String model, int timeout, String schemaName, Path workspace, String session, boolean fork, java.util.function.Consumer<String> saved) throws Exception {
+    private JsonNode complete(String prompt, String engine, String executable, String model, int timeout, String schemaName, Path workspace, List<Path> materials, String session, boolean fork, java.util.function.Consumer<String> saved) throws Exception {
         if (engine.equals("off")) throw new IllegalStateException("자연어 처리가 꺼져 있습니다. AGENT_ENGINE을 codex 또는 claude로 설정하세요.");
         Path schema = Files.createTempFile(directory, "schema-", ".json");
         try (var in = CliModel.class.getResourceAsStream("/" + schemaName)) { Files.write(schema, Objects.requireNonNull(in).readAllBytes()); }
@@ -59,7 +59,7 @@ final class CliModel implements Agent.Model {
             if (workspace == null) command.add("--no-session-persistence");
             else {
                 command.addAll(List.of("--permission-mode", "dontAsk", "--allowedTools", "Read", "Grep", "Glob"));
-                command.addAll(List.of("--add-dir",workspace.getParent().toString()));
+                for (Path material : materials) command.addAll(List.of("--add-dir", material.toString()));
                 if (!session.isBlank()) { command.addAll(List.of("--resume", session)); if (fork) command.add("--fork-session"); }
             }
         } else if (engine.equals("codex")) {

@@ -18,7 +18,17 @@ final class PrQuestion {
     ObjectNode answer(String url, String question, String reviewedCommit, boolean inThread) throws Exception {
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(url);
         ReviewContext context = new ReviewContext(api, pr, store, false);
-        PullRequestReview.Model execution = model.forReview(Json.obj("id", UUID.randomUUID().toString(), "url", pr.url(), "kind", "question", "sourceCommit", context.sourceCommit, "destinationCommit", context.destinationCommit), context.metadata);
+        String author = Json.text(context.metadata.path("author"), "uuid");
+        boolean ownPr = !author.isBlank() && author.equals(Json.text(api.get("/user"), "uuid"));
+        ObjectNode job = Json.obj("id", UUID.randomUUID().toString(), "url", pr.url(), "kind", "question",
+                "ownPr", ownPr, "sourceCommit", context.sourceCommit, "destinationCommit", context.destinationCommit);
+        try (PullRequestReview.Model execution = model.forReview(job, context.metadata)) {
+            return answer(question, reviewedCommit, inThread, pr, context, execution);
+        }
+    }
+
+    private ObjectNode answer(String question, String reviewedCommit, boolean inThread, BitbucketClient.PullRequest pr,
+                              ReviewContext context, PullRequestReview.Model execution) throws Exception {
         String id = TranscriptImporter.hash(pr.url());
         ObjectNode previous = store.get("prQuestions", id);
         List<JsonNode> turns = new ArrayList<>();

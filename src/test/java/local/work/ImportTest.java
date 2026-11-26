@@ -17,6 +17,18 @@ class ImportTest {
         Files.writeString(development,Json.write(Json.obj("type","session_meta","payload",Json.obj("id","developer","cwd","D:/Git/loop-test-harness")))+"\n"+codex("assistant","하네스 기능 구현","2026-11-03T15:30:00Z"));
         assertEquals(1,importer.read("codex",development,Instant.EPOCH));assertEquals(1,store.list("evidence").size());
     }
+    @Test void aReviewRunningInADevelopmentFolderIsExcludedFromWorkActivity() throws Exception {
+        Path file = temporary.resolve("review.jsonl");
+        String at = "2026-11-03T15:30:00Z";
+        Files.writeString(file, Json.write(Json.obj("type","session_meta","payload",Json.obj("id","fork","cwd","D:/Git/lct"))) + "\n"
+                + codex("assistant","원래 세션에서 복사된 내용", at)
+                + codex("user",ProjectReviewModel.SESSION_MARKER + "\nPR을 검토하세요.",at)
+                + codex("assistant","검토 결과입니다.",at));
+        assertEquals(1, importer.read("codex",file,Instant.EPOCH));
+        Files.writeString(file,codex("assistant","후속 답변",at),StandardOpenOption.APPEND);
+        assertEquals(0,importer.read("codex",file,Instant.EPOCH));
+        assertTrue(new ActivitySummary(store).group(LocalDate.parse("2026-11-04"),LocalDate.parse("2026-11-04")).isEmpty());
+    }
     @TempDir Path temporary;
     Store store; WorkService service; TranscriptImporter importer;
     @BeforeEach void open() throws Exception {

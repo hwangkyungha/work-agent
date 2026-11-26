@@ -23,7 +23,7 @@ class ProjectReviewModelTest {
         store=new Store(temporary.resolve("work.db"));service=new WorkService(store,new KoreaTime(Clock.fixed(Instant.parse("2026-11-09T00:00:00Z"),ZoneOffset.UTC)),new JiraClient(config));
     }
     @AfterEach void close() throws Exception {store.close();}
-    ObjectNode job(String kind){return Json.obj("id",UUID.randomUUID().toString(),"kind",kind,"url","https://bitbucket.org/team/repo/pull-requests/1","sourceCommit",head,"destinationCommit",base);}
+    ObjectNode job(String kind){return Json.obj("id",UUID.randomUUID().toString(),"kind",kind,"ownPr",kind.equals("reply"),"url","https://bitbucket.org/team/repo/pull-requests/1","sourceCommit",head,"destinationCommit",base);}
     ObjectNode metadata(){return Json.obj("title","CT-42 기능 개선","source",Json.obj("repository",Json.obj("full_name","team/repo"),"branch",Json.obj("name","feature/CT-42")));}
     BitbucketClient projectApi(int[] sourceReads){
         return new BitbucketClient(config){
@@ -38,7 +38,7 @@ class ProjectReviewModelTest {
     @Test void projectReviewExploresFilesWithoutReceivingWholeFileBatches()throws Exception {
         int[] sourceReads={0},calls={0};
         BitbucketClient api=projectApi(sourceReads);
-        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,engine,session,fork,saved)->{
+        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,materials,engine,session,fork,saved)->{
             assertEquals("claude",engine);
             assertEquals("opus",config.reviewModel(engine));
             calls[0]++;if(prompt.contains("WHOLE_FILE_PAYLOAD"))throw new IllegalStateException("whole file content was sent");
@@ -55,17 +55,12 @@ class ProjectReviewModelTest {
     @Test void projectFindingsAreRecheckedAndCitationsAreVerifiedFromPinnedFiles()throws Exception {
         int[] reads={0},calls={0};BitbucketClient api=projectApi(reads);
         ObjectNode finding=Json.obj("path","file.txt","side","new","line",1,"title","확인할 결과","comment","발생 조건과 영향 설명","confidence","high","severity","medium","trigger","입력","expected","before","actual","after","reasoning","검증 근거","impact","결과 변경","fix","계약 확인","evidence",List.of(Json.obj("path","file.txt","side","new","line",1,"quote","after"),Json.obj("path","file.txt","side","old","line",1,"quote","before")));
-        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,engine,session,fork,saved)->{calls[0]++;if(calls[0]==2){assertTrue(prompt.contains("반박"));assertFalse(prompt.contains("WHOLE_FILE_PAYLOAD"));}return Json.obj("summary","전체 안내","findings",List.of(finding),"limitations",List.of());});
+        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,materials,engine,session,fork,saved)->{calls[0]++;if(calls[0]==2){assertTrue(prompt.contains("반박"));assertFalse(prompt.contains("WHOLE_FILE_PAYLOAD"));}return Json.obj("summary","전체 안내","findings",List.of(finding),"limitations",List.of());});
         try(PullRequestReview reviews=new PullRequestReview(service,api,model)) {
             ObjectNode row=reviews.request("https://bitbucket.org/team/repo/pull-requests/1",0,false);long until=System.nanoTime()+5_000_000_000L;
             do{row=store.get("prReview",Json.text(row,"id"));if(!PullRequestReview.inProgress(row))break;Thread.sleep(10);}while(System.nanoTime()<until);
             assertEquals("ready",Json.text(row,"status"));assertEquals(1,row.path("findings").size());assertEquals(2,calls[0]);assertEquals(0,reads[0]);assertEquals("project-session",Json.text(row,"executionMode"));
         }
-    }
-    @Test void missingLocalRepositoryDoesNotStartWholeFileFallbackReview()throws Exception {
-        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->{throw new AssertionError("must not fall back");},(p,d,e,s,f,save)->Json.object());
-        ObjectNode row=job("review");row.put("url","https://bitbucket.org/team/unknown/pull-requests/1");
-        assertThrows(IllegalArgumentException.class,()->model.forReview(row,metadata()));
     }
     @Test void abbreviatedApiHashesPrepareAndReuseTheExactPinnedWorktree()throws Exception {
         BitbucketClient api=new BitbucketClient(config){
@@ -74,11 +69,16 @@ class ProjectReviewModelTest {
         };
         JsonNode metadata=api.reviewPullRequest(BitbucketClient.PullRequest.parse("https://bitbucket.org/team/repo/pull-requests/1"));
         ObjectNode job=job("review");job.put("sourceCommit",Json.text(metadata.path("source").path("commit"),"hash")).put("destinationCommit",Json.text(metadata.path("destination").path("commit"),"hash"));
-        ReviewWorkspaces workspaces=new ReviewWorkspaces(config,store);Path directory=workspaces.prepare(job,metadata);assertEquals(head,ReviewWorkspaces.git(directory,"rev-parse","HEAD").trim());assertEquals(directory,workspaces.prepare(job,metadata));
+        ReviewWorkspaces workspaces = new ReviewWorkspaces(config,store,service.time::instant);
+        try (var lease = workspaces.new Lease(job)) {
+            Path directory = workspaces.prepare(job,metadata,clone,"",lease);
+            assertEquals(head,ReviewWorkspaces.git(directory,"rev-parse","HEAD").trim());
+            assertEquals(directory,workspaces.prepare(job,metadata,clone,"",lease));
+        }
         assertEquals(base,ReviewWorkspaces.git(clone,"rev-parse","HEAD").trim());assertEquals("keep me",Files.readString(clone.resolve("owner-uncommitted.txt")));
     }
     @Test void reviewUsesAPinnedSeparateWorktreeAndKeepsTheOwnerCheckoutAndUncommittedFiles() throws Exception {
-        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->{fail("must use project session");return null;},(prompt,directory,engine,session,fork,saved)->{
+        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->{fail("must use project session");return null;},(prompt,directory,materials,engine,session,fork,saved)->{
             assertEquals(head,ReviewWorkspaces.git(directory,"rev-parse","HEAD").trim());assertEquals("after\n",Files.readString(directory.resolve("file.txt")));
             assertTrue(prompt.contains("호출부·테스트를 직접 확인"));assertFalse(fork);saved.accept("new-session");return Json.obj("summary","목적과 읽을 파일 안내");
         });
@@ -88,20 +88,21 @@ class ProjectReviewModelTest {
         assertEquals("new-session",Json.text(store.list("reviewSession").getFirst(),"session"));
     }
     @Test void retriesInterruptedCheckoutInANewDirectoryAndKeepsExistingFiles() throws Exception {
-        Path interrupted = config.data().resolve("review-worktrees").resolve(TranscriptImporter.hash("team/repo")).resolve(head);
+        ReviewWorkspaces workspaces = new ReviewWorkspaces(config,store,service.time::instant);
+        Path isolated = workspaces.repositoryWithCommits(job("review"),metadata(),clone);
+        Path interrupted = config.data().resolve("review-worktrees").resolve(TranscriptImporter.hash("team/repo")).resolve("isolated").resolve(head);
         Files.createDirectories(interrupted.getParent());
-        ReviewWorkspaces.git(clone,"worktree","add","--no-checkout","--detach",interrupted.toString(),head);
+        ReviewWorkspaces.git(isolated,"worktree","add","--no-checkout","--detach",interrupted.toString(),head);
         Path metadataDir = Path.of(ReviewWorkspaces.git(interrupted,"rev-parse","--absolute-git-dir").trim());
         assertFalse(Files.exists(metadataDir.resolve("index")));
         Files.writeString(metadataDir.resolve("locked"),"initializing\n");
         Files.createFile(metadataDir.resolve("index.lock"));
         Files.writeString(interrupted.resolve("file.txt"),"partial");
 
-        ReviewWorkspaces workspaces = new ReviewWorkspaces(config,store);
         ObjectNode job = job("review");
-        Path recovered = workspaces.prepare(job,metadata());
+        Path recovered = prepare(workspaces,job);
         assertNotEquals(interrupted,recovered);
-        assertEquals(recovered,workspaces.prepare(job,metadata()));
+        assertEquals(recovered,prepare(workspaces,job));
         assertEquals(recovered.toString(),Json.text(job,"reviewDirectory"));
         assertEquals(head,ReviewWorkspaces.git(recovered,"rev-parse","HEAD").trim());
         assertEquals("after\n",Files.readString(recovered.resolve("file.txt")));
@@ -109,10 +110,80 @@ class ProjectReviewModelTest {
         assertEquals("partial",Files.readString(interrupted.resolve("file.txt")));
 
         Files.writeString(recovered.resolve("file.txt"),"user change");
-        assertThrows(IllegalStateException.class,()->workspaces.prepare(job,metadata()));
+        assertNotEquals(recovered,prepare(workspaces,job));
         assertEquals("user change",Files.readString(recovered.resolve("file.txt")));
         assertEquals(base,ReviewWorkspaces.git(clone,"rev-parse","HEAD").trim());
         assertEquals("keep me",Files.readString(clone.resolve("owner-uncommitted.txt")));
+    }
+    private Path prepare(ReviewWorkspaces workspaces, ObjectNode job) throws Exception {
+        try (var lease = workspaces.new Lease(job)) {
+            return workspaces.prepare(job, metadata(), clone, "", lease);
+        }
+    }
+
+    @Test void usesExistingCheckoutOnlyForOwnPrAtTheExactCleanHead() throws Exception {
+        ReviewWorkspaces workspaces = new ReviewWorkspaces(config,store,service.time::instant);
+        Path owner = temporary.resolve("owner");
+        ReviewWorkspaces.git(clone,"worktree","add","--detach",owner.toString(),head);
+        String registered = ReviewWorkspaces.git(clone,"worktree","list","--porcelain");
+        assertEquals(owner.toRealPath(),prepare(workspaces,job("review").put("ownPr",true)).toRealPath());
+        Path isolated = prepare(workspaces,job("review"));
+        assertNotEquals(owner.toRealPath(),isolated.toRealPath());
+        Files.writeString(owner.resolve("untracked.txt"),"my draft");
+        assertEquals(isolated,prepare(workspaces,job("reply")));
+        assertEquals(registered,ReviewWorkspaces.git(clone,"worktree","list","--porcelain"));
+        assertEquals("my draft",Files.readString(owner.resolve("untracked.txt")));
+    }
+    @Test void protectsActiveCheckoutThenExpiresAndRecreatesItFromPinnedObjects() throws Exception {
+        Instant start = Instant.parse("2026-11-09T00:00:00Z");
+        var now = new java.util.concurrent.atomic.AtomicReference<>(start);
+        ReviewWorkspaces workspaces = new ReviewWorkspaces(config,store,now::get);
+        ObjectNode job = job("review");
+        Path isolated;
+        try (var lease = workspaces.new Lease(job)) {
+            isolated = workspaces.prepare(job,metadata(),clone,"",lease);
+            workspaces.prepareMaterials(job,lease);
+            now.set(start.plus(Duration.ofHours(25)));
+            workspaces.clean();
+            assertTrue(Files.isDirectory(isolated));
+        }
+        Path basePath = Path.of(Json.required(job,"baseDirectory"));
+        Path inputs = Path.of(Json.required(job,"reviewInputDirectory"));
+        Files.writeString(inputs.resolve("changes.patch"),"patch");
+        now.set(start.plus(Duration.ofHours(48)));
+        workspaces.clean();
+        assertTrue(Files.isDirectory(isolated));
+        now.set(start.plus(Duration.ofHours(49)));
+        workspaces.clean();
+        assertTrue(Files.notExists(isolated));
+        assertTrue(Files.notExists(basePath));
+        assertTrue(Files.notExists(inputs));
+        try (var lease = workspaces.new Lease(job)) {
+            assertEquals(isolated,workspaces.prepare(job,metadata(),null,"",lease));
+            assertEquals(head,ReviewWorkspaces.git(isolated,"rev-parse","HEAD").trim());
+        }
+    }
+    @Test void keepsSharedWorktreeUntilBothPrsCloseAndPreservesLockedOrDirtyCheckouts() throws Exception {
+        ReviewWorkspaces workspaces = new ReviewWorkspaces(config,store,service.time::instant);
+        ObjectNode first = job("review");
+        ObjectNode second = job("review").put("url",Json.required(first,"url").replace("/1","/2"));
+        Path shared = prepare(workspaces,first);
+        assertEquals(shared,prepare(workspaces,second));
+        Path git = Path.of(Json.required(first,"reviewRepository"));
+        store.put("prLifecycle",Json.obj("id",Json.required(first,"url"),"state","MERGED"));
+        workspaces.clean();
+        assertTrue(Files.isDirectory(shared));
+        store.put("prLifecycle",Json.obj("id",Json.required(second,"url"),"state","DECLINED"));
+        ReviewWorkspaces.git(git,"worktree","lock",shared.toString());
+        workspaces.clean();
+        assertTrue(Files.isDirectory(shared));
+        ReviewWorkspaces.git(git,"worktree","unlock",shared.toString());
+        Path draft = Files.writeString(shared.resolve("unsaved.txt"),"preserve");
+        workspaces.clean();
+        assertEquals("preserve",Files.readString(draft));
+        Files.delete(draft);
+        workspaces.clean();
+        assertTrue(Files.notExists(shared));
     }
     @Test void automaticReviewReusesUnchangedInputsAfterRebaseAndChangeCleanup() throws Exception {
         Path plan = clone.resolve("openspec/changes/example/brief.md");
@@ -125,7 +196,7 @@ class ProjectReviewModelTest {
         head = commitPaths("change with notes", "file.txt", "openspec/changes/example/brief.md");
         String url = "https://bitbucket.org/team/repo/pull-requests/1";
         int[] calls = {0};
-        ProjectReviewModel model = new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,dir,engine,session,fork,saved)->{
+        ProjectReviewModel model = new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,dir,materials,engine,session,fork,saved)->{
             calls[0]++;
             return Json.obj("summary","review summary","findings",List.of(),"reviewedPaths",List.of("caller.go"));
         });
@@ -184,23 +255,23 @@ class ProjectReviewModelTest {
     @Test void authorReplyForksTheOriginalToolSessionThenResumesTheReplySession() throws Exception {
         store.put("session",Json.obj("id","codex:original","source","codex","session","original","cwd",clone.toString(),"name","CT-42 기능 개선"));
         List<String> sessions=new ArrayList<>();List<Boolean> forks=new ArrayList<>();
-        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,engine,session,fork,saved)->{
+        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,materials,engine,session,fork,saved)->{
             assertEquals("codex",engine);sessions.add(session);forks.add(fork);saved.accept("reply-session");return Json.object();
         });
         PullRequestReview.Model execution=model.forReview(job("reply"),metadata());execution.complete("첫 질문");execution.complete("추가 질문");
-        model.forReview(job("question"),metadata()).complete("재시작 후 질문");
+        model.forReview(job("question").put("ownPr",true),metadata()).complete("재시작 후 질문");
         assertEquals(List.of("original","reply-session","reply-session"),sessions);assertEquals(List.of(true,false,false),forks);
     }
     @Test void ambiguousOriginalSessionsAreNotChosenAndValidationUsesADifferentConversation() throws Exception {
         for(String id:List.of("one","two"))store.put("session",Json.obj("id","claude:"+id,"source","claude","session",id,"cwd",clone.toString(),"name","CT-42 작업"));
-        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,engine,session,fork,saved)->{assertEquals("",session);assertFalse(fork);saved.accept(UUID.randomUUID().toString());return Json.object();});
+        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,materials,engine,session,fork,saved)->{assertEquals("",session);assertFalse(fork);saved.accept(UUID.randomUUID().toString());return Json.object();});
         ObjectNode job=job("reply");model.forReview(job,metadata()).complete("답변");assertEquals(2,job.path("originSessionCandidates").size());assertTrue(store.list("prSessionBinding").isEmpty());
         model.forReview(job("review"),metadata()).complete("리뷰");model.forReview(job("review").put("validation",true),metadata()).complete("검증");
         assertEquals(3,store.list("reviewSession").size());
     }
     @Test void repeatedInputIsOmittedOnlyAtALineBoundaryWithoutCuttingJsonInHalf() throws Exception {
         List<String> inputs=new ArrayList<>();
-        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,engine,session,fork,saved)->{inputs.add(prompt);saved.accept("retained");return Json.object();});
+        ProjectReviewModel model=new ProjectReviewModel(service,config,prompt->Json.object(),(prompt,directory,materials,engine,session,fork,saved)->{inputs.add(prompt);saved.accept("retained");return Json.object();});
         PullRequestReview.Model execution=model.forReview(job("review"),metadata());String shared="공통 자료\n"+"a".repeat(2500)+"\n";
         execution.complete(shared+"{\"file\":\"first\"}\n검토하세요.");execution.complete(shared+"{\"file\":\"second\"}\n검토하세요.");
         assertTrue(inputs.get(1).contains("{\"file\":\"second\"}"));assertFalse(inputs.get(1).contains("a".repeat(2500)));

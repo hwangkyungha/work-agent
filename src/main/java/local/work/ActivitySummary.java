@@ -20,6 +20,7 @@ final class ActivitySummary {
         if (automated != null && automatedRevision == store.revision()) return automated;
         automatedRevision = store.revision();
         Set<String> ids = new HashSet<>();
+        for (ObjectNode row : store.list("automatedReviewSession")) ids.add(Json.required(row, "id"));
         for (ObjectNode row : store.list("evidence")) {
             String path = Json.text(row, "cwd").replace('\\', '/');
             if (automatedPath(path) || Json.text(row, "text").startsWith("당신은 한 실행 결과에서 자신에게 배정된 정성 기준만 판정하는 LLM Judge")) ids.add(session(row));
