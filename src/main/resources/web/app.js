@@ -130,7 +130,7 @@ function render() {
   if(view==='today')renderToday(); if(view==='plan')renderPlan(); if(view==='worklog')renderWorklog(); if(view==='team')renderTeam();
   if(view==='reviews')renderReviews();else clearTimeout(reviewPoll);
 }
-const reviewStatus={queued:'대기 중',running:'검토 중',ready:'검토 완료',saving:'비공개 초안 저장 중',saved:'비공개 초안 저장됨',failed:'실패',stale:'내용 변경으로 재검토 필요','delivery-unknown':'댓글 저장 결과 확인 필요'};
+const reviewStatus={queued:'대기 중',running:'검토 중','skipped-approved':'이미 승인하여 자동 검토 생략',ready:'검토 완료',saving:'비공개 초안 저장 중',saved:'비공개 초안 저장됨',failed:'실패',stale:'내용 변경으로 재검토 필요','delivery-unknown':'댓글 저장 결과 확인 필요'};
 function prLink(url,label='Bitbucket에서 보기'){
   try{const target=new URL(url);if(target.protocol==='https:'&&target.hostname==='bitbucket.org')return `<a href="${esc(target.href)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;}catch{}
   return '';
@@ -187,7 +187,7 @@ async function updateReviews(){
   clearTimeout(reviewPoll);
   try{
     reviewState=await api('/api/reviews');if(view!=='reviews')return;
-    $('#review-status').innerHTML=`<p class="hint">${reviewState.scanning?'저장소 확인 중…':reviewState.at?`${esc((reviewState.workspaces||[]).join(', '))} · 저장소 ${Number(reviewState.repositoryCount||0)}개 확인 · ${esc(clock(reviewState.at))}`:reviewState.configured?'아직 자동 조회 전입니다.':'Bitbucket 이메일과 토큰을 설정해 주세요.'} · 자동 확인 ${reviewState.automatic?'켜짐 (한국 시간 08:00~16:30, 30분 간격)':'꺼짐'}</p>${[...(reviewState.warnings||[]),reviewState.error].filter(Boolean).map(text=>`<p class="hint error">${esc(text)}</p>`).join('')}`;
+    $('#review-status').innerHTML=`<p class="hint">${reviewState.scanning?'저장소 확인 중…':reviewState.at?`${esc((reviewState.workspaces||[]).join(', '))} · 저장소 ${Number(reviewState.repositoryCount||0)}개 확인 · ${esc(clock(reviewState.at))}`:reviewState.configured?'아직 자동 조회 전입니다.':'Bitbucket 이메일과 토큰을 설정해 주세요.'} · 자동 확인 ${reviewState.automatic?'켜짐 (한국 시간 08:00~19:30, 30분 간격)':'꺼짐'}</p>${[...(reviewState.warnings||[]),reviewState.error].filter(Boolean).map(text=>`<p class="hint error">${esc(text)}</p>`).join('')}`;
     $('#review-repositories').innerHTML=[...(reviewState.repositories||[]),...(reviewState.localRepositories||[]).filter(local=>!(reviewState.repositories||[]).some(row=>row.repository===local.repository))].map(row=>`<p><strong>${esc(row.repository)}</strong> <button class="text-button" data-review-repository="${esc(row.repository)}">편집</button><br><small>로컬: ${esc((reviewState.localRepositories||[]).find(local=>local.repository===row.repository)?.localPath||'자동 검색')}<br>외부 명세: ${(row.sources||[]).map(esc).join('<br>')||'사용 안 함'}</small></p>`).join('');
     const allJobs=reviewState.jobs||[],group=job=>job.listGroup||'active';
     $('#review-filters').innerHTML=[['active','검토할 PR'],['completed','완료한 검토'],['closed','종료된 PR'],['all','전체 기록']].map(([key,label])=>`<button class="button" data-review-filter="${key}" aria-pressed="${reviewFilter===key}">${label} <span>${key==='all'?allJobs.length:allJobs.filter(job=>group(job)===key).length}</span></button>`).join('');

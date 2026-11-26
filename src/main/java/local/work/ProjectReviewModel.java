@@ -28,6 +28,14 @@ final class ProjectReviewModel implements PullRequestReview.Model {
         Path clone = workspaces.repositoryWithCommits(current,metadata,workspaces.localRepository(current));
         return ReviewReuse.equivalentBase(clone,previous,current);
     }
+    @Override public boolean sameApprovedChange(ObjectNode approved, ObjectNode current, JsonNode metadata) throws Exception {
+        try {
+            Path local = workspaces.localRepository(current);
+            Path clone = workspaces.repositoryWithCommits(current, metadata, local);
+            workspaces.repositoryWithCommits(approved, metadata, local);
+            return ReviewReuse.sameApprovedChange(clone, approved, current);
+        } catch (java.io.IOException | IllegalStateException unavailable) { return false; }
+    }
     @Override public void cleanWorkspaces() throws Exception { workspaces.clean(); }
     ObjectNode bind(JsonNode input) throws Exception {
         String url=BitbucketClient.PullRequest.parse(Json.required(input,"url")).url(),id=Json.text(input,"sessionId");

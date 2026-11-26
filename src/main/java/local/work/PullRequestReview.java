@@ -15,6 +15,7 @@ final class PullRequestReview implements AutoCloseable {
         JsonNode complete(String prompt) throws Exception;
         default Model forReview(ObjectNode job, JsonNode metadata) throws Exception { return this; }
         default String equivalentBase(ObjectNode previous, ObjectNode current, JsonNode metadata) throws Exception { return ""; }
+        default boolean sameApprovedChange(ObjectNode approved, ObjectNode current, JsonNode metadata) throws Exception { return false; }
         default void cleanWorkspaces() throws Exception {}
         @Override default void close() {}
     }
@@ -24,10 +25,15 @@ final class PullRequestReview implements AutoCloseable {
     private final String agentName;
     final ReviewSources sources;
     final ReviewList list;
+    private final ReviewApprovals approvals;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Set<String> active = ConcurrentHashMap.newKeySet();
     PullRequestReview(WorkService service, BitbucketClient api, Model model) { this(service, api, model, "work-agent"); }
-    PullRequestReview(WorkService service, BitbucketClient api, Model model, String agentName) { this.service = service; this.api = api; this.model = model; this.agentName = agentName; this.sources = new ReviewSources(service.store, api);this.list=new ReviewList(service,api); }
+    PullRequestReview(WorkService service, BitbucketClient api, Model model, String agentName) {
+        this.service = service; this.api = api; this.model = model; this.agentName = agentName;
+        this.sources = new ReviewSources(service.store, api); this.list = new ReviewList(service,api);
+        this.approvals = new ReviewApprovals(service.store,api,model);
+    }
     ObjectNode answerQuestion(String question, String boundUrl, String reviewedCommit, List<String> recentUrls) throws Exception {
         Set<String> urls = new LinkedHashSet<>(PR_LINK.matcher(question).results().map(match -> match.group()).toList());
         var match = PR_NUMBER.matcher(question);
@@ -51,6 +57,12 @@ final class PullRequestReview implements AutoCloseable {
         return request(url, parent, automatic, rerun, referenceUrls, false);
     }
     synchronized ObjectNode request(String url, long parent, boolean automatic, boolean rerun, JsonNode referenceUrls, boolean validation) throws Exception {
+        return request(url, parent, automatic, rerun, referenceUrls, validation, "");
+    }
+    synchronized ObjectNode requestAutomaticReview(String url, String owner) throws Exception {
+        return request(url, 0, true, false, Json.MAPPER.createArrayNode(), false, owner);
+    }
+    private ObjectNode request(String url, long parent, boolean automatic, boolean rerun, JsonNode referenceUrls, boolean validation, String owner) throws Exception {
         if (parent < 0) throw new IllegalArgumentException("댓글 번호는 0보다 커야 합니다.");
         if (!referenceUrls.isMissingNode() && !referenceUrls.isArray()) throw new IllegalArgumentException("참고 문서 주소는 목록으로 입력하세요.");
         if (referenceUrls.size() > 4) throw new IllegalArgumentException("참고 문서는 최대 4개까지 추가할 수 있습니다.");
@@ -59,6 +71,7 @@ final class PullRequestReview implements AutoCloseable {
         JsonNode metadata = api.reviewPullRequest(pr);
         list.observe(pr.url(),metadata);
         if (!Json.text(metadata, "state").equals("OPEN")) throw new IllegalArgumentException("열려 있는 PR만 검토할 수 있습니다.");
+        if (automatic && !validation && parent == 0 && approved(pr, metadata, owner)) return null;
         String source = Json.required(metadata.path("source").path("commit"), "hash"), destination = Json.required(metadata.path("destination").path("commit"), "hash");
         String revision = "";
         if (parent > 0) {
@@ -70,6 +83,7 @@ final class PullRequestReview implements AutoCloseable {
         for(ObjectNode old:history)if(pr.url().equals(Json.text(old,"url"))&&!Json.text(old,"sourceCommit").isBlank()&&source.startsWith(Json.text(old,"sourceCommit")))pinCommits(old,metadata);
         Collections.reverse(history);
         List<ObjectNode> matching = history.stream().filter(job -> job.path("validation").asBoolean() == validation
+                && !Json.text(job, "status").equals("skipped-approved")
                 && pr.url().equals(Json.text(job, "url")) && parent == job.path("parentCommentId").asLong()
                 && (parent == 0 ? source.equals(Json.text(job, "sourceCommit")) : commentRevision.equals(Json.text(job, "commentRevision")))).toList();
         for (ObjectNode job : matching) if (inProgress(job) || Json.text(job, "status").equals("delivery-unknown")) return job;
@@ -104,7 +118,8 @@ final class PullRequestReview implements AutoCloseable {
         if (active.add(id)) worker.submit(() -> {
             try {
                 if (!needsAutomaticSave(row)) run(id);
-                if (row.path("automatic").asBoolean() && !required(id).hasNonNull("reusedReviewId")) savePending(id);
+                ObjectNode result = required(id);
+                if (needsAutomaticSave(result)) savePending(id, true);
             }
             catch (Exception e) { ObjectNode current = service.store.get("prReview", id); if (!Set.of("delivery-unknown", "stale").contains(Json.text(current, "status"))) current.put("status", "failed"); current.put("error", SlackConnection.friendly(e)); save(current); }
             finally { active.remove(id); }
@@ -117,7 +132,26 @@ final class PullRequestReview implements AutoCloseable {
         }
     }
     private static boolean needsAutomaticSave(JsonNode row) {
-        return Json.text(row, "status").equals("ready") && row.path("automatic").asBoolean() && !row.hasNonNull("reusedReviewId") && hasDraft(row);
+        return Json.text(row, "status").equals("ready") && row.path("automatic").asBoolean() && !row.hasNonNull("reusedReviewId")
+                && !row.path("approvalSuppressed").asBoolean() && hasDraft(row);
+    }
+    private static boolean automaticReview(JsonNode row) {
+        return row.path("automatic").asBoolean() && row.path("parentCommentId").asLong() == 0;
+    }
+    private boolean approved(BitbucketClient.PullRequest pr, JsonNode metadata, String owner) throws Exception {
+        if (!metadata.path("participants").isArray()) return false;
+        return approvals.excludes(pr, metadata, owner.isBlank() ? Json.required(api.get("/user"), "uuid") : owner);
+    }
+    boolean suppressApprovedNotice(ObjectNode job) throws Exception {
+        if (!automaticReview(job)) return false;
+        BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.required(job, "url"));
+        if (!approved(pr, api.reviewPullRequest(pr), "")) return false;
+        synchronized (service.store) {
+            ObjectNode current = required(Json.required(job, "id"));
+            current.put("approvalSuppressed", true);
+            save(current);
+        }
+        return true;
     }
     static boolean inProgress(JsonNode row) {
         return Set.of("queued", "running", "saving").contains(Json.text(row, "status")) || needsAutomaticSave(row);
@@ -179,6 +213,11 @@ final class PullRequestReview implements AutoCloseable {
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.text(row, "url"));
         JsonNode metadata=api.reviewPullRequest(pr);
         pinCommits(row,metadata);
+        String owner = Json.required(api.get("/user"), "uuid");
+        if (automaticReview(row) && approved(pr, metadata, owner)) {
+            save(row.put("status", "skipped-approved").put("approvalSuppressed", true).put("finishedAt", service.time.instant().toString()));
+            return;
+        }
         if(!Json.text(metadata,"state").equals("OPEN")||!Json.text(metadata.path("source").path("commit"),"hash").equals(Json.text(row,"sourceCommit")))throw new IllegalStateException("PR head가 바뀌었거나 닫혔습니다. 다시 요청하세요.");
         row.put("destinationCommit",Json.text(metadata.path("destination").path("commit"),"hash"));
         List<JsonNode> comments = api.comments(pr);
@@ -188,7 +227,6 @@ final class PullRequestReview implements AutoCloseable {
             if (reuseReview(row, metadata)) return;
         }
         JsonNode incoming = parent == 0 ? Json.object() : commentWithLocation(comments, parent);
-        String owner = Json.required(api.get("/user"), "uuid");
         boolean ownPr = owner.equals(Json.text(metadata.path("author"), "uuid"));
         row.put("ownPr", ownPr);
         if (parent > 0 && (!ownPr || Json.text(incoming.path("user"), "uuid").equals(owner))) throw new IllegalArgumentException("내 PR에 다른 사람이 남긴 댓글에만 답변할 수 있습니다.");
@@ -575,6 +613,9 @@ final class PullRequestReview implements AutoCloseable {
         return documents;
     }
     synchronized ObjectNode savePending(String id) throws Exception {
+        return savePending(id, false);
+    }
+    private synchronized ObjectNode savePending(String id, boolean automatic) throws Exception {
         ObjectNode row = required(id);
         if (row.path("validation").asBoolean()) throw new IllegalArgumentException("검증용 실행은 Bitbucket에 저장할 수 없습니다.");
         if (row.hasNonNull("reusedReviewId")) throw new IllegalArgumentException("이전 검토를 재사용했습니다. 새 초안은 다시 검토한 뒤 저장하세요.");
@@ -582,6 +623,7 @@ final class PullRequestReview implements AutoCloseable {
         BitbucketClient.PullRequest pr = BitbucketClient.PullRequest.parse(Json.text(row, "url"));
         JsonNode current = api.reviewPullRequest(pr);
         pinCommits(row,current);
+        if (automatic && automaticReview(row) && approved(pr, current, "")) return save(row.put("approvalSuppressed", true));
         if (!Json.text(current, "state").equals("OPEN") || !Json.text(row, "sourceCommit").equals(Json.text(current.path("source").path("commit"), "hash"))) { row.put("status", "stale"); return save(row); }
         List<JsonNode> comments = api.comments(pr);
         if (row.path("parentCommentId").asLong() == 0 && row.path("findings").isEmpty()) return row;

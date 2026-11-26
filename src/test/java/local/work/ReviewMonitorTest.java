@@ -25,10 +25,10 @@ class ReviewMonitorTest {
                 "2026-11-09T08:00:00", "2026-11-09T08:30:00",
                 "2026-11-09T08:29:59", "2026-11-09T08:30:00",
                 "2026-11-09T08:30:00", "2026-11-09T09:00:00",
-                "2026-11-09T15:59:59", "2026-11-09T16:00:00",
                 "2026-11-09T16:00:00", "2026-11-09T16:30:00",
-                "2026-11-09T16:30:00", "2026-11-10T08:00:00",
-                "2026-11-09T17:00:00", "2026-11-10T08:00:00",
+                "2026-11-09T16:30:00", "2026-11-09T17:00:00",
+                "2026-11-09T19:29:59", "2026-11-09T19:30:00",
+                "2026-11-09T19:30:00", "2026-11-10T08:00:00",
                 "2026-11-09T23:59:59", "2026-11-10T08:00:00",
                 "2026-11-07T07:00:00", "2026-11-07T08:00:00");
         slots.forEach((now, next) -> assertEquals(
@@ -45,7 +45,7 @@ class ReviewMonitorTest {
                 return List.of();
             }
         };
-        ZonedDateTime evening = ZonedDateTime.parse("2026-11-09T18:00:00+09:00[Asia/Seoul]");
+        ZonedDateTime evening = ZonedDateTime.parse("2026-11-09T20:00:00+09:00[Asia/Seoul]");
         WorkService service = new WorkService(store, new KoreaTime(Clock.fixed(evening.toInstant(), KoreaTime.ZONE)), new JiraClient(config));
         reviews = new PullRequestReview(service, api, prompt -> Json.object());
         monitor = new ReviewMonitor(service, api, reviews, config, text -> {});
@@ -136,5 +136,81 @@ class ReviewMonitorTest {
         monitor.notifyCompleted();
         monitor.notifyCompleted();
         assertEquals(1, sent.size());
+    }
+
+    @Test void approvedPrSkipsAutomaticReviewAndQueuedNoticeButAllowsManualReview() throws Exception {
+        Config config = new Config(temporary.resolve("none"), Map.of());
+        store = new Store(temporary.resolve("test.db"));
+        WorkService service = new WorkService(store, new KoreaTime(Clock.systemUTC()), new JiraClient(config));
+        var approved = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var api = new PullRequestReviewTest.FakeApi(config) {
+            @Override JsonNode pullRequest(PullRequest pr) {
+                return ((ObjectNode) super.pullRequest(pr)).set("participants",
+                        Json.MAPPER.createArrayNode().add(Json.obj("user", Json.obj("uuid", "owner"), "approved", approved.get())));
+            }
+        };
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        reviews = new PullRequestReview(service, api, prompt -> {
+            calls.incrementAndGet();
+            return Json.obj("summary", "검토 완료", "findings", List.of(), "limitations", List.of());
+        });
+        var sent = new ArrayList<String>();
+        monitor = new ReviewMonitor(service, api, reviews, config, text -> sent.add(text));
+        String url = "https://bitbucket.org/team/repo/pull-requests/1";
+        assertNull(reviews.requestAutomaticReview(url, "owner"));
+        assertTrue(store.list("prReview").isEmpty());
+        store.put("prReview", Json.obj("id", "queued", "url", url, "sourceCommit", "source", "status", "queued", "automatic", true));
+        reviews.run("queued");
+        assertEquals("skipped-approved", Json.text(store.get("prReview", "queued"), "status"));
+        assertEquals(0, calls.get());
+        store.put("prReview", Json.obj("id", "finished", "url", url, "sourceCommit", "older", "status", "ready", "automatic", true));
+        monitor.notifyCompleted();
+        assertTrue(sent.isEmpty());
+        assertTrue(store.get("prReview", "finished").path("approvalSuppressed").asBoolean());
+        assertTrue(store.list("prReviewNotice").isEmpty());
+        assertNotNull(reviews.request(url, 0, false));
+        waitForJobs();
+        assertTrue(calls.get() > 0);
+        monitor.notifyCompleted();
+        assertEquals(1, sent.size());
+        String other = "https://bitbucket.org/team/repo/pull-requests/2";
+        store.put("prReview", Json.obj("id", "skipped", "url", other, "sourceCommit", "source", "status", "skipped-approved", "automatic", true));
+        approved.set(false);
+        assertNotEquals("skipped", Json.text(reviews.requestAutomaticReview(other, "owner"), "id"));
+        waitForJobs();
+    }
+
+    @Test void aRebasedHeadUsesTheRevisionBeforeTheOwnersApproval() throws Exception {
+        Config config = new Config(temporary.resolve("none"), Map.of());
+        store = new Store(temporary.resolve("test.db"));
+        var api = new PullRequestReviewTest.FakeApi(config) {
+            ObjectNode snapshot(String at, String head) {
+                ObjectNode pr = (ObjectNode)super.pullRequest(new PullRequest("team", "repo", 1));
+                ((ObjectNode) pr.path("source").path("commit")).put("hash", head);
+                return pr.put("date", at);
+            }
+            @Override JsonNode get(String path) {
+                if (!path.contains("/activity?")) return super.get(path);
+                return Json.obj("values", List.of(
+                        Json.obj("update", snapshot("2026-11-26T11:30:00Z", "rebased-head")),
+                        Json.obj("approval", Json.obj("user", Json.obj("uuid", "owner"), "date", "2026-11-26T11:00:00Z")),
+                        Json.obj("update", snapshot("2026-11-26T10:00:00Z", "approved-head"))));
+            }
+        };
+        PullRequestReview.Model comparator = new PullRequestReview.Model() {
+            @Override public JsonNode complete(String prompt) { throw new AssertionError("Approval uses Git."); }
+            @Override public boolean sameApprovedChange(ObjectNode approved, ObjectNode current, JsonNode metadata) {
+                assertEquals("approved-head", Json.text(approved, "sourceCommit"));
+                return Json.text(current, "sourceCommit").equals("rebased-head");
+            }
+        };
+        BitbucketClient.PullRequest pr = new BitbucketClient.PullRequest("team", "repo", 1);
+        ObjectNode metadata = api.snapshot("2026-11-26T11:30:00Z", "rebased-head");
+        metadata.set("participants", Json.MAPPER.createArrayNode().add(Json.obj("user", Json.obj("uuid", "owner"), "approved", false)));
+        ReviewApprovals approvals = new ReviewApprovals(store, api, comparator);
+        assertTrue(approvals.excludes(pr, metadata, "owner"));
+        assertFalse(approvals.excludes(pr, metadata, "different-user"));
+        ((ObjectNode) metadata.path("source").path("commit")).put("hash", "changed-head");
+        assertFalse(approvals.excludes(pr, metadata, "owner"));
     }
 }

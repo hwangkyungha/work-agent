@@ -23,6 +23,27 @@ class ProjectReviewModelTest {
         store=new Store(temporary.resolve("work.db"));service=new WorkService(store,new KoreaTime(Clock.fixed(Instant.parse("2026-11-09T00:00:00Z"),ZoneOffset.UTC)),new JiraClient(config));
     }
     @AfterEach void close() throws Exception {store.close();}
+    @Test void comparesTheApprovalWithARebaseAndDetectsAnAdditionalChange() throws Exception {
+        Files.writeString(clone.resolve("file.txt"), "original\n" + "context\n".repeat(12) + "before target\n");
+        ReviewWorkspaces.git(clone, "commit", "-am", "shared base");
+        String originalBase = ReviewWorkspaces.git(clone, "rev-parse", "HEAD").strip();
+        Files.writeString(clone.resolve("file.txt"), "approved\n" + "context\n".repeat(12) + "before target\n");
+        ReviewWorkspaces.git(clone, "commit", "-am", "approved change");
+        String approvedHead = ReviewWorkspaces.git(clone, "rev-parse", "HEAD").strip();
+        ReviewWorkspaces.git(clone, "checkout", "--detach", originalBase);
+        Files.writeString(clone.resolve("file.txt"), "original\n" + "context\n".repeat(12) + "updated target\n");
+        ReviewWorkspaces.git(clone, "commit", "-am", "target advanced");
+        String newBase = ReviewWorkspaces.git(clone, "rev-parse", "HEAD").strip();
+        Files.writeString(clone.resolve("file.txt"), "approved\n" + "context\n".repeat(12) + "updated target\n");
+        ReviewWorkspaces.git(clone, "commit", "-am", "rebased approved change");
+        ObjectNode current = Json.obj("sourceCommit", ReviewWorkspaces.git(clone, "rev-parse", "HEAD").strip(), "destinationCommit", newBase);
+        ObjectNode approved = Json.obj("sourceCommit", approvedHead, "destinationCommit", originalBase);
+        assertTrue(ReviewReuse.sameApprovedChange(clone, approved, current));
+        Files.writeString(clone.resolve("file.txt"), "different\n" + "context\n".repeat(12) + "updated target\n");
+        ReviewWorkspaces.git(clone, "commit", "-am", "additional change");
+        current.put("sourceCommit", ReviewWorkspaces.git(clone, "rev-parse", "HEAD").strip());
+        assertFalse(ReviewReuse.sameApprovedChange(clone, approved, current));
+    }
     ObjectNode job(String kind){return Json.obj("id",UUID.randomUUID().toString(),"kind",kind,"ownPr",kind.equals("reply"),"url","https://bitbucket.org/team/repo/pull-requests/1","sourceCommit",head,"destinationCommit",base);}
     ObjectNode metadata(){return Json.obj("title","CT-42 기능 개선","source",Json.obj("repository",Json.obj("full_name","team/repo"),"branch",Json.obj("name","feature/CT-42")));}
     BitbucketClient projectApi(int[] sourceReads){

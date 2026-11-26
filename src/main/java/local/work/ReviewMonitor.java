@@ -3,6 +3,7 @@ package local.work;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Duration;
+import java.time.LocalTime;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -12,7 +13,7 @@ import java.util.concurrent.*;
 final class ReviewMonitor implements AutoCloseable {
     @FunctionalInterface interface CompletionNotifier { void send(String text, ObjectNode review) throws Exception; }
     private static final int FIRST_SCAN_HOUR = 8;
-    private static final int END_SCAN_HOUR = 17;
+    private static final LocalTime LAST_SCAN = LocalTime.of(19, 30);
     private static final int SCAN_INTERVAL_MINUTES = 30;
     private final WorkService service;
     private final BitbucketClient api;
@@ -47,7 +48,7 @@ final class ReviewMonitor implements AutoCloseable {
     }
     static ZonedDateTime nextScanTime(ZonedDateTime now) {
         ZonedDateTime next = now.truncatedTo(ChronoUnit.MINUTES).plusMinutes(SCAN_INTERVAL_MINUTES - now.getMinute() % SCAN_INTERVAL_MINUTES);
-        if (next.getHour() >= END_SCAN_HOUR) return next.plusDays(1).withHour(FIRST_SCAN_HOUR).withMinute(0);
+        if (next.toLocalTime().isAfter(LAST_SCAN)) return next.plusDays(1).withHour(FIRST_SCAN_HOUR).withMinute(0);
         if (next.getHour() < FIRST_SCAN_HOUR) return next.withHour(FIRST_SCAN_HOUR).withMinute(0);
         return next;
     }
@@ -97,7 +98,10 @@ final class ReviewMonitor implements AutoCloseable {
                         if (!Json.text(pr, "state").equals("OPEN") || (!own && !reviewer)) continue;
                         String url = "https://bitbucket.org/" + fullName + "/pull-requests/" + pr.path("id").asInt();
                         reviews.list.observe(url,pr);observed.add(url);
-                        if (!own && reviewer) { ObjectNode job = reviews.request(url, 0, true); items.add(item(job, fullName, "review")); }
+                        if (!own && reviewer) {
+                            ObjectNode job = reviews.requestAutomaticReview(url, owner);
+                            if (job != null) items.add(item(job, fullName, "review"));
+                        }
                         if (own) {
                             List<JsonNode> comments = api.comments(BitbucketClient.PullRequest.parse(url));
                             for (JsonNode incoming : unanswered(comments, owner)) { ObjectNode job = reviews.request(url, incoming.path("id").asLong(), true); items.add(item(job, fullName, "reply")); }
@@ -134,12 +138,21 @@ final class ReviewMonitor implements AutoCloseable {
     }
     synchronized void notifyCompleted() throws Exception {
         for (ObjectNode row : service.store.list("prReview")) {
-            if (row.path("validation").asBoolean() || row.path("notified").asBoolean() || PullRequestReview.inProgress(row) || PullRequestReview.replyNotNeeded(row)) continue;
+            if (row.path("validation").asBoolean() || row.path("notified").asBoolean() || row.path("approvalSuppressed").asBoolean()
+                    || PullRequestReview.inProgress(row) || PullRequestReview.replyNotNeeded(row)) continue;
             if (!Set.of("ready", "saved", "failed", "stale", "delivery-unknown").contains(Json.text(row, "status"))) continue;
             String key = PullRequestReview.notificationKey(row);
             boolean sent = service.store.get("prReviewNotice", key) != null || service.store.list("prReview").stream()
                     .anyMatch(old -> !old.path("validation").asBoolean() && old.path("notified").asBoolean() && key.equals(PullRequestReview.notificationKey(old)));
-            if (!sent) notifier.send(PullRequestReview.resultMessage(row), row);
+            if (!sent) {
+                try { if (reviews.suppressApprovedNotice(row)) continue; }
+                catch (InterruptedException stop) { throw stop; }
+                catch (Exception e) {
+                    System.err.println("PR 승인 여부를 확인하지 못해 알림을 보류합니다: " + SlackConnection.friendly(e));
+                    continue;
+                }
+                notifier.send(PullRequestReview.resultMessage(row), row);
+            }
             synchronized (service.store) {
                 service.store.put("prReviewNotice", Json.obj("id", key, "reviewId", Json.text(row, "id"), "at", service.time.instant().toString()));
                 ObjectNode current = service.store.get("prReview", Json.required(row, "id"));

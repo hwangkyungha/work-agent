@@ -19,6 +19,14 @@ final class ReviewReuse {
     static boolean comparable(JsonNode row) {
         return row.path("referenceUrls").isEmpty() && row.path("repositorySources").isEmpty();
     }
+    static boolean sameApprovedChange(Path clone, JsonNode approved, JsonNode current) throws Exception {
+        String oldHead = Json.required(approved, "sourceCommit"), head = Json.required(current, "sourceCommit");
+        String oldBase = ReviewWorkspaces.git(clone, "merge-base", oldHead, Json.required(approved, "destinationCommit")).strip();
+        String base = ReviewWorkspaces.git(clone, "merge-base", head, Json.required(current, "destinationCommit")).strip();
+        if (changes(clone, oldBase, oldHead).equals(changes(clone, base, head))) return true;
+        String rebased = ReviewWorkspaces.git(clone, "merge-tree", "--write-tree", "--no-messages", "--merge-base=" + oldBase, base, oldHead).strip();
+        return rebased.equals(ReviewWorkspaces.git(clone, "rev-parse", head + "^{tree}").strip());
+    }
 
     static String equivalentBase(Path clone, JsonNode previous, JsonNode current) throws Exception {
         String oldHead = Json.text(previous, "sourceCommit"), oldBase = Json.text(previous, "baseCommit");
