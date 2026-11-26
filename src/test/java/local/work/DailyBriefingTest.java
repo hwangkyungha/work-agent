@@ -60,12 +60,34 @@ class DailyBriefingTest {
         assertFalse(text.contains("상세 수행 결과")); assertFalse(text.contains("긴 대화 원문")); assertFalse(text.contains("이름 없는 세션"));
         assertFalse(text.contains("메시지")); assertFalse(text.contains("세션 개수"));
     }
-    @Test void yesterdayPlanWithoutActivityIsNotReportedAsPerformed() {
+    @Test void yesterdayPlanWithoutActivityIsShownAsUnconfirmed() {
         service.activity(Json.obj("date", "2026-11-04", "title", "이틀 전 기록"));
         ObjectNode task = service.task(Json.obj("title", "어제 계획한 업무"));
         service.plan(Json.obj("date", "2026-11-05", "taskIds", List.of(Json.text(task, "id"))));
-        String text = reports.daily(service.time.today());
-        assertTrue(text.contains("2026-11-05 목요일")); assertFalse(text.contains("어제 계획한 업무")); assertFalse(text.contains("이틀 전 기록"));
+        for (String text : List.of(reports.daily(service.time.today()), reports.briefing(service.time.today()))) {
+            assertTrue(text.contains("2026-11-05 목요일"));
+            assertTrue(text.contains("- 어제 계획한 업무 (수행 확인 전)\n"));
+            assertFalse(text.contains("확인된 수행 내용이 없습니다"));
+            assertFalse(text.contains("이틀 전 기록"));
+        }
+        assertTrue(new WorkLedger(service).worklogCandidates(LocalDate.of(2026, 11, 5)).isEmpty());
+    }
+    @Test void confirmedWorkTakesPrecedenceOverAnUnconfirmedPlanForTheSameIssue() {
+        String date = "2026-11-05";
+        ObjectNode planned = service.task(Json.obj("jiraKey", "CTS-1", "title", "계획한 업무"));
+        ObjectNode skipped = service.task(Json.obj("title", "미착수한 업무"));
+        ObjectNode removed = service.task(Json.obj("title", "계획에서 뺀 업무"));
+        service.plan(Json.obj("date", date, "taskIds", List.of(Json.text(planned, "id"), Json.text(skipped, "id"), Json.text(removed, "id"))));
+        service.plan(Json.obj("date", date, "taskIds", List.of(Json.text(planned, "id"), Json.text(skipped, "id"))));
+        new WorkLedger(service).record(Json.obj("date", date, "workId", Json.text(skipped, "id"), "outcome", "not-started"));
+        store.put("workDay", Json.obj("id", "separate-work", "date", date, "workId", "session:claude:extra",
+                "jiraKey", "CTS-1", "title", "수행한 업무", "outcome", "progress"));
+        String text = reports.briefing(service.time.today());
+        assertTrue(text.contains("- CTS-1 수행한 업무\n"));
+        assertEquals(1, text.lines().filter(line -> line.startsWith("- CTS-1 ")).count());
+        assertFalse(text.contains("수행 확인 전"));
+        assertFalse(text.contains("미착수한 업무"));
+        assertFalse(text.contains("계획에서 뺀 업무"));
     }
     @Test void sampleRequirementKeysAndAutomatedSessionsNeverBecomeBriefingIssues() {
         session("claude", "sample1", "REQ-001"); session("codex", "sample2", "REQ-002");

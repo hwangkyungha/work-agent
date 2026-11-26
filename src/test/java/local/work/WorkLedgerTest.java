@@ -31,10 +31,10 @@ class WorkLedgerTest {
         service.plan(Json.obj("date", "2026-11-06", "taskIds", List.of(id)));
         WorkLedger ledger = new WorkLedger(service);
         assertFalse(ledger.day(LocalDate.of(2026,11,6)).getFirst().path("performed").asBoolean());
-        assertFalse(new Reports(service).briefing(service.time.today()).contains("- 오류 재현"));
+        assertTrue(new Reports(service).briefing(service.time.today()).contains("- 오류 재현 (수행 확인 전)\n"));
         assertEquals(id, Json.text(ledger.carryover(service.time.today()).getFirst(), "taskId"));
         ledger.record(Json.obj("date", "2026-11-06", "workId", id, "outcome", "progress"));
-        assertTrue(new Reports(service).briefing(service.time.today()).contains("- 오류 재현"));
+        assertTrue(new Reports(service).briefing(service.time.today()).contains("- 오류 재현\n"));
         assertEquals(1, ledger.worklogCandidates(LocalDate.of(2026,11,6)).size());
     }
     @Test void initialPlanAndRemovedWorkRemainAfterEditingTitlesAndDeletingATask() {

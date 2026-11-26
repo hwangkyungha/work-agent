@@ -106,12 +106,20 @@ final class Reports {
     private void appendPreviousWork(StringBuilder text, LocalDate date) {
         LinkedHashSet<String> lines = new LinkedHashSet<>();
         Set<String> issues = new HashSet<>();
-        for (ObjectNode work : new WorkLedger(service).reviewRows(date)) if (work.path("performed").asBoolean()) {
+        List<ObjectNode> previousWork = new WorkLedger(service).reviewRows(date);
+        Set<String> performedIssues = new HashSet<>();
+        for (ObjectNode work : previousWork) {
+            if (work.path("performed").asBoolean()) performedIssues.add(Json.text(work, "jiraKey"));
+        }
+        for (ObjectNode work : previousWork) {
             String key = Json.text(work, "jiraKey");
+            boolean performed = work.path("performed").asBoolean();
+            boolean unconfirmedPlan = work.path("inFinalPlan").asBoolean() && Json.text(work, "outcome").equals("unconfirmed");
+            if (!performed && (!unconfirmedPlan || (!key.isBlank() && performedIssues.contains(key)))) continue;
             String title = Json.text(work, "title");
             if (title.equals("이름 없는 세션")) title = "";
             if (key.isBlank() && title.isBlank()) continue;
-            if (key.isBlank() || issues.add(key)) lines.add(workTitle(key, title));
+            if (key.isBlank() || issues.add(key)) lines.add(workTitle(key, title) + (performed ? "" : " (수행 확인 전)"));
         }
         if (lines.isEmpty()) text.append("- 확인된 수행 내용이 없습니다. 어제 계획과 실제 활동을 확인해 주세요.\n");
         lines.forEach(line -> text.append("- ").append(line).append('\n'));
