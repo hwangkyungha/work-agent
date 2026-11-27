@@ -182,6 +182,66 @@ class WebUiTest {
         page.navigate(ORIGIN); page.getByRole(AriaRole.HEADING, new Page.GetByRoleOptions().setName("오늘 할 일").setExact(true)).waitFor();
     }
     @AfterEach void close() { if (browser != null) browser.close(); if (playwright != null) playwright.close(); }
+    @Test void teamRecordShowsDailyLogsAndRestoresTheSelectedMembersConversation() throws Exception {
+        ObjectNode work = Json.obj("id", "CT-42", "title", "보고서 검토", "issueUrl", "https://jira.example.invalid/browse/CT-42",
+                "byDay", Map.of("2026-11-02", 5400));
+        ObjectNode teamData = Json.obj("weekFrom", "2026-11-02", "weekTo", "2026-11-06",
+                "members", List.of(Json.obj("id","first","name","김 팀원"),Json.obj("id","second","name","박 팀원")),
+                "observations", List.of(Json.obj("memberId","first","date","2026-11-03","type","관찰","text","검토 내용을 공유함")),
+                "snapshots", List.of(Json.obj("memberId", "first", "from","2026-11-02","to","2026-11-05",
+                        "byDay", Map.of("2026-11-02", 5400), "loggedSeconds", 5400, "issues", List.of(work))));
+        var messages = new HashMap<String, List<ObjectNode>>();
+        messages.put("first",new ArrayList<>(List.of(Json.obj("role","assistant","text","이전 주간 답변"))));
+        messages.put("second",new ArrayList<>());
+        List<JsonNode> submissions = new ArrayList<>();
+        page.route("**/api/team", route -> route.fulfill(new Route.FulfillOptions().setContentType("application/json").setBody(Json.write(teamData))));
+        page.route("**/api/team/chat*", route -> {
+            String body;
+            if (route.request().method().equals("POST")) {
+                JsonNode request = Json.read(route.request().postData());
+                submissions.add(request);
+                var history = messages.get(Json.required(request,"memberId"));
+                history.add(Json.obj("role","user","text",Json.required(request,"text")));
+                history.add(Json.obj("role","assistant","text","등록 시간은 1.5시간입니다."));
+                body = Json.write(history.getLast());
+            } else {
+                String id = URI.create(route.request().url()).getQuery().substring("memberId=".length());
+                body = Json.write(messages.get(id));
+            }
+            route.fulfill(new Route.FulfillOptions().setContentType("application/json").setBody(body));
+        });
+        page.locator("[data-view='team']").click();
+        page.getByRole(AriaRole.HEADING,new Page.GetByRoleOptions().setName("팀원 기록").setExact(true)).waitFor();
+        page.getByText("이전 주간 답변").waitFor();
+        assertEquals(5,page.locator(".team-day").count());
+        assertEquals(3,page.getByText("등록 기록 없음",new Page.GetByTextOptions().setExact(true)).count());
+        assertEquals(1,page.getByText("아직 Jira에서 가져오지 않음",new Page.GetByTextOptions().setExact(true)).count());
+        Locator details = page.locator(".team-day-issues");
+        assertFalse(details.isVisible());
+        page.locator(".team-day summary").click();
+        assertEquals("https://jira.example.invalid/browse/CT-42",details.locator("a").getAttribute("href"));
+        assertTrue(details.innerText().contains("1.5시간"));
+        page.locator("#team-chat-text").fill("등록 시간을 다시 알려줘.");
+        page.locator("#team-chat-form button").click();
+        page.getByText("등록 시간은 1.5시간입니다.").waitFor();
+        assertEquals("first",Json.text(submissions.getFirst(),"memberId"));
+        assertFalse(page.locator("#chat-body").isVisible());
+        page.locator("[data-member='second']").click();
+        page.getByText("아직 통계 대화가 없습니다.").waitFor();
+        assertTrue(page.locator("#team-chat-history .message").count()==0);
+        page.reload();
+        page.locator("[data-view='team']").click();
+        page.getByText("등록 시간은 1.5시간입니다.").waitFor();
+        String screenshots=System.getProperty("work.ui.screenshots","");
+        for (int width : List.of(1440,390)) {
+            page.setViewportSize(width,width==390?844:1000);
+            assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth<=innerWidth"));
+            if (!screenshots.isBlank()) {
+                Path directory=Files.createDirectories(Path.of(screenshots));
+                page.screenshot(new Page.ScreenshotOptions().setPath(directory.resolve("team-record-"+width+".png")).setFullPage(true));
+            }
+        }
+    }
     void refreshPlan() {
         ArrayNode plan = Json.MAPPER.createArrayNode();
         for (JsonNode old : state.path("plan")) for (JsonNode task : state.path("tasks")) if (Json.text(old, "id").equals(Json.text(task, "id"))) plan.add(task);

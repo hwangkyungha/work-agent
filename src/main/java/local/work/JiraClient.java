@@ -221,25 +221,32 @@ class JiraClient {
         for (ObjectNode member : service.store.list("member")) {
             String user = resolveUser(Json.required(member, "jiraUser"));
             String quoted = "\"" + user.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
-            List<JsonNode> issues = search("(assignee = " + quoted + " OR worklogAuthor = " + quoted + ") AND (resolution = Unresolved OR updated >= -14d) ORDER BY updated DESC");
+            List<JsonNode> issues = search("worklogAuthor = " + quoted + " AND worklogDate >= \"" + start.minusDays(1)
+                    + "\" AND worklogDate <= \"" + end.plusDays(1) + "\" ORDER BY updated DESC");
             List<ObjectNode> work = new ArrayList<>();
-            int total = 0;
+            Map<String, Long> byDay = new TreeMap<>();
+            long total = 0;
             for (JsonNode issue : issues) {
-                ObjectNode summary = summarize(issue);
-                int seconds = 0;
+                Map<String, Long> issueDays = new TreeMap<>();
+                long seconds = 0;
                 for (JsonNode log : worklogs(Json.required(issue, "key"))) {
-                    JsonNode author = log.path("author");
-                    boolean same = user.equals(Json.text(author, "accountId")) || user.equals(Json.text(author, "name")) || user.equals(Json.text(author, "key"));
-                    if (!same || Json.text(log, "started").isBlank()) continue;
+                    long value = log.path("timeSpentSeconds").asLong();
+                    if (value <= 0 || !TeamInsights.sameUser(log.path("author"), user) || Json.text(log, "started").isBlank()) continue;
                     LocalDate date = parseJiraDate(Json.text(log, "started"));
-                    if (!date.isBefore(start) && !date.isAfter(end)) seconds += log.path("timeSpentSeconds").asInt();
+                    if (date.isBefore(start) || date.isAfter(end)) continue;
+                    seconds += value;
+                    issueDays.merge(date.toString(), value, Long::sum);
+                    byDay.merge(date.toString(), value, Long::sum);
                 }
+                if (seconds == 0) continue;
+                ObjectNode summary = summarize(issue);
                 summary.put("loggedSeconds", seconds);
+                summary.set("byDay", Json.MAPPER.valueToTree(issueDays));
                 total += seconds;
                 work.add(summary);
             }
             service.store.put("teamSnapshot", Json.obj("id", Json.required(member, "id"), "memberId", Json.required(member, "id"), "from", start.toString(), "to", end.toString(),
-                    "issues", work, "loggedSeconds", total, "at", service.time.instant().toString(), "coverage", "Jira에 등록된 이슈와 시간만 포함합니다."));
+                    "issues", work, "loggedSeconds", total, "byDay", byDay, "at", service.time.instant().toString()));
         }
         service.store.put("sync", Json.obj("id", "team", "at", service.time.instant().toString(), "ok", true));
     }

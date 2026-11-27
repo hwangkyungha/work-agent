@@ -531,7 +531,20 @@ final class WorkService {
         stamp(row); return store.put("observation", row);
     }
     List<ObjectNode> members() { return store.list("member").stream().map(n -> { n.remove("role"); return n; }).toList(); }
-    ObjectNode team() { return Json.obj("members", members(), "observations", store.list("observation"), "snapshots", store.list("teamSnapshot")); }
+    ObjectNode team() {
+        LocalDate today = time.today();
+        String start = time.monday(today).toString();
+        var snapshots = store.list("teamSnapshot").stream().filter(row -> currentTeamWeek(row, start)).toList();
+        return Json.obj("members", members(), "observations", store.list("observation"), "snapshots", snapshots,
+                "weekFrom", start, "weekTo", today.toString());
+    }
+    ObjectNode teamWeek(String memberId) {
+        ObjectNode row = store.get("teamSnapshot", memberId);
+        return row != null && currentTeamWeek(row, time.monday(time.today()).toString()) ? row : null;
+    }
+    private static boolean currentTeamWeek(JsonNode snapshot, String start) {
+        return start.equals(Json.text(snapshot, "from")) && snapshot.path("byDay").isObject();
+    }
     ObjectNode job(JsonNode input) {
         ObjectNode row = Json.obj("title", Json.required(input, "title"), "jiraKey", issue(Json.text(input, "jiraKey")),
                 "result", Json.required(input, "result"), "artifact", Json.text(input, "artifact"), "verification", Json.text(input, "verification"),

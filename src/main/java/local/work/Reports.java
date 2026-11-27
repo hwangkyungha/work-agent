@@ -91,8 +91,8 @@ final class Reports {
             text.append("- ").append(Json.text(note, "date")).append(" [").append(Json.text(note, "type")).append("] ").append(Json.text(note, "text")).append('\n');
             if (!Json.text(note, "followUp").isBlank()) text.append("  후속 조치: ").append(Json.text(note, "followUp")).append('\n');
         }
-        ObjectNode snapshot = service.store.get("teamSnapshot", memberId);
-        text.append("\nJira 업무 현황\n");
+        ObjectNode snapshot = service.teamWeek(memberId);
+        text.append("\n이번 주 Jira 워크로그\n");
         if (snapshot == null) text.append("- 아직 Jira에서 확인하지 않았습니다.\n");
         else {
             text.append("기간: ").append(Json.text(snapshot, "from")).append(" ~ ").append(Json.text(snapshot, "to")).append("\n등록 시간: ").append(hours(snapshot.path("loggedSeconds").asInt())).append("시간\n");

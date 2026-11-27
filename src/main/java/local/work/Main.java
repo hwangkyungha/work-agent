@@ -126,6 +126,7 @@ public final class Main {
                         case "/api/work-days/candidates" -> json(exchange, 200, new WorkLedger(service).activityCandidates(date));
                         case "/api/work-days" -> json(exchange, 200, new WorkLedger(service).reviewRows(date));
                         case "/api/team" -> json(exchange, 200, service.team());
+                        case "/api/team/chat" -> json(exchange, 200, agent.teamMessages(query.getOrDefault("memberId", "")));
                         case "/api/reviews" -> json(exchange, 200, reviewMonitor.state());
                         case "/api/jira/issue" -> json(exchange, 200, service.jira.fetchIssue(query.getOrDefault("key", "")));
                         case "/api/jira/issue-search" -> json(exchange, 200, service.jira.searchPlanIssues(query.getOrDefault("q", "")));
@@ -171,6 +172,7 @@ public final class Main {
                         case "/api/reviews/edit" -> reviews.edit(body);
                         case "/api/reviews/save" -> reviews.savePending(Json.required(body, "id"));
                         case "/api/chat" -> agent.chat("web", body.path("requestId").asText(UUID.randomUUID().toString()), Json.required(body, "text"));
+                        case "/api/team/chat" -> agent.teamChat(Json.required(body, "memberId"), Json.required(body, "requestId"), Json.required(body, "text"));
                         case "/api/tasks" -> service.task(body);
                         case "/api/tasks/status" -> service.changeStatus(body);
                         case "/api/tasks/hide" -> service.hideTask(body);

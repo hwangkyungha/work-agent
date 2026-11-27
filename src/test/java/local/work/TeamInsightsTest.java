@@ -68,6 +68,58 @@ class TeamInsightsTest {
         ObjectNode input=query();input.put("issuePrefix","CTS OR 1=1");assertThrows(IllegalArgumentException.class,()->new TeamInsights(service).query(input));
         input.put("memberId","unknown");assertThrows(IllegalArgumentException.class,()->new TeamInsights(service).query(input));
     }
+    @Test void weeklySnapshotIncludesOnlyThisMembersLogsOnKoreanDates() throws Exception {
+        jira.issues.addAll(List.of(issue("CTS-1","other"),issue("CTS-2","person")));
+        jira.logs.put("CTS-1",List.of(log("2026-11-01T14:59:59Z","person",1800),
+                log("2026-11-01T15:00:00Z","person",3600),log("2026-11-02T00:00:00Z","person",1800),
+                log("2026-11-02T16:00:00Z","person",3600),log("2026-11-02T16:00:00Z","other",7200),
+                log("2026-11-04T15:00:00Z","person",1800)));
+        jira.syncTeam(service);
+        ObjectNode week=service.teamWeek(member);
+        assertEquals("2026-11-02",Json.text(week,"from"));
+        assertEquals("2026-11-04",Json.text(week,"to"));
+        assertEquals(9000,week.path("loggedSeconds").asLong());
+        assertEquals(5400,week.path("byDay").path("2026-11-02").asLong());
+        assertEquals(3600,week.path("byDay").path("2026-11-03").asLong());
+        assertFalse(week.path("byDay").has("2026-11-04"));
+        assertEquals(1,week.path("issues").size());
+        assertEquals("CTS-1",Json.text(week.path("issues").get(0),"id"));
+        assertEquals(3600,week.path("issues").get(0).path("byDay").path("2026-11-03").asLong());
+        assertTrue(jira.jql.contains("worklogDate"));
+        store.put("teamSnapshot",week.put("from","2026-10-26"));
+        assertNull(service.teamWeek(member));
+        assertTrue(service.team().path("snapshots").isEmpty());
+    }
+    @Test void teamChatLinksOnlyUnambiguousWebHistoryAndKeepsNewTurnsSeparate() throws Exception {
+        String other=Json.text(service.member(Json.obj("name","다른 팀원","jiraUser","other")),"id");
+        ObjectNode action=Json.obj("type","team_query","payload",Json.write(query()));
+        store.put("request",Json.obj("id","legacy","actions",List.of(action)));
+        store.put("message",Json.obj("id","legacy:user","conversation","web","role","user","text","기존 통계 질문"));
+        store.put("message",Json.obj("id","legacy:assistant","conversation","web","role","assistant","text","기존 통계 답변"));
+        store.put("request",Json.obj("id","mixed","actions",List.of(action,Json.obj("type","team_query","payload",Json.write(query().put("memberId",other))))));
+        store.put("message",Json.obj("id","mixed:assistant","conversation","web","role","assistant","text","여러 팀원 결과"));
+        jira.issues.add(issue("CTS-1","person"));
+        AtomicInteger calls=new AtomicInteger();
+        Agent agent=new Agent(service,new Reports(service),prompt->{
+            if(calls.getAndIncrement()==0){
+                assertTrue(prompt.contains("기존 통계 질문"));
+                assertFalse(prompt.contains("여러 팀원 결과"));
+                return Json.obj("reply","", "actions",List.of(Json.obj("type","team_query","payload",Json.write(query().put("memberId",other)))));
+            }
+            return Json.obj("reply","추가 답변","actions",List.of());
+        },k->Json.object(),"호박","호박아");
+        String response=Json.text(agent.teamChat(member,"new","이전 조회 기간을 다시 확인해줘."),"text");
+        assertTrue(response.contains("담당 이슈 1개"));
+        assertTrue(response.contains("추가 답변"));
+        assertEquals(4,agent.teamMessages(member).size());
+        assertTrue(agent.teamMessages(other).isEmpty());
+        assertEquals(2,store.list("message").stream().filter(row->("team:"+member).equals(Json.text(row,"conversation"))).count());
+        assertEquals(response,Json.text(agent.teamChat(member,"new","이전 조회 기간을 다시 확인해줘."),"text"));
+        assertEquals(2,calls.get());
+        Agent writer=new Agent(service,new Reports(service),prompt->Json.obj("reply","", "actions",List.of(Json.obj("type","task","payload","{}"))),k->Json.object(),"호박","호박아");
+        assertThrows(IllegalArgumentException.class,()->writer.teamChat(other,"bad","업무를 등록해줘."));
+        assertTrue(store.list("task").isEmpty());
+    }
     @Test void naturalLanguageAnalysisGetsFetchedFactsAndCannotExecuteSuggestedActions() throws Exception {
         jira.issues.add(issue("CTS-1","person"));
         AtomicInteger calls=new AtomicInteger();

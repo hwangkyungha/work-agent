@@ -87,7 +87,7 @@ final class TeamInsights {
         return holder.equals(user) && begin.isBefore(until) && until.isAfter(from);
     }
     private static String userId(JsonNode user) { return user.path("accountId").asText(user.path("name").asText(user.path("key").asText(""))); }
-    private static boolean sameUser(JsonNode node, String user) { return user.equals(Json.text(node, "accountId")) || user.equals(Json.text(node, "name")) || user.equals(Json.text(node, "key")); }
+    static boolean sameUser(JsonNode node, String user) { return user.equals(Json.text(node, "accountId")) || user.equals(Json.text(node, "name")) || user.equals(Json.text(node, "key")); }
     private static String quote(String value) { return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""; }
     private static String limit(String text, int length) { return text.length() <= length ? text : text.substring(0, length) + "\n(이하 생략)"; }
     static String summary(JsonNode data) {

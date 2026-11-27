@@ -11,7 +11,7 @@ const worklogEdits=new Map();let worklogFieldId=0;
 let syncingWorklogs=false;const attemptedWorklogWeeks=new Set();
 let reviewState, reviewPoll, reviewRender='',reviewFilter='active';
 let pastWorkCandidates=[],reviewDate='',todayJiraIssue=null;
-const workDayCache=new Map(),openLedgerDetails=new Set();
+const workDayCache=new Map(),openLedgerDetails=new Set(),teamChats=new Map();
 const sourceName = source => ({claude:'Claude',codex:'Codex',manual:'직접',calendar:'캘린더'}[source] || source);
 const statusName = status => ({'todo':'todo','in-progress':'in-progress','done':'done'}[status] || status);
 const logStatus = status => ({draft:'초안',posted:'Jira 등록 완료',posting:'등록 결과 확인 필요',unknown:'등록 결과 확인 필요',failed:'등록 실패'}[status] || '미작성');
@@ -439,15 +439,98 @@ function updateTotal() {
   const hint=$('#worklog-post-hint');if(hint)hint.textContent=worklogEdit(worklogDay)!==null?'변경한 내용을 초안으로 저장한 뒤 등록하세요.':held?`Jira 미연결 또는 시간 미입력 ${held}건은 초안으로 남습니다. 등록 가능한 ${ready.length}건만 전송합니다.`:'';
 }
 async function renderTeam() {
-  $('#content').innerHTML=heading('팀원과 1on1','관찰한 사실을 남기고, Jira 업무 현황과 함께 면담을 준비하세요.',`<button class="button" id="sync-team">Jira 주간 정리</button><button class="button primary" data-open="member">팀원 등록</button>`)+`<p class="team-notice">개인 관찰 기록은 이 PC의 업무 수첩에 보관합니다. 데일리 자료나 일반 브리핑에는 포함하지 않습니다.</p><div id="team-content" class="loading">팀원 기록을 불러오고 있습니다.</div>`;
-  try {team=await api('/api/team');if(view!=='team')return;if(!selectedMember&&team.members.length)selectedMember=team.members[0].id;renderTeamContent();}catch(e){notice(e.message);}
+  $('#content').innerHTML=heading('팀원 기록','이번 주 Jira 워크로그와 개인 관찰을 확인하세요.', '<button class="button" id="sync-team">Jira 워크로그 가져오기</button><button class="button primary" data-open="member">팀원 등록</button>')+
+    '<div id="team-content" class="loading">팀원 기록을 불러오고 있습니다.</div>';
+  try {
+    const next=await api('/api/team');
+    if(view!=='team')return;
+    team=next;
+    if(!team.members.some(member=>member.id===selectedMember))selectedMember=team.members[0]?.id||'';
+    renderTeamContent();
+  }catch(e){notice(e.message);}
+}
+function teamWeekSheet(snapshot) {
+  const dates=[];
+  for(let day=team.weekFrom;day<=team.weekTo;day=dayAdd(day,1))dates.push(day);
+  const rows=dates.map(day=>{
+    const date=esc(shortDay(day));
+    if(!snapshot||day>snapshot.to)return '<div class="team-day"><span>'+date+'</span><small>아직 Jira에서 가져오지 않음</small></div>';
+    const issues=snapshot.issues.filter(issue=>Number(issue.byDay?.[day])>0);
+    if(!issues.length)return '<div class="team-day"><span>'+date+'</span><small>등록 기록 없음</small></div>';
+    const total=hours(snapshot.byDay[day]);
+    const details=issues.map(issue=>'<li><div>'+issueLink(issue.id,issue.issueUrl)+' '+esc(issue.title)+'</div><span>'+hours(issue.byDay[day])+'시간</span></li>').join('');
+    return '<details class="team-day"><summary><span>'+date+'</span><span><strong>'+total+'시간</strong><small>이슈 '+issues.length+'건</small></span></summary><ul class="team-day-issues">'+details+'</ul></details>';
+  }).join('');
+  return '<section class="sheet team-week"><div class="sheet-header"><div><h2>이번 주 Jira 워크로그</h2><small>'+esc(shortDay(team.weekFrom))+' ~ '+esc(shortDay(team.weekTo))+'</small></div>'+
+    (snapshot?'<span class="team-week-total">'+hours(snapshot.loggedSeconds)+'시간 등록</span>':'')+
+    '</div><div class="sheet-body team-week-days">'+rows+'</div></section>';
+}
+function teamChatState(id) {
+  if(!teamChats.has(id))teamChats.set(id,{messages:null,draft:'',error:'',loading:false,pending:false,retry:null});
+  return teamChats.get(id);
+}
+function teamConversationSheet(member) {
+  const chat=teamChatState(member.id);
+  return '<section class="sheet team-statistics"><div class="sheet-header"><h2>통계 질문</h2></div><div class="sheet-body">'+
+    '<div id="team-chat-history" class="team-chat-history" role="log" aria-label="'+esc(member.name)+' 통계 대화"></div>'+
+    '<form id="team-chat-form" data-member-id="'+esc(member.id)+'"><label class="sr-only" for="team-chat-text">통계 질문</label>'+
+    '<textarea id="team-chat-text" name="text" rows="3" maxlength="12000" placeholder="예: 이번 하반기에 담당한 이슈 수와 등록 시간을 알려줘." required>'+esc(chat.draft)+'</textarea>'+
+    '<div class="team-chat-actions"><p id="team-chat-status" class="hint" role="status"></p><button class="button primary" type="submit">질문 보내기</button></div></form></div></section>';
+}
+function updateTeamChat(id,scroll=false) {
+  const form=$('#team-chat-form');
+  if(view!=='team'||form?.dataset.memberId!==id)return;
+  const chat=teamChatState(id),history=$('#team-chat-history');
+  const messages=chat.messages||[];
+  const html=messages.map(message=>'<div class="message '+(message.role==='user'?'user':'assistant')+'"><strong>'+
+    (message.role==='user'?'나':esc(settings.agentName))+'</strong>'+esc(message.text)+'</div>').join('');
+  const content=html||(chat.loading?'':'<p class="hint">아직 통계 대화가 없습니다.</p>');
+  if(history.innerHTML!==content)history.innerHTML=content;
+  if(scroll)history.scrollTop=history.scrollHeight;
+  const status=$('#team-chat-status');
+  status.classList.toggle('error',!!chat.error);
+  status.textContent=chat.error||(chat.pending?'Jira에서 통계를 조회하고 있습니다.':chat.loading?'이전 대화를 불러오고 있습니다.':'');
+  $('[type="submit"]',form).disabled=chat.pending||chat.loading;
+}
+async function loadTeamChat(id) {
+  const chat=teamChatState(id);
+  if(chat.loading||chat.messages!==null)return;
+  chat.loading=true;updateTeamChat(id);
+  try {chat.messages=await api('/api/team/chat?memberId='+encodeURIComponent(id));}
+  catch(e){chat.error=e.message;}
+  finally{chat.loading=false;updateTeamChat(id,true);}
+}
+async function sendTeamChat(form) {
+  const id=form.dataset.memberId,chat=teamChatState(id),text=form.elements.text.value.trim();
+  if(!text||chat.pending||chat.loading)return;
+  const requestId=chat.retry?.text===text?chat.retry.id:crypto.randomUUID();
+  chat.pending=true;chat.error='';updateTeamChat(id);
+  try {
+    const answer=await api('/api/team/chat',{memberId:id,requestId,text});
+    if(chat.messages===null){
+      try{chat.messages=await api('/api/team/chat?memberId='+encodeURIComponent(id));}
+      catch{chat.messages=[{role:'user',text},{role:'assistant',text:answer.text}];}
+    }else chat.messages.push({role:'user',text},{role:'assistant',text:answer.text});
+    if(chat.draft.trim()===text){chat.draft='';const active=$('#team-chat-form');if(active?.dataset.memberId===id)active.elements.text.value='';}
+    chat.retry=null;
+  }catch(e){chat.error=e.message;chat.retry={id:requestId,text};}
+  finally{chat.pending=false;updateTeamChat(id,true);}
 }
 function renderTeamContent() {
-  const member=team.members.find(m=>m.id===selectedMember);
-  if(!member){$('#team-content').className='sheet';$('#team-content').innerHTML=empty('팀원을 먼저 등록하세요.','이름과 Jira 계정을 입력하면 관찰 기록과 업무 현황을 연결할 수 있습니다.');return;}
-  const notes=team.observations.filter(o=>o.memberId===member.id).sort((a,b)=>b.date.localeCompare(a.date));
-  const snapshot=team.snapshots.find(s=>s.memberId===member.id);
-  $('#team-content').className='';$('#team-content').innerHTML=`<div class="team-list">${team.members.map(m=>`<button class="member-button ${m.id===selectedMember?'active':''}" data-member="${esc(m.id)}">${esc(m.name)}<small>${esc(m.jiraUser)}</small></button>`).join('')}</div><div class="today-grid"><section class="sheet"><div class="sheet-header"><h2>${esc(member.name)} 관찰 기록</h2><button class="text-button" data-open="observation">기록 남기기</button></div><div class="sheet-body">${notes.length?notes.map(n=>`<div class="observation"><small>${esc(n.date)} <span class="tag ${n.type==='칭찬'?'teal':'blue'}">${esc(n.type)}</span></small><p>${esc(n.text)}</p>${n.followUp?`<small>후속 조치: ${esc(n.followUp)}</small>`:''}</div>`).join(''):empty('아직 관찰 기록이 없습니다.','칭찬할 행동이나 피드백할 상황을 구체적으로 남겨 보세요.')}</div></section><div class="side-stack"><section class="sheet"><div class="sheet-header"><h2>Jira 업무 현황</h2><button class="text-button" data-report="oneonone">1on1 자료</button><button class="text-button" id="ask-team-statistics">통계 질문하기</button></div><div class="sheet-body">${snapshot?`<p class="hint">${esc(snapshot.from)} ~ ${esc(snapshot.to)} · 등록 ${hours(snapshot.loggedSeconds)}시간</p>${snapshot.issues.map(i=>`<div class="job-row"><h3>${issueLink(i.id,i.issueUrl)} ${esc(i.title)}</h3><small>${esc(i.jiraStatus)} · 등록 ${hours(i.loggedSeconds)}시간</small></div>`).join('')}<p class="hint">Jira에 등록된 시간만 포함합니다. 병목과 지원 필요 여부는 근거를 확인한 뒤 판단하세요.</p>`:empty('아직 Jira에서 확인하지 않았습니다.','연결 설정 후 Jira 주간 정리를 실행하세요.')}</div></section></div></div>`;
+  const member=team.members.find(m=>m.id===selectedMember),content=$('#team-content');
+  if(!member){content.className='sheet';content.innerHTML=empty('팀원을 먼저 등록하세요.','이름과 Jira 계정을 입력하면 팀원 기록을 볼 수 있습니다.');return;}
+  const notes=team.observations.filter(note=>note.memberId===member.id).sort((a,b)=>b.date.localeCompare(a.date));
+  const snapshot=team.snapshots.find(row=>row.memberId===member.id);
+  const buttons=team.members.map(m=>'<button class="member-button '+(m.id===member.id?'active':'')+'" data-member="'+esc(m.id)+'" aria-pressed="'+(m.id===member.id)+'">'+esc(m.name)+'</button>').join('');
+  const observations=notes.map(note=>'<div class="observation"><small>'+esc(note.date)+' <span class="tag '+(note.type==='칭찬'?'teal':'blue')+'">'+esc(note.type)+'</span></small><p>'+esc(note.text)+'</p>'+
+    (note.followUp?'<small>후속 조치 '+esc(note.followUp)+'</small>':'')+'</div>').join('');
+  content.className='';
+  content.innerHTML='<div class="team-list" role="group" aria-label="팀원 선택">'+buttons+'</div>'+teamWeekSheet(snapshot)+
+    '<div class="team-details">'+teamConversationSheet(member)+'<section class="sheet"><div class="sheet-header"><h2>관찰 기록</h2><div class="team-sheet-actions">'+
+    '<button class="text-button" data-report="oneonone">1on1 자료</button><button class="button" data-open="observation">기록 남기기</button></div></div><div class="sheet-body">'+
+    (observations||'<p class="hint">아직 관찰 기록이 없습니다.</p>')+'</div></section></div>';
+  updateTeamChat(member.id,true);
+  void loadTeamChat(member.id);
 }
 function syncTaskPicker(select){
   const input=document.getElementById(select.id+'-search');
@@ -603,7 +686,6 @@ document.addEventListener('click',async event=>{
     if(b.dataset.dismissFollowup){b.disabled=true;await api('/api/followups/dismiss',{id:b.dataset.dismissFollowup});await load();}
     if(b.dataset.acceptFollowup){b.disabled=true;await api('/api/followups/accept',{id:b.dataset.acceptFollowup,date:state.date});await load();notice('선택한 작업을 오늘 할 일에 추가했습니다.');}
     if(b.dataset.hideTask){const task=[...state.tasks,...state.hiddenTasks].find(t=>t.id===b.dataset.hideTask);if(task.jiraKey&&task.hidden){await api('/api/tasks/hide',{id:task.id,hidden:false});await load();notice('목록에 다시 표시했습니다.');}else await removeTasks([task]);}
-    if(b.id==='ask-team-statistics'){const member=team.members.find(m=>m.id===selectedMember);$('#chat-body').hidden=false;$('#toggle-chat').textContent='대화 접기';$('#toggle-chat').setAttribute('aria-expanded','true');$('#chat-text').value=`${settings.agentCallName}, ${member.name}이 이번 하반기에 담당한 이슈 수와 등록 시간을 알려줘.`;$('#chat-text').focus();}
     if(b.dataset.report)await showReport(b.dataset.report);
     if(b.dataset.evidence){const e=await api('/api/evidence?id='+encodeURIComponent(b.dataset.evidence));modal('작업 근거',`<p class="hint">${esc(e.sourceRef||'')}</p><pre>${esc(e.text)}</pre>`);}
     if(b.dataset.logDay){worklogDay=b.dataset.logDay;renderWorklog();}
@@ -614,8 +696,15 @@ document.addEventListener('click',async event=>{
     if(b.id==='add-worklog'){$('#worklog-rows').insertAdjacentHTML('beforeend',worklogRow());rememberWorklog();updateTotal();}
     if(b.hasAttribute('data-remove-worklog')){b.closest('.worklog-input-row').remove();rememberWorklog();updateTotal();}
     if(b.id==='post-worklog'){b.disabled=true;await api('/api/worklogs/post',{date:worklogDay});await load();notice('등록 가능한 워크로그를 Jira에 등록했습니다. 미연결·시간 미입력 항목은 초안으로 유지됩니다.');}
-    if(b.dataset.member){selectedMember=b.dataset.member;renderTeamContent();}
-    if(b.id==='sync-team'){b.disabled=true;await api('/api/sync',{kind:'team'});await renderTeam();notice('팀원별 Jira 업무와 등록 시간을 확인했습니다.');}
+    if(b.dataset.member){
+      selectedMember=b.dataset.member;renderTeamContent();
+      $('.member-button.active')?.focus({preventScroll:true});
+    }
+    if(b.id==='sync-team'){
+      b.disabled=true;b.textContent='가져오는 중…';
+      try{await api('/api/sync',{kind:'team'});if(view==='team')await renderTeam();notice('이번 주 Jira 워크로그를 가져왔습니다.');}
+      finally{b.disabled=false;b.textContent='Jira 워크로그 가져오기';}
+    }
     if(b.dataset.reviewJob){const job=state.jobs.find(j=>j.id===b.dataset.reviewJob);await api('/api/jobs',{...job,reviewed:true});await load();notice('검토 완료로 표시했습니다.');}
     if(b.id==='copy-report'){await navigator.clipboard.writeText($('#report-text').textContent);notice('보고서 내용을 복사했습니다.');}
   }catch(e){notice(e.message);if(b.id==='post-worklog'){await load();}else b.disabled=false;}
@@ -649,6 +738,9 @@ document.addEventListener('pointermove',event=>{if(!draggedId||Math.abs(event.cl
 document.addEventListener('pointerup',async()=>{if(!draggedId)return;const ids=[...document.querySelectorAll('#today-list [data-today-id]')].map(t=>t.dataset.todayId);draggedId='';document.querySelectorAll('.dragging').forEach(t=>t.classList.remove('dragging'));if(didDrag){if(dragCrossedGroup)groupToday=false;await saveTodayOrder([...ids,...planIds.filter(id=>!ids.includes(id))]);}didDrag=false;dragCrossedGroup=false;});
 document.addEventListener('pointercancel',()=>{if(draggedId){draggedId='';didDrag=false;dragCrossedGroup=false;render();}});
 document.addEventListener('keydown',async event=>{const handle=event.target.closest('[data-drag-task]');if(!handle||!event.altKey||!['ArrowUp','ArrowDown'].includes(event.key))return;event.preventDefault();const row=handle.closest('.today-task'),siblings=[...document.querySelectorAll('#today-list .today-task')],from=siblings.indexOf(row),to=from+(event.key==='ArrowUp'?-1:1);if(to<0||to>=siblings.length)return;const target=siblings[to];if(target.parentNode!==row.parentNode)groupToday=false;target.parentNode.insertBefore(row,to<from?target:target.nextSibling);const ids=[...document.querySelectorAll('#today-list [data-today-id]')].map(el=>el.dataset.todayId);await saveTodayOrder([...ids,...planIds.filter(id=>!ids.includes(id))]);});
+document.addEventListener('input',event=>{
+  if(event.target.id==='team-chat-text')teamChatState(event.target.form.dataset.memberId).draft=event.target.value;
+});
 document.addEventListener('submit',async event=>{
   event.preventDefault();const form=event.target;const submit=$('[type="submit"]',form);if(submit)submit.disabled=true;
   try {
@@ -686,6 +778,7 @@ document.addEventListener('submit',async event=>{
       if(JSON.stringify(worklogEdit(date))===snapshot)clearWorklogEdit(date);
       await load();notice('워크로그 초안을 저장했습니다. Jira 등록은 별도로 실행하세요.');
     }
+    if(form.id==='team-chat-form'){await sendTeamChat(form);return;}
     if(form.id==='chat-form'){
       const text=$('#chat-text').value.trim();if(!text)return;appendMessage('user',text);$('#chat-text').value='';
       const result=await api('/api/chat',{text,requestId:crypto.randomUUID()});appendMessage('assistant',result.text);await load();
