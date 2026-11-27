@@ -16,6 +16,25 @@ class WorkLedgerTest {
         service = new WorkService(store, new KoreaTime(Clock.fixed(Instant.parse("2026-11-09T00:00:00Z"), ZoneOffset.UTC)), new JiraClient(new Config(temporary.resolve("none"), Map.of())));
     }
     @AfterEach void close() throws Exception { store.close(); }
+    @Test void worklogEditorGetsRetainedPlansAndTheirCurrentOutcomeWithoutChangingPerformedEvidence() {
+        LocalDate day = service.time.today();
+        String planned = Json.text(service.task(Json.obj("title","확인 전인 계획")),"id");
+        String removed = Json.text(service.task(Json.obj("title","계획에서 제외한 업무")),"id");
+        service.plan(Json.obj("date",day.toString(),"taskIds",List.of(planned,removed)));
+        service.plan(Json.obj("date",day.toString(),"taskIds",List.of(planned)));
+        var ledger = new WorkLedger(service);
+        var candidates = service.state(day).path("worklogCandidates");
+        assertEquals(1,candidates.size());
+        assertEquals(planned,Json.text(candidates.get(0),"workId"));
+        assertEquals("unconfirmed",Json.text(candidates.get(0),"outcome"));
+        assertFalse(candidates.get(0).path("performed").asBoolean());
+        assertTrue(ledger.worklogCandidates(day).isEmpty());
+
+        ledger.record(Json.obj("date",day.toString(),"workId",planned,"outcome","done"));
+        assertEquals("done",Json.text(service.state(day).path("worklogCandidates").get(0),"outcome"));
+        assertEquals(1,ledger.worklogCandidates(day).size());
+        assertEquals("todo",Json.text(store.get("task",planned),"status"));
+    }
     @Test void todaysActualWorkFeedsTheSameDaysWorklogAndBecomesPreviousWorkTomorrow() {
         String id = Json.text(service.task(Json.obj("title", "당일 업무")), "id");
         service.plan(Json.obj("date", "2026-11-09", "taskIds", List.of(id)));

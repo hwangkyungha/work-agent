@@ -402,7 +402,8 @@ final class WorkService {
                 "hiddenTasks", allTasks().stream().filter(n -> n.path("hidden").asBoolean()).toList(), "todayGroups", todayGroups(date),
                 "draftDigest", DraftResults.state(this,date),
                 "taskAliases", store.list("taskAlias"), "taskMergeConflicts", store.list("taskMergeConflict"), "todayWork", ledger.reviewRows(date), "previousWorkDate", previous.toString(), "previousWork", ledger.reviewRows(previous), "carryover", ledger.carryover(date),
-                "worklogCandidates", java.util.stream.IntStream.range(0, 7).boxed().flatMap(i -> ledger.worklogCandidates(monday.plusDays(i)).stream()).toList(),
+                "worklogCandidates", java.util.stream.IntStream.range(0, 7).boxed().flatMap(i -> ledger.reviewRows(monday.plusDays(i)).stream())
+                        .filter(row -> row.path("inFinalPlan").asBoolean() || row.path("performed").asBoolean() || row.path("confirmed").asBoolean()).toList(),
                 "activities", activities(monday.minusDays(7), monday.plusDays(6)), "meetings", meetings(date),
                 "activityGroups", ledger.worklogEvidence(monday, monday.plusDays(6)), "followups", store.list("followup").stream().filter(n -> (Json.text(n,"kind").equals("followup") || Json.text(n, "date").equals(date.toString())) && !n.hasNonNull("acceptedTaskId") && !n.path("dismissed").asBoolean()).map(n -> n.put("title", DraftResults.followupTitle(n))).toList(),
                 "worklogs", store.list("worklog").stream().filter(n -> Json.text(n, "date").compareTo(monday.toString()) >= 0 && Json.text(n, "date").compareTo(monday.plusDays(6).toString()) <= 0).toList(),

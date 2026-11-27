@@ -125,7 +125,12 @@ class WebUiTest {
                 }
                 case "/api/work-days" -> {
                     if(route.request().method().equals("GET")) content=Json.write(fixtureWorkDay(URI.create(route.request().url()).getQuery().replace("date=","")));
-                    else {JsonNode body=Json.read(route.request().postData());workDayUpdates.add(body);for(JsonNode row:fixtureWorkDay(Json.text(body,"date")))if(Json.text(row,"workId").equals(Json.text(body,"workId")))((ObjectNode)row).put("outcome",Json.text(body,"outcome"));}
+                    else {
+                        JsonNode body=Json.read(route.request().postData());workDayUpdates.add(body);
+                        String day=Json.text(body,"date"),workId=Json.text(body,"workId"),outcome=Json.text(body,"outcome");
+                        for(JsonNode row:fixtureWorkDay(day))if(workId.equals(Json.text(row,"workId")))((ObjectNode)row).put("outcome",outcome);
+                        for(JsonNode row:state.path("worklogCandidates"))if(day.equals(Json.text(row,"date"))&&workId.equals(Json.text(row,"workId")))((ObjectNode)row).put("outcome",outcome);
+                    }
                 }
                 case "/api/followups/dismiss" -> { String id=Json.required(Json.read(route.request().postData()),"id");ArrayNode remaining=Json.MAPPER.createArrayNode();for(JsonNode row:state.path("followups"))if(!id.equals(Json.text(row,"id")))remaining.add(row);state.set("followups",remaining);for(JsonNode pr:state.path("draftDigest").path("prs"))for(JsonNode proposal:pr.path("suggestions"))if(id.equals(Json.text(proposal,"id")))((ObjectNode)proposal).put("dismissed",true); }
                 case "/api/followups/accept" -> {
@@ -517,6 +522,51 @@ class WebUiTest {
         assertNull(page.evaluate("localStorage.getItem('work-agent.worklog-editor:2026-11-06')"));
         page.reload(); page.locator("[data-view='worklog']").click(); assertEquals("WOR-1517", page.locator(".log-key").inputValue());
         assertEquals("", page.locator(".log-duration").inputValue());
+    }
+    @Test void plannedWorklogRowsAllowEditingOutcomesWithoutChangingTypedTimeOrJira() throws Exception {
+        String today = "2026-11-06";
+        state.set("worklogCandidates",Json.MAPPER.valueToTree(List.of(
+                Json.obj("date",today,"workId","evidence","title","세션이 연결된 업무","jiraKey","CT-42","outcome","unconfirmed","inFinalPlan",true,"performed",true,"observed",true),
+                Json.obj("date",today,"workId","planned","title","회의 준비","jiraKey","","outcome","unconfirmed","inFinalPlan",true,"performed",false),
+                Json.obj("date",today,"workId","registered","title","검토 요청 확인","jiraKey","CT-1","outcome","unconfirmed","performed",true),
+                Json.obj("date",today,"workId","deferred","title","계획 밖 보류 업무","outcome","deferred","performed",false,"confirmed",true),
+                Json.obj("date","2026-11-05","workId","previous","title","이전 근무일 계획","outcome","unconfirmed","inFinalPlan",true,"performed",false))));
+        state.set("registeredWorklogs",Json.MAPPER.valueToTree(List.of(
+                Json.obj("date",today,"jiraKey","CT-1","title","검토 요청 확인","seconds",1800,"source","jira","confirmed",true))));
+        page.reload();page.locator("[data-view='worklog']").click();
+        Locator worklog=page.locator("#worklog-rows"), observed=worklog.locator("[data-work-id='evidence']");
+        assertEquals(2,worklog.locator(".worklog-input-row").count());
+        assertTrue(observed.innerText().contains("작업 근거 있음"));
+        assertEquals("unconfirmed",observed.locator("select").inputValue());
+        Locator planned=worklog.locator("[data-work-id='planned']");
+        assertEquals("unconfirmed",planned.locator("select").inputValue());
+        assertEquals("",planned.locator(".log-duration").inputValue());
+        planned.locator("select").selectOption("progress");
+        page.waitForCondition(()->workDayUpdates.size()==1 && !planned.locator("select").isDisabled());
+        assertEquals(today,Json.text(workDayUpdates.getFirst(),"date"));
+        assertEquals("새 목록",page.locator("#worklog-save-state").innerText());
+        assertTrue(savedWorklogs.isEmpty());
+        observed.locator(".log-duration").fill("2h");
+        page.locator(".registered-log select").selectOption("done");
+        page.waitForCondition(()->workDayUpdates.size()==2 && !page.locator(".registered-log select").isDisabled());
+        assertEquals("2h",observed.locator(".log-duration").inputValue());
+        assertEquals("done",page.locator(".registered-log select").inputValue());
+        assertTrue(statusUpdates.isEmpty());
+        page.locator("[data-log-day='2026-11-05']").click();
+        Locator previous=worklog.locator("[data-work-id='previous'] select");
+        previous.selectOption("not-started");
+        page.waitForCondition(()->workDayUpdates.size()==3 && !previous.isDisabled());
+        assertEquals("2026-11-05",Json.text(workDayUpdates.getLast(),"date"));
+        page.locator("[data-log-day='2026-11-06']").click();
+        assertEquals("2h",observed.locator(".log-duration").inputValue());
+        assertEquals("progress",planned.locator("select").inputValue());
+        page.setViewportSize(390,844);
+        assertTrue((Boolean)page.evaluate("document.documentElement.scrollWidth<=innerWidth"));
+        String screenshots=System.getProperty("work.ui.worklog.screenshots","");
+        if(!screenshots.isBlank()){
+            Path directory=Files.createDirectories(Path.of(screenshots));
+            page.screenshot(new Page.ScreenshotOptions().setPath(directory.resolve("worklog-outcomes-mobile.png")).setFullPage(true));
+        }
     }
     @Test void failedWorklogSaveKeepsUnfinishedInputs() {
         worklogSaveFails = true;

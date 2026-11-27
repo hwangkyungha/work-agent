@@ -199,7 +199,7 @@ small,.hint { font-size:12px; color:var(--muted); line-height:1.8; }
 .registered-log>div { min-width:0; }
 .registered-log h3 { font-size:13px; font-weight:500; overflow-wrap:anywhere; }
 .registered-log h3 span { font-weight:400; }
-.registered-log>strong { font-size:14px; font-weight:500; flex-shrink:0; }
+.registered-log strong { font-size:14px; font-weight:500; flex-shrink:0; }
 .worklog-picks .quick-task { margin:12px 0; }
 .worklog-picks .quick-task input { width:100%; min-width:0; }
 .worklog-choice { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--line); }
@@ -408,7 +408,12 @@ dialog pre,.daily-preview { white-space:pre-wrap; font:13px/1.9 'Segoe UI','Malg
 .modal-header{align-items:flex-start;gap:16px}.modal-header h2{min-width:0;overflow-wrap:anywhere}.modal-header>button{flex-shrink:0}
 .past-work-candidate>div{min-width:0;flex:1}.past-work-candidates{padding-right:5px}
 .bulk-work-type{margin-top:24px}.external-review-sources{margin:8px 0 20px}.external-review-sources .field{margin-top:12px}
-.worklog-task-title { grid-column:1/-1; overflow-wrap:anywhere; }
+.worklog-task-heading { grid-column:1/-1; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.worklog-task-heading>div { min-width:0; }
+.worklog-task-heading small { display:block; }
+.worklog-task-title { overflow-wrap:anywhere; }
+.worklog-row-actions { display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:8px; }
+.worklog-task-heading select,.worklog-row-actions select { flex-shrink:0; min-height:32px; max-width:116px; padding:5px 6px; border:1px solid var(--line); border-radius:6px; background:#fff; color:inherit; font:inherit; font-size:12px; }
 #review-repositories small{overflow-wrap:anywhere}.task-filter-fields{flex-wrap:wrap}
 
 /* 오늘의 목록을 먼저 읽고, 필요한 날짜의 수행 기록만 펼친다. */
